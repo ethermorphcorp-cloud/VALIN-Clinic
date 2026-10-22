@@ -2691,7 +2691,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   var STOCK_TABS = [{ id: 'supply', label: 'รายการเวชภัณฑ์' }, { id: 'medicine', label: 'รายการยา' }];
   // Must match STOCK_PRICE_TIERS in Code.gs — item.prices[i] is the ราคาขาย for STOCK_PRICE_TIERS[i] ชิ้น.
   var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
-  var STOCK_LOG_KIND_LABELS = { update: 'อัพเดตสต๊อก', in: 'รับเข้า', out: 'เบิกออก', set: 'ปรับยอดคงเหลือ', import: 'นำเข้า CSV', opening: 'ยอดยกมา', record: 'บันทึกการรักษา', withdraw: 'เบิกยาคลีนิค' };
+  var STOCK_LOG_KIND_LABELS = { update: 'อัพเดตสต๊อก', in: 'รับเข้า', out: 'เบิกออก', set: 'ปรับยอดคงเหลือ', import: 'นำเข้า CSV', opening: 'ยอดยกมา', record: 'บันทึกการรักษา', withdraw: 'เบิกยาคลีนิค', purchase: 'จัดซื้อ' };
   function stockTypeLabel(type) { return type === 'medicine' ? 'ยา' : 'เวชภัณฑ์'; }
   function stockTab(type) {
     if (type === state.stock.type) return;
@@ -3539,24 +3539,44 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var d = state.draft;
     var catOpts = (state.master.stockCategories || []).map(function (c) { return { value: c.name, label: c.name }; });
     var total = d.lines.reduce(function (s, l) { return s + (Number(l.qty) || 0) * (Number(l.unitPrice) || 0); }, 0);
+    // Item names suggest from both stock types; a line whose name matches a
+    // stock item is linked to it (itemId, set in the input listener) and its
+    // qty is added to that item's stock when the PO is saved.
     var lines = d.lines.map(function (l, i) {
-      return '<div class="supply-row">' +
-        '<div style="width:120px">' + bindSelect('lines.' + i + '.category', catOpts) + '</div>' +
-        '<input type="text" placeholder="ชื่อสินค้า" value="' + esc(l.itemName) + '" data-bind="lines.' + i + '.itemName" style="' + inputStyle + '" class="g">' +
-        '<input type="number" min="0" value="' + esc(l.qty) + '" data-bind="lines.' + i + '.qty" style="' + inputStyle + ';width:64px" placeholder="จำนวน">' +
-        '<input type="number" min="0" value="' + esc(l.unitPrice) + '" data-bind="lines.' + i + '.unitPrice" style="' + inputStyle + ';width:84px" placeholder="ราคา/หน่วย">' +
-        '<button class="btn" data-action="remove-order-line" data-arg="' + i + '"><span class="ms">close</span></button>' +
+      return '<div style="margin-bottom:8px">' +
+        '<div class="supply-row" style="margin-bottom:2px">' +
+          '<div style="width:120px">' + bindSelect('lines.' + i + '.category', catOpts) + '</div>' +
+          '<input type="text" list="dlOrderStock" autocomplete="off" placeholder="ชื่อสินค้า (เลือกจากสต๊อก)" value="' + esc(l.itemName) + '" data-bind="lines.' + i + '.itemName" style="' + inputStyle + '" class="g">' +
+          '<input type="number" min="0" value="' + esc(l.qty) + '" data-bind="lines.' + i + '.qty" style="' + inputStyle + ';width:64px" placeholder="จำนวน">' +
+          '<input type="number" min="0" value="' + esc(l.unitPrice) + '" data-bind="lines.' + i + '.unitPrice" style="' + inputStyle + ';width:84px" placeholder="ราคา/หน่วย">' +
+          '<button class="btn" data-action="remove-order-line" data-arg="' + i + '"><span class="ms">close</span></button>' +
+        '</div>' +
+        '<div id="orderLineCap' + i + '" style="font-size:11px;margin-left:128px">' + orderLineCaption(l) + '</div>' +
       '</div>';
+    }).join('');
+    var stockOpts = (state.suggestCache.stock || []).map(function (s) {
+      return '<option value="' + esc(s.name) + '">' + esc(stockTypeLabel(s.type) + (s.category ? ' · ' + s.category : '')) + '</option>';
     }).join('');
     return modalHeader(d.id ? 'แก้ไขใบสั่งซื้อ' : 'เพิ่มใบสั่งซื้อ') +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + field('วันที่', bindInput('date', 'date')) + field('ผู้จำหน่าย', bindInput('supplier')) + '</div>' +
       '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">รายการสินค้า</label></div>' +
-      lines + '<button class="btn" data-action="add-order-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการ</button>' +
+      lines + '<datalist id="dlOrderStock">' + stockOpts + '</datalist>' +
+      '<button class="btn" data-action="add-order-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการ</button>' +
+      (d.id && !d.stockApplied ? '<div style="font-size:11.5px;color:var(--amber-dark);margin-bottom:8px">ใบสั่งซื้อนี้สร้างก่อนระบบเชื่อมสต๊อก — การแก้ไขจะไม่เปลี่ยนจำนวนสต๊อก</div>' : '') +
       '<div style="text-align:right;font-weight:700;margin-bottom:10px">รวมทั้งสิ้น ' + money(total) + '</div>' + saveBtn();
+  }
+  /** Under each PO line: which stock item it will add to, or that it isn't linked to stock. */
+  function orderLineCaption(l) {
+    var s = l.itemId ? (state.suggestCache.stock || []).filter(function (x) { return x.id === l.itemId; })[0] : null;
+    if (s) return '<span style="color:var(--green-dark)"><span class="ms" style="font-size:13px;vertical-align:middle">add_circle</span> เพิ่มเข้าสต๊อก' + esc(stockTypeLabel(s.type)) + (s.unit ? ' (' + esc(s.unit) + ')' : '') + '</span>';
+    return String(l.itemName || '').trim() ? '<span style="color:var(--muted)">ไม่อยู่ในสต๊อก — ไม่เพิ่มจำนวนสต๊อก</span>' : '';
   }
   function saveOrderModal() {
     if (!state.draft.lines.length) { toast('error', 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ'); return; }
-    call('saveOrder', session.token, state.draft).then(function () { toast('success', 'บันทึกใบสั่งซื้อแล้ว'); closeModal(); loadOrders(); });
+    call('saveOrder', session.token, state.draft).then(function () {
+      toast('success', 'บันทึกใบสั่งซื้อแล้ว'); closeModal(); loadOrders();
+      if (state.stock.list) loadStock();
+    });
   }
 
   /* ================================================================== */
@@ -4293,6 +4313,21 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // Optional numeric fields (e.g. stock prices) keep '' instead of 0 when cleared.
     if (el.type === 'number' && el.value === '' && el.hasAttribute('data-blank-ok')) val = '';
     setPath(state.draft, bindPath, val);
+    // จัดซื้อ: a line name matching a stock item links it (itemId) and takes that item's หมวดหมู่ — patched in place, no render.
+    var orderPick = state.modal && state.modal.type === 'order' && bindPath.match(/^lines\.(\d+)\.itemName$/);
+    if (orderPick) {
+      var oLine = state.draft.lines[Number(orderPick[1])];
+      var oItem = (state.suggestCache.stock || []).filter(function (s) { return s.name === String(val).trim(); })[0];
+      oLine.itemId = oItem ? oItem.id : '';
+      if (oItem && oItem.category && (state.master.stockCategories || []).some(function (c) { return c.name === oItem.category; })) {
+        oLine.category = oItem.category;
+        var catEl = document.querySelector('[data-bind="lines.' + orderPick[1] + '.category"]');
+        if (catEl) catEl.value = oItem.category;
+      }
+      var capEl = document.getElementById('orderLineCap' + orderPick[1]);
+      if (capEl) capEl.innerHTML = orderLineCaption(oLine);
+      return;
+    }
     // The stock form shows ราคาทุน/ราคาขาย only for ยา, so switching type redraws it.
     if (state.modal && state.modal.type === 'stock' && bindPath === 'type') { render(); return; }
     if (state.modal && state.modal.type === 'stockadjust') {

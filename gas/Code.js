@@ -240,8 +240,11 @@ var CONFIG = {
     // getStockLog derives it from the previous row's QtyRemaining instead.
     StockLog: ['LogID', 'Date', 'ItemID', 'ItemName', 'QtyIn', 'QtyRemaining', 'Note', 'CreatedBy', 'CreatedAt', 'QtyOut', 'Kind'],
     Expenses: ['ExpID', 'Date', 'Name', 'Category', 'Amount', 'CreatedBy', 'CreatedAt'],
-    Orders: ['PoID', 'Date', 'Supplier', 'TotalAmount', 'CreatedBy', 'CreatedAt'],
-    OrderLines: ['LineID', 'PoID', 'Category', 'ItemName', 'Qty', 'UnitPrice', 'LineTotal'],
+    // StockApplied/ItemID appended later: lines picked from the stock list
+    // carry ItemID and their Qty is added to Stock — only on POs created
+    // since then (StockApplied=TRUE), so editing an older PO never re-adds it.
+    Orders: ['PoID', 'Date', 'Supplier', 'TotalAmount', 'CreatedBy', 'CreatedAt', 'StockApplied'],
+    OrderLines: ['LineID', 'PoID', 'Category', 'ItemName', 'Qty', 'UnitPrice', 'LineTotal', 'ItemID'],
     Doctors: ['DoctorID', 'Name', 'Status', 'MinAmount', 'CreatedAt', 'CommissionPct'],
     Sales: ['SalesID', 'Name', 'Status', 'CommissionRate', 'MinAmount', 'CreatedAt'],
     // Promotions (round 12, item 3) — reference/display table for the
@@ -1481,7 +1484,7 @@ function saveClinicSettings(token, settings) {
 // ราคาขาย quantity tiers — one Stock column per tier (Price1, Price3, ...).
 var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
 // StockLog.Kind values. '' (rows written before Kind existed) reads as 'update'.
-var STOCK_LOG_KINDS = { update: 1, in: 1, out: 1, set: 1, import: 1, opening: 1, record: 1, withdraw: 1 };
+var STOCK_LOG_KINDS = { update: 1, in: 1, out: 1, set: 1, import: 1, opening: 1, record: 1, withdraw: 1, purchase: 1 };
 
 function listStock(token, opts) {
   return safeCall_(function () {
@@ -3098,9 +3101,31 @@ function mapOrderOut_(o, lines) {
     id: o.PoID, date: dateStr_(o.Date), supplier: o.Supplier, totalAmount: Number(o.TotalAmount) || 0,
     createdBy: o.CreatedBy, row: o._row,
     lines: (lines || []).map(function (l) {
-      return { id: l.LineID, category: l.Category, itemName: l.ItemName, qty: Number(l.Qty) || 0, unitPrice: Number(l.UnitPrice) || 0, lineTotal: Number(l.LineTotal) || 0 };
-    })
+      return { id: l.LineID, category: l.Category, itemName: l.ItemName, qty: Number(l.Qty) || 0, unitPrice: Number(l.UnitPrice) || 0, lineTotal: Number(l.LineTotal) || 0, itemId: l.ItemID || '' };
+    }),
+    stockApplied: String(o.StockApplied) === 'TRUE'
   };
+}
+
+/**
+ * Stock a PO puts in, in applyRecordEffects_'s shape (negative = added to
+ * stock): {stock: {itemId: -qty}, deposit: {}}. Only POs with
+ * StockApplied=TRUE count, and items no longer in Stock are skipped so a
+ * deleted stock item never blocks editing/deleting the PO.
+ */
+function orderEffects_(orderRow, lines, stockIds) {
+  var eff = { stock: {}, deposit: {} };
+  if (!orderRow || String(orderRow.StockApplied) !== 'TRUE') return eff;
+  lines.forEach(function (l) {
+    var id = l.ItemID || l.itemId, qty = Number(l.Qty != null ? l.Qty : l.qty) || 0;
+    if (id && qty && stockIds[id]) eff.stock[id] = round2_((eff.stock[id] || 0) - qty);
+  });
+  return eff;
+}
+function stockIdSet_() {
+  var ids = {};
+  getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { ids[s.ItemID] = true; });
+  return ids;
 }
 
 function listOrders(token, opts) {
@@ -3149,7 +3174,7 @@ function getOrder(token, id) {
   });
 }
 
-/** order: {id?, date, supplier, lines:[{category,itemName,qty,unitPrice}]} — TotalAmount computed server-side. */
+/** order: {id?, date, supplier, lines:[{category,itemName,qty,unitPrice,itemId?}]} — TotalAmount computed server-side; lines with an itemId add their qty to Stock (see orderEffects_). */
 function saveOrder(token, order) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'staff');
@@ -3170,12 +3195,20 @@ function saveOrder(token, order) {
       var orderSheet = getSheet_(CONFIG.SHEETS.ORDERS);
       var lineSheet = getSheet_(CONFIG.SHEETS.ORDER_LINES);
       var isNew = !order.id;
+      var existingOrder = isNew ? null : getRows_(orderSheet).filter(function (o) { return o.PoID === order.id; })[0];
+      if (!isNew && !existingOrder) throw ValidationError_('ไม่พบใบสั่งซื้อ');
       var poId = isNew ? ('PO' + nextSeq_('ORDER', 5)) : order.id;
       var obj = {
         PoID: poId, Date: order.date, Supplier: order.supplier, TotalAmount: totalAmount,
         CreatedBy: isNew ? session.username : (order.createdBy || session.username),
-        CreatedAt: isNew ? nowStr_() : (order.createdAt || nowStr_())
+        CreatedAt: isNew ? nowStr_() : (order.createdAt || nowStr_()),
+        StockApplied: isNew ? 'TRUE' : (existingOrder.StockApplied || '')
       };
+      // Add the purchased qty to Stock (an edit moves only the difference).
+      var stockIds = stockIdSet_();
+      var oldLines = isNew ? [] : getRows_(lineSheet).filter(function (l) { return l.PoID === order.id; });
+      applyRecordEffects_(session, orderEffects_(existingOrder, oldLines, stockIds), orderEffects_(obj, lines, stockIds),
+        'จัดซื้อ ' + poId + ' · ' + order.supplier, '', 'purchase');
       if (isNew) appendRow_(orderSheet, CONFIG.HEADERS.Orders, obj);
       else {
         var rowIndex = findRowIndexById_(orderSheet, 'PoID', order.id);
@@ -3189,7 +3222,8 @@ function saveOrder(token, order) {
       lines.forEach(function (l, i) {
         appendRow_(lineSheet, CONFIG.HEADERS.OrderLines, {
           LineID: poId + '-' + (i + 1), PoID: poId, Category: l.category, ItemName: l.itemName,
-          Qty: Number(l.qty), UnitPrice: Number(l.unitPrice), LineTotal: Number(l.qty) * Number(l.unitPrice)
+          Qty: Number(l.qty), UnitPrice: Number(l.unitPrice), LineTotal: Number(l.qty) * Number(l.unitPrice),
+          ItemID: l.itemId || ''
         });
       });
       writeAudit_(session, isNew ? 'CREATE' : 'UPDATE', 'Order', poId, obj.Supplier + ' ' + totalAmount);
@@ -3204,17 +3238,26 @@ function saveOrder(token, order) {
 function deleteOrder(token, id) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'admin');
-    var orderSheet = getSheet_(CONFIG.SHEETS.ORDERS);
-    var rowIndex = findRowIndexById_(orderSheet, 'PoID', id);
-    if (rowIndex < 0) throw ValidationError_('ไม่พบใบสั่งซื้อ');
-    deleteRowByIndex_(orderSheet, rowIndex);
-    var lineSheet = getSheet_(CONFIG.SHEETS.ORDER_LINES);
-    var lineRows = getRows_(lineSheet).filter(function (l) { return l.PoID === id; });
-    lineRows.sort(function (a, b) { return b._row - a._row; });
-    lineRows.forEach(function (l) { deleteRowByIndex_(lineSheet, l._row); });
-    writeAudit_(session, 'DELETE', 'Order', id, '');
-    bumpDashboardCacheVersion_(); // Round 19 item 4: purchase orders feed dashboard expense totals
-    return { ok: true };
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var orderSheet = getSheet_(CONFIG.SHEETS.ORDERS);
+      var orderRow = getRows_(orderSheet).filter(function (o) { return o.PoID === id; })[0];
+      if (!orderRow) throw ValidationError_('ไม่พบใบสั่งซื้อ');
+      var lineSheet = getSheet_(CONFIG.SHEETS.ORDER_LINES);
+      var lineRows = getRows_(lineSheet).filter(function (l) { return l.PoID === id; });
+      // Take the purchased qty back out of Stock (may go negative, like any other stock-out).
+      applyRecordEffects_(session, orderEffects_(orderRow, lineRows, stockIdSet_()), { stock: {}, deposit: {} },
+        'ลบใบสั่งซื้อ ' + id + ' · ' + orderRow.Supplier, '', 'purchase');
+      deleteRowByIndex_(orderSheet, orderRow._row);
+      lineRows.sort(function (a, b) { return b._row - a._row; });
+      lineRows.forEach(function (l) { deleteRowByIndex_(lineSheet, l._row); });
+      writeAudit_(session, 'DELETE', 'Order', id, '');
+      bumpDashboardCacheVersion_(); // Round 19 item 4: purchase orders feed dashboard expense totals
+      return { ok: true };
+    } finally {
+      lock.releaseLock();
+    }
   });
 }
 
