@@ -3038,12 +3038,12 @@ function deleteMedWithdrawal(token, id) {
 }
 
 /**
- * รายงานเซลล์ (admin only). Source: บันทึกการรักษา — every รายการเบิกยาหน้าคลีนิค
- * line (MedicineJSON, at its ราคาขาย) on a non-cancelled record that has a
- * sales person. opts: {salesId, dateFrom, dateTo}; blank salesId = everyone.
- * Rows are one per date + sales person, with that day's customers (each with
- * their own lines) so the client can stack customers inside one cell, show
- * the detail panel and build the PDF without another round trip.
+ * รายงานเซลล์ (admin only). Source: เบิกยาคลีนิค (MedWithdrawals) — each line at
+ * its ราคาทุน (UnitCost snapshotted when it was saved). opts: {salesId,
+ * dateFrom, dateTo}; blank salesId = everyone. Rows are one per date + sales
+ * person, with that day's customers (each with their own lines) so the
+ * client can stack customers inside one cell, show the detail panel and
+ * build the PDF without another round trip.
  */
 function getSalesReport(token, opts) {
   return safeCall_(function () {
@@ -3054,34 +3054,28 @@ function getSalesReport(token, opts) {
     var unitById = {};
     getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { unitById[s.ItemID] = s.Unit || ''; });
     var groups = {}, order = [];
-    getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).forEach(function (r) {
-      if (!r.SalesID || r.Status === 'cancelled' || !isTrue_(r.UseMedicine)) return;
-      var d = dateStr_(r.Date);
-      if (opts.salesId && r.SalesID !== opts.salesId) return;
+    var rows = getRows_(getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS));
+    rows.sort(function (a, b) { return String(a.CreatedAt).localeCompare(String(b.CreatedAt)); }); // lines in the order they were saved
+    rows.forEach(function (w) {
+      var d = dateStr_(w.Date);
+      if (opts.salesId && w.SalesID !== opts.salesId) return;
       if (opts.dateFrom && d < opts.dateFrom) return;
       if (opts.dateTo && d > opts.dateTo) return;
-      var lines = parseLineItems_(r.MedicineJSON).filter(function (l) { return l && (l.name || l.amount); });
-      if (!lines.length) return;
-      var key = d + '|' + r.SalesID;
+      var key = d + '|' + w.SalesID;
       var g = groups[key];
       if (!g) {
-        g = groups[key] = { id: key, date: d, salesId: r.SalesID, salesName: r.SalesName, customers: [], totalQty: 0, totalAmount: 0 };
+        g = groups[key] = { id: key, date: d, salesId: w.SalesID, salesName: w.SalesName, customers: [], totalQty: 0, totalAmount: 0 };
         order.push(g);
       }
-      // A patient seen twice the same day stays one customer line.
-      var c = g.customers.filter(function (x) { return x.patientId === r.PatientID; })[0];
-      if (!c) { c = { patientId: r.PatientID, patientName: r.PatientName, phone: r.Phone, items: [], totalQty: 0, totalAmount: 0 }; g.customers.push(c); }
-      lines.forEach(function (l) {
-        // Lines saved before the dispense table existed are {name, amount} only.
-        var qty = 'qtyDispensed' in l ? (Number(l.qtyDispensed) || 0) : null;
-        var unitPrice = 'unitPrice' in l ? (Number(l.unitPrice) || 0) : null;
-        var amount = Number(l.amount) || 0;
-        c.items.push({ recordId: r.RID, itemName: l.name || 'ยา', qty: qty, unit: unitById[l.itemId] || '', unitPrice: unitPrice, amount: amount });
-        c.totalQty = round2_(c.totalQty + (qty || 0));
-        c.totalAmount = round2_(c.totalAmount + amount);
-        g.totalQty = round2_(g.totalQty + (qty || 0));
-        g.totalAmount = round2_(g.totalAmount + amount);
-      });
+      // A patient with several withdrawals the same day stays one customer line.
+      var c = g.customers.filter(function (x) { return x.patientId === w.PatientID; })[0];
+      if (!c) { c = { patientId: w.PatientID, patientName: w.PatientName, phone: w.Phone, items: [], totalQty: 0, totalAmount: 0 }; g.customers.push(c); }
+      var qty = numOrNull_(w.Qty) || 0, unitCost = numOrNull_(w.UnitCost) || 0, amount = numOrNull_(w.Amount) || 0;
+      c.items.push({ withdrawId: w.WithdrawID, itemName: w.ItemName, qty: qty, unit: unitById[w.ItemID] || '', unitPrice: unitCost, amount: amount });
+      c.totalQty = round2_(c.totalQty + qty);
+      c.totalAmount = round2_(c.totalAmount + amount);
+      g.totalQty = round2_(g.totalQty + qty);
+      g.totalAmount = round2_(g.totalAmount + amount);
     });
     order.sort(function (a, b) { return b.date.localeCompare(a.date) || String(a.salesName).localeCompare(String(b.salesName), 'th'); });
     return { ok: true, data: {
@@ -3986,9 +3980,10 @@ function seedDemoData(token) {
       });
       Object.keys(groups).forEach(function (key) { recomputeDoctorDayShares_(groups[key].doctorId, groups[key].date); });
 
-      // เบิกยาคลีนิค (sales withdrawals at ราคาทุน) — a few recent ones.
+      // เบิกยาคลีนิค (sales withdrawals at ราคาทุน) — a few recent ones; yesterday has
+      // two customers for the same sales person so รายงานเซลล์ shows a stacked day.
       var wdSheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
-      [[6, 0, 0, [[0, 2], [2, 3]]], [3, 1, 3, [[1, 1]]], [1, 0, 5, [[2, 5], [3, 1]]]].forEach(function (w) {
+      [[6, 0, 0, [[0, 2], [2, 3]]], [3, 1, 3, [[1, 1]]], [1, 0, 5, [[2, 5], [3, 1]]], [1, 0, 7, [[4, 2]]], [1, 1, 2, [[0, 1]]]].forEach(function (w) {
         var date = dayStr(w[0]), salesP = sales[w[1]], patient = patients[w[2]], batch = 'WB' + nextSeq_('WITHDRAW_BATCH', 5);
         w[3].forEach(function (pair) {
           var m = meds[pair[0]], q = pair[1];
