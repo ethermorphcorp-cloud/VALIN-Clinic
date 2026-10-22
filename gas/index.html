@@ -3378,9 +3378,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var now = new Date(), pad = function (n) { return String(n).padStart(2, '0'); };
     var printed = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes());
     var range = (sr.from || '…') + ' ถึง ' + (sr.to || '…');
+    // Company logo from ตั้งค่าคลินิก > ข้อมูลบริษัท (loaded by ensureClinicLogo before rendering).
     var logo = state.master && state.master.logoUrl
-      ? '<img src="' + esc(state.master.logoUrl) + '" style="width:54px;height:54px;object-fit:cover;border-radius:12px">'
-      : '<div style="width:54px;height:54px;border-radius:12px;background:' + navy + ';color:' + gold + ';display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700">VC</div>';
+      ? '<img src="' + esc(state.master.logoUrl) + '" style="width:64px;height:64px;object-fit:contain;border-radius:12px;flex:none">'
+      : '<div style="width:64px;height:64px;border-radius:12px;background:' + navy + ';color:' + gold + ';display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;flex:none">VC</div>';
+    var contact = [clinic.phone ? 'โทร ' + clinic.phone : '', clinic.email || ''].filter(Boolean).join(' · ');
     // Group the rows by sales person, dates oldest first within each.
     var bySales = {}, salesOrder = [];
     rows.slice().sort(function (a, b) { return a.date.localeCompare(b.date); }).forEach(function (g) {
@@ -3394,8 +3396,12 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       var head =
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:20px">' +
           '<div style="display:flex;align-items:center;gap:14px">' + logo +
-            '<div><div style="font-size:18px;font-weight:700;color:' + navy + '">' + esc(clinic.name || 'VALIN CLINIC') + '</div>' +
-            '<div style="font-size:10.5px;color:' + muted + ';margin-top:2px">' + esc([clinic.address, clinic.phone ? 'โทร ' + clinic.phone : ''].filter(Boolean).join(' · ')) + '</div></div>' +
+            '<div style="font-size:10.5px;color:' + muted + ';line-height:1.55;max-width:470px">' +
+              '<div style="font-size:18px;font-weight:700;color:' + navy + ';line-height:1.3;margin-bottom:2px">' + esc(clinic.name || 'VALIN CLINIC') + '</div>' +
+              (clinic.address ? '<div>' + esc(clinic.address) + '</div>' : '') +
+              (clinic.taxId ? '<div>เลขประจำตัวผู้เสียภาษี <b style="color:' + ink + '">' + esc(clinic.taxId) + '</b></div>' : '') +
+              (contact ? '<div>' + esc(contact) + '</div>' : '') +
+            '</div>' +
           '</div>' +
           '<div style="text-align:right;font-size:11px;color:' + muted + '">Print date<div style="font-size:13px;font-weight:600;color:' + ink + ';margin-top:2px">' + esc(printed) + '</div></div>' +
         '</div>' +
@@ -3436,6 +3442,14 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     }).join('');
     return '<div style="width:794px;background:#fff;color:' + ink + ';font-family:\'Noto Sans Thai\',sans-serif;box-sizing:border-box">' + sections + '</div>';
   }
+  /** Resolves once the company logo's data URI is on state.master (fetched if a logo is set but not loaded yet); never rejects — the PDF falls back to the VC mark. */
+  function ensureClinicLogo() {
+    var info = (state.master && state.master.clinicInfo) || {};
+    if (!info.logoFileId || state.master.logoUrl) return Promise.resolve();
+    return call('getPhotoUrl', session.token, info.logoFileId, gsOpts({ quiet: true })).then(function (r) {
+      if (r && r.data) state.master.logoUrl = r.data;
+    }, function () { /* no logo */ });
+  }
   /** id = one report row (that day + sales person); no id = every row in the current report. */
   function downloadSalesReportPdf(id) {
     var rows = id ? [salesReportRow(id)].filter(Boolean) : ((state.salesReport.data && state.salesReport.data.rows) || []);
@@ -3444,7 +3458,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var dates = rows.map(function (g) { return g.date; }).sort();
     var filename = 'รายงานเซลล์-' + (names.length === 1 ? names[0] : 'ทุกเซลล์') + '-' + dates[0] + (dates[dates.length - 1] !== dates[0] ? '_' + dates[dates.length - 1] : '') + '.pdf';
     setLoading(true);
-    loadHtml2Pdf().then(function () {
+    Promise.all([loadHtml2Pdf(), ensureClinicLogo()]).then(function () {
       // Off-screen but laid out (html2canvas can't capture display:none).
       var holder = document.createElement('div');
       holder.style.cssText = 'position:fixed;left:-10000px;top:0;z-index:-1';
@@ -3452,10 +3466,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       document.body.appendChild(holder);
       var done = function () { holder.remove(); setLoading(false); };
       return window.html2pdf().set({
-        margin: [0, 0, 24, 0], filename: filename,
+        // A4 portrait in mm; the 794px-wide page is scaled to the 210mm width.
+        margin: [0, 0, 8, 0], filename: filename,
         image: { type: 'jpeg', quality: 0.96 },
         html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
-        jsPDF: { unit: 'px', format: [794, 1123], orientation: 'portrait', hotfixes: ['px_scaling'] },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
         // Each sales person starts a new page; rows and date headings are never split across pages.
         pagebreak: { mode: ['css', 'legacy'], before: '.pdf-new-sales', avoid: ['tr', '.pdf-date-head'] }
       }).from(holder.firstChild).save().then(done, function (e) { done(); throw e; });
@@ -4034,7 +4049,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function seedDemoDataConfirm() {
     Swal.fire({
       icon: 'warning', title: 'โหลดข้อมูลตัวอย่าง (Demo Data)?',
-      text: 'จะล้างข้อมูลเดิมในชีตทั้งหมด (ยกเว้นบัญชีผู้ใช้งาน) แล้วแทนที่ด้วยข้อมูลตัวอย่าง',
+      text: 'จะล้างข้อมูลเดิมในชีตทั้งหมด (ยกเว้นบัญชีผู้ใช้งานและข้อมูลบริษัท) แล้วแทนที่ด้วยข้อมูลตัวอย่าง',
       showCancelButton: true, confirmButtonText: 'โหลดข้อมูลตัวอย่าง', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#A5813E'
     }).then(function (r) {
       if (!r.isConfirmed) return;
@@ -4043,6 +4058,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         settingsData.doctors = null; settingsData.sales = null; settingsData.categories = null; settingsData.clinicInfo = null;
         state.settings.staff = null; state.dash.data = null; state.patients.list = null; state.records.list = null;
         state.stock.list = null; state.expense.list = null; state.expense.orders = null;
+        state.withdraw.list = null; state.salesReport.data = null;
         refreshMaster(); refreshPatientsSuggestCache(); refreshStockSuggestCache();
         if (state.settings.tab === 'clinic') loadClinicInfo();
       });
@@ -4060,7 +4076,16 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
 
   function refreshMaster() {
-    call('getMasterData', session.token, gsOpts({ quiet: true })).then(function (res) { if (res.ok) state.master = res.data; render(); });
+    call('getMasterData', session.token, gsOpts({ quiet: true })).then(function (res) {
+      if (res.ok) {
+        // Keep the already-fetched logo (a data URI) when the logo file hasn't changed.
+        var old = state.master || {};
+        var sameLogo = old.clinicInfo && res.data.clinicInfo && old.clinicInfo.logoFileId === res.data.clinicInfo.logoFileId;
+        state.master = res.data;
+        if (sameLogo && old.logoUrl) state.master.logoUrl = old.logoUrl;
+      }
+      render();
+    });
   }
 
   /* ---------------------------------------------------------------- */

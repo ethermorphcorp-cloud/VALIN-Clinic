@@ -89,8 +89,9 @@
  *   1. Run `setupProject` — creates the spreadsheet, all sheets with
  *      headers, the Drive folder structure, and default Script
  *      Properties. Authorize the requested scopes when prompted.
- *   2. (Optional) Run `seedDemoData` to fill the sheets with the same
- *      sample data used in the front-end prototype.
+ *   2. (Optional) Run `seedDemoData` to replace the business data with
+ *      sample data in the current format, or `clearAllData` to empty it.
+ *      Both keep the Staff sheet and ClinicSettings (company info/logo).
  *   3. Deploy > New deployment > Web app. Execute as "Me", access
  *      "Anyone" (or "Anyone within your organization").
  *   4. Set Script Properties (Project Settings > Script Properties):
@@ -3675,11 +3676,13 @@ function removeLogo(token) {
 }
 
 /* ======================================================================
-   DEMO DATA — fills every sheet with realistic sample data so the app
-   can be explored end-to-end before real clinic data is entered.
-   Safe to re-run: clears existing rows (except headers) first.
-   Callable from the client (admin only) or run manually in the editor
-   (call with no arguments).
+   DEMO DATA — clearAllData() empties the business data; seedDemoData()
+   clears and then fills every sheet with sample data in the current format
+   (stock types/prices, StockLog history, treatment records with เบิกยา/ฝาก/
+   ใช้ยาฝาก lines, MedDeposits, เบิกยาคลีนิค, purchase orders linked to stock).
+   Both are admin-only from the client, or run them from the Apps Script
+   editor with no arguments. Never touched: the Staff sheet (login
+   accounts), its STAFF counter, and ClinicSettings (company info + logo).
    ====================================================================== */
 
 function clearSheetData_(sheet) {
@@ -3687,253 +3690,311 @@ function clearSheetData_(sheet) {
   if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
 }
 
+/** Every sheet except Staff and ClinicSettings, plus all counters except STAFF. */
+function clearBusinessData_() {
+  var keep = {};
+  keep[CONFIG.SHEETS.STAFF] = true;
+  keep[CONFIG.SHEETS.CLINIC_SETTINGS] = true;
+  keep[CONFIG.SHEETS.COUNTERS] = true;
+  Object.keys(CONFIG.SHEETS).forEach(function (key) {
+    var name = CONFIG.SHEETS[key];
+    if (!keep[name]) clearSheetData_(getSheet_(name));
+  });
+  // Counters: keep STAFF so new staff ids never collide with existing accounts.
+  var counters = getSheet_(CONFIG.SHEETS.COUNTERS);
+  var staffSeq = getRows_(counters).filter(function (r) { return r.Key === 'STAFF'; })[0];
+  clearSheetData_(counters);
+  if (staffSeq) appendRow_(counters, CONFIG.HEADERS.Counters, { Key: 'STAFF', LastSeq: staffSeq.LastSeq });
+  invalidateMasterCache_();
+  invalidatePatientsLiteCache_();
+  invalidateStockLiteCache_();
+  bumpDashboardCacheVersion_();
+}
+
+function clearAllData(token) {
+  return safeCall_(function () {
+    if (token) requireAuth_(token, 'admin');
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      clearBusinessData_();
+      return { ok: true, message: 'ล้างข้อมูลเรียบร้อยแล้ว (เก็บบัญชีผู้ใช้และข้อมูลบริษัทไว้)' };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+/** ราคาขาย per unit for `qty` units of a seeded medicine — same tier rule as the record form (largest priced tier <= qty, else the smallest). */
+function seedTierPrice_(item, qty) {
+  var pick = null, first = null;
+  STOCK_PRICE_TIERS.forEach(function (t, i) {
+    var p = item.prices[i];
+    if (p == null || p === '') return;
+    if (first == null) first = p;
+    if (t <= qty) pick = p;
+  });
+  return pick != null ? pick : (first || 0);
+}
+
 function seedDemoData(token) {
   return safeCall_(function () {
     if (token) requireAuth_(token, 'admin');
-    var ss = getSS_();
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      clearBusinessData_();
+      var tz = Session.getScriptTimeZone() || 'Asia/Bangkok';
+      var today = new Date();
+      var dayStr = function (daysAgo) { var d = new Date(today.getFullYear(), today.getMonth(), today.getDate()); d.setDate(d.getDate() - daysAgo); return Utilities.formatDate(d, tz, 'yyyy-MM-dd'); };
+      var actor = 'admin';
 
-    Object.keys(CONFIG.SHEETS).forEach(function (key) {
-      var name = CONFIG.SHEETS[key];
-      if (name === CONFIG.SHEETS.STAFF) return; // keep real login accounts intact
-      clearSheetData_(getSheet_(name));
-    });
-
-    // Categories
-    var catSheet = getSheet_(CONFIG.SHEETS.CATEGORIES);
-    var treatmentCatNames = ['โบท็อกซ์', 'ฟิลเลอร์', 'เลเซอร์', 'ดูแลผิวหน้า', 'ร้อยไหม'];
-    var stockCatNames = ['ยาและเวชภัณฑ์', 'อุปกรณ์ทางการแพทย์', 'เครื่องสำอาง', 'วัสดุสิ้นเปลือง'];
-    var expenseCatNames = ['ค่าเช่า', 'ค่าน้ำค่าไฟ', 'เงินเดือนพนักงาน', 'การตลาด', 'ค่าซ่อมบำรุง', 'อื่นๆ'];
-    var catIds = { treatment: [], stock: [], expense: [] };
-    [['treatment', treatmentCatNames], ['stock', stockCatNames], ['expense', expenseCatNames]].forEach(function (pair) {
-      pair[1].forEach(function (name, i) {
-        var id = 'C' + nextSeq_('CATEGORY', 3);
-        appendRow_(catSheet, CONFIG.HEADERS.Categories, { CategoryID: id, Type: pair[0], Name: name, SortOrder: i + 1 });
-        catIds[pair[0]].push({ id: id, name: name });
-      });
-    });
-
-    // Doctors — MinAmount is a real (non-zero) daily minimum guarantee here
-    // so the seeded data actually exercises the top-up logic in
-    // recomputeDoctorDayShares_.
-    var docSheet = getSheet_(CONFIG.SHEETS.DOCTORS);
-    var doctorSeed = [
-      { name: 'พญ.วลิน ศรีสุข', minAmount: 1500, commissionPct: 15 },
-      { name: 'นพ.ธนกร รุ่งเรือง', minAmount: 1200, commissionPct: 12 },
-      { name: 'พญ.ปิยะดา แสงทอง', minAmount: 1000, commissionPct: 10 }
-    ];
-    var doctorIds = doctorSeed.map(function (d) {
-      var id = 'D' + nextSeq_('DOCTOR', 3);
-      appendRow_(docSheet, CONFIG.HEADERS.Doctors, { DoctorID: id, Name: d.name, Status: 'active', MinAmount: d.minAmount, CreatedAt: nowStr_(), CommissionPct: d.commissionPct });
-      return { id: id, name: d.name, minAmount: d.minAmount, commissionPct: d.commissionPct };
-    });
-
-    // Sales
-    var salesSheet = getSheet_(CONFIG.SHEETS.SALES);
-    var salesSeed = [
-      { name: 'คุณอลิสา มั่งมี', commissionRate: 10 },
-      { name: 'คุณกิตติ ขายเก่ง', commissionRate: 8 }
-    ];
-    var salesIds = salesSeed.map(function (s) {
-      var id = 'SL' + nextSeq_('SALES', 3);
-      appendRow_(salesSheet, CONFIG.HEADERS.Sales, { SalesID: id, Name: s.name, Status: 'active', CommissionRate: s.commissionRate, MinAmount: 0, CreatedAt: nowStr_() });
-      return { id: id, name: s.name, commissionRate: s.commissionRate };
-    });
-
-    // Promotions (round 12/13 — added here so seeded data actually exercises
-    // the current format: without at least one active promotion, the record
-    // modal's "รายการโปร" picker, the dashboard's รายได้รายโปรโมชัน/สัดส่วน
-    // charts, and the day panel's "ยอดรายการโปรหน้าคลีนิค" row would all
-    // demo as permanently empty. ID prefix ('PM' + nextSeq_('PROMO', 3))
-    // matches savePromotion()'s own convention exactly, so this shares the
-    // same counter real usage would continue from. One entry is seeded
-    // `inactive` so the Promotions page/dropdown-filtering demo both an
-    // active and an inactive promotion, same as `r16_check.js` expects.
-    var promoSheet = getSheet_(CONFIG.SHEETS.PROMOTIONS);
-    var promoSeed = [
-      { name: 'โบท็อกซ์หน้าเรียว 50 ยูนิต', price: 8900, doctorSharePct: 20, status: 'active' },
-      { name: 'ฟิลเลอร์ใต้ตา 1 CC', price: 12500, doctorSharePct: 25, status: 'active' },
-      { name: 'เลเซอร์กระชับผิวหน้า', price: 4500, doctorSharePct: 15, status: 'active' },
-      { name: 'โปรแกรมโปรโมชันเก่า', price: 3000, doctorSharePct: 10, status: 'inactive' }
-    ];
-    var promoIds = promoSeed.map(function (p) {
-      var id = 'PM' + nextSeq_('PROMO', 3);
-      appendRow_(promoSheet, CONFIG.HEADERS.Promotions, { PromoID: id, Name: p.name, Price: p.price, DoctorSharePct: p.doctorSharePct, Status: p.status, CreatedAt: nowStr_(), UpdatedAt: nowStr_() });
-      return { id: id, name: p.name, price: p.price, doctorSharePct: p.doctorSharePct, status: p.status };
-    });
-    var activePromoIds = promoIds.filter(function (p) { return p.status === 'active'; });
-
-    // Stock
-    var stockSheet = getSheet_(CONFIG.SHEETS.STOCK);
-    var stockItems = [
-      { name: 'โบท็อกซ์ Dysport 500u', category: catIds.stock[0].name, unit: 'ขวด', qty: 25 },
-      { name: 'ฟิลเลอร์ Juvederm 1ml', category: catIds.stock[0].name, unit: 'หลอด', qty: 18 },
-      { name: 'เข็ม Canula 25G', category: catIds.stock[1].name, unit: 'ชิ้น', qty: 120 },
-      { name: 'ถุงมือทางการแพทย์', category: catIds.stock[3].name, unit: 'กล่อง', qty: 40 },
-      { name: 'สำลีแอลกอฮอล์', category: catIds.stock[3].name, unit: 'ห่อ', qty: 60 },
-      { name: 'ครีมกันแดด SPF50', category: catIds.stock[2].name, unit: 'หลอด', qty: 30 },
-      { name: 'เซรั่มวิตามินซี', category: catIds.stock[2].name, unit: 'ขวด', qty: 22 },
-      { name: 'ไหมร้อยหน้า PDO', category: catIds.stock[1].name, unit: 'เส้น', qty: 50 }
-    ];
-    var stockIds = stockItems.map(function (s) {
-      var id = 'ST' + nextSeq_('STOCK', 4);
-      appendRow_(stockSheet, CONFIG.HEADERS.Stock, { ItemID: id, Name: s.name, Category: s.category, Unit: s.unit, Qty: s.qty, CreatedAt: nowStr_(), UpdatedAt: nowStr_() });
-      return Object.assign({ id: id }, s);
-    });
-
-    // Patients
-    var patSheet = getSheet_(CONFIG.SHEETS.PATIENTS);
-    var patientSeed = [
-      ['สมหญิง', 'ใจดี', 'มิ้นท์', '0812345678', 'female'], ['อนันต์', 'พูลสวัสดิ์', 'บอส', '0898765432', 'male'],
-      ['วิภาวดี', 'รักสวย', 'วิว', '0865551234', 'female'], ['ธีรพงษ์', 'มั่นคง', 'เต้', '0911112222', 'male'],
-      ['ชนิดา', 'แสงจันทร์', 'จันทร์', '0823334444', 'female'], ['ปรีชา', 'ทองดี', 'ชา', '0955556666', 'male'],
-      ['กมลชนก', 'บุญมี', 'ก้อย', '0877778888', 'female'], ['ณัฐวุฒิ', 'ศรีวิไล', 'นัท', '0899990000', 'male'],
-      ['สุภาพร', 'เพชรรัตน์', 'พร', '0801231234', 'female'], ['วรากร', 'ชัยชนะ', 'กร', '0845674567', 'male']
-    ];
-    var patientIds = patientSeed.map(function (p, i) {
-      var id = 'P' + nextSeq_('PATIENT', 5);
-      var joined = Utilities.formatDate(new Date(2025, i % 12, (i % 27) + 1), 'Asia/Bangkok', 'yyyy-MM-dd');
-      appendRow_(patSheet, CONFIG.HEADERS.Patients, {
-        ID: id, FirstName: p[0], LastName: p[1], Phone: p[3], DOB: '', Gender: p[4], Email: '',
-        PhotoFileId: '', JoinedDate: joined, CreatedAt: nowStr_(), UpdatedAt: nowStr_(), Nickname: p[2]
-      });
-      return { id: id, name: p[0] + ' ' + p[1], phone: p[3] };
-    });
-
-    // Records — spread across 16 distinct days (each 5 days apart) rather than
-    // one record per day: perDayCounts below is deliberately uneven (1 to 4
-    // records on a given day) so the calendar/day-summary view always has some
-    // days with multiple records to look at, per the round-8 request. Mix of
-    // paid/unpaid, with supplies + canula + (round 20) promo + medicine lines
-    // on some. Revenue-split fields are computed with the same
-    // computeRecordShares_ used by saveRecord, and recomputeDoctorDayShares_
-    // is run per doctor+date group afterwards so the seeded data correctly
-    // showcases the daily-minimum top-up.
-    var recSheet = getSheet_(CONFIG.SHEETS.RECORDS);
-    var paymentMethods = ['เงินสด', 'บัตรเครดิต', 'โอนเงิน'];
-    var now = new Date();
-    var seededGroups = {}; // "doctorId|date" -> {doctorId, date}
-    var perDayCounts = [1, 3, 2, 4, 1, 2, 3, 1, 4, 2, 1, 3, 2, 4, 1, 6]; // sums to 40
-    var i = 0;
-    perDayCounts.forEach(function (count, dayIdx) {
-      var recDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      recDate.setDate(recDate.getDate() - (dayIdx * 5));
-      for (var j = 0; j < count; j++) {
-        var patient = patientIds[i % patientIds.length];
-        var doctor = doctorIds[i % doctorIds.length];
-        var useSales = i % 3 !== 0;
-        var sales = useSales ? salesIds[i % salesIds.length] : null;
-        var treatCat = catIds.treatment[i % catIds.treatment.length];
-        var useCanula = i % 4 === 0;
-        var supplies = [];
-        if (i % 2 === 0) {
-          var stockPick = stockIds[i % stockIds.length];
-          supplies.push({ itemId: stockPick.id, name: stockPick.name, qty: 1, unit: stockPick.unit });
-        }
-        var amount = 1500 + (i % 10) * 850; // ยอดชำระจากลูกค้า (does NOT include canula)
-        var canulaAmount = useCanula ? 500 : 0;
-        var otherAmount = i % 9 === 0 ? 300 + (i % 5) * 100 : 0; // จำนวนเงินอื่นๆ — separate bucket, not part of anyone's share
-        var status = i % 6 === 0 ? 'unpaid' : (i % 17 === 0 ? 'cancelled' : 'paid');
-        // Alternate นัดหมาย/เสร็จสิ้น WITHIN a day's group (not just globally by
-        // some i%N) so a multi-record day always visibly mixes both statuses.
-        var visitStatus = j % 2 === 0 ? 'completed' : 'scheduled';
-        // รายการโปร (round 13) — about 1 in 5 records uses one of the active
-        // seeded promotions, computed exactly the way saveRecord() derives
-        // promoDoctorShare from a promo line, so the demo data actually
-        // exercises the promo-aware share formula and gives the dashboard's
-        // รายได้รายโปรโมชัน chart / the day panel's item 3 something to show
-        // instead of a permanently-empty state.
-        var usePromo = activePromoIds.length > 0 && i % 5 === 0;
-        var promoLine = null, promoAmount = 0, promoDoctorShare = 0;
-        if (usePromo) {
-          var promo = activePromoIds[i % activePromoIds.length];
-          promoAmount = promo.price;
-          promoDoctorShare = round2_(promoAmount * promo.doctorSharePct / 100);
-          promoLine = { promoId: promo.id, name: promo.name, price: promo.price, doctorSharePct: promo.doctorSharePct, amount: promoAmount };
-        }
-        // เบิกยาหน้าคลีนิค (round 13) — about 1 in 7 records, same "not part
-        // of anyone's commission share, only feeds SupplierPayAmount" rule
-        // as otherAmount above, so day panel item 4/รายการอื่นๆ shows both
-        // kinds of line item, not just otherItems.
-        var useMedicine = i % 7 === 0;
-        var medicineAmount = useMedicine ? 200 : 0;
-        var medicineItemsSeed = useMedicine ? [{ name: 'ยาชาเฉพาะที่', amount: medicineAmount }] : [];
-        var shares = computeRecordShares_(amount, promoAmount, promoDoctorShare, canulaAmount, { CommissionPct: doctor.commissionPct }, sales ? { CommissionRate: sales.commissionRate } : null);
-        appendRow_(recSheet, CONFIG.HEADERS.Records, {
-          RID: 'R' + nextSeq_('RECORD', 6), Date: dateStr_(recDate), PatientID: patient.id, PatientName: patient.name,
-          Phone: patient.phone, ServiceCategory: treatCat.name, Detail: treatCat.name + ' - โปรแกรมมาตรฐาน',
-          DoctorID: doctor.id, DoctorName: doctor.name, SalesID: sales ? sales.id : '', SalesName: sales ? sales.name : '',
-          PaymentMethod: paymentMethods[i % paymentMethods.length], SuppliesJSON: JSON.stringify(supplies),
-          UseCanula: useCanula ? 'TRUE' : 'FALSE', CanulaAmount: canulaAmount, Amount: amount,
-          Status: status, ReceiptNo: '', Note: '', CreatedBy: 'admin', CreatedAt: nowStr_(), UpdatedAt: nowStr_(),
-          OtherAmount: otherAmount, SalesCommissionPct: shares.salesPct, SalesShare: shares.salesShare,
-          DoctorCommissionPct: shares.doctorPct, DoctorShareRaw: shares.doctorShareRaw, DoctorShare: shares.doctorShareRaw,
-          DoctorShareNote: '', ClinicShare: shares.clinicShareRaw, VisitStatus: visitStatus,
-          UsePromo: usePromo ? 'TRUE' : 'FALSE', PromoJSON: JSON.stringify(promoLine ? [promoLine] : []), PromoAmount: promoAmount,
-          UseMedicine: useMedicine ? 'TRUE' : 'FALSE', MedicineJSON: JSON.stringify(medicineItemsSeed), MedicineAmount: medicineAmount,
-          UseOther: otherAmount > 0 ? 'TRUE' : 'FALSE', OtherItemsJSON: otherAmount > 0 ? JSON.stringify([{ label: 'อื่นๆ', amount: otherAmount }]) : '[]',
-          // Round 20 cleanup: was hardcoded to `otherAmount` alone (harmless
-          // only because medicineAmount was always 0 before this fix) — the
-          // real formula (see saveRecord/CONFIG.HEADERS.Records doc comment)
-          // is MedicineAmount + OtherAmount.
-          SupplierPayAmount: round2_(medicineAmount + otherAmount)
+      // ---- Categories ----
+      var catSheet = getSheet_(CONFIG.SHEETS.CATEGORIES);
+      var cats = { treatment: ['โบท็อกซ์', 'ฟิลเลอร์', 'เลเซอร์', 'ดูแลผิวหน้า', 'ร้อยไหม'], stock: ['ยาฉีด', 'ยาทา/ยากิน', 'อุปกรณ์ทางการแพทย์', 'วัสดุสิ้นเปลือง'], expense: ['ค่าเช่า', 'ค่าน้ำค่าไฟ', 'เงินเดือนพนักงาน', 'การตลาด', 'ค่าซ่อมบำรุง', 'อื่นๆ'] };
+      Object.keys(cats).forEach(function (type) {
+        cats[type].forEach(function (name, i) {
+          appendRow_(catSheet, CONFIG.HEADERS.Categories, { CategoryID: 'C' + nextSeq_('CATEGORY', 3), Type: type, Name: name, SortOrder: i + 1 });
         });
-        if (status !== 'cancelled') seededGroups[doctor.id + '|' + dateStr_(recDate)] = { doctorId: doctor.id, date: dateStr_(recDate) };
-        i++;
-      }
-    });
-    Object.keys(seededGroups).forEach(function (key) {
-      var g = seededGroups[key];
-      recomputeDoctorDayShares_(g.doctorId, g.date);
-    });
-
-    // Expenses
-    var expSheet = getSheet_(CONFIG.SHEETS.EXPENSES);
-    for (var e = 0; e < 15; e++) {
-      var cat = catIds.expense[e % catIds.expense.length];
-      var d = new Date(now.getFullYear(), now.getMonth(), 1);
-      d.setDate(d.getDate() - e * 6);
-      appendRow_(expSheet, CONFIG.HEADERS.Expenses, {
-        ExpID: 'EX' + nextSeq_('EXPENSE', 5), Date: dateStr_(d), Name: cat.name + ' ประจำเดือน', Category: cat.name,
-        Amount: 2000 + (e % 5) * 1500, CreatedBy: 'admin', CreatedAt: nowStr_()
       });
-    }
 
-    // Orders + OrderLines (purchase orders)
-    var orderSheet = getSheet_(CONFIG.SHEETS.ORDERS);
-    var lineSheet = getSheet_(CONFIG.SHEETS.ORDER_LINES);
-    var suppliers = ['บริษัท เมดิคอล ซัพพลาย จำกัด', 'ร้านเวชภัณฑ์ไทย', 'บริษัท บิวตี้ อิมปอร์ต จำกัด'];
-    for (var o = 0; o < 5; o++) {
-      var poId = 'PO' + nextSeq_('ORDER', 5);
-      var d2 = new Date(now.getFullYear(), now.getMonth(), 1);
-      d2.setDate(d2.getDate() - o * 15);
-      var lineCount = 2 + (o % 3);
-      var total = 0;
-      var linesToWrite = [];
-      for (var l = 0; l < lineCount; l++) {
-        var item = stockIds[(o + l) % stockIds.length];
-        var qty = 5 + l * 2;
-        var unitPrice = 300 + l * 120;
-        total += qty * unitPrice;
-        linesToWrite.push({ LineID: poId + '-' + (l + 1), PoID: poId, Category: item.category, ItemName: item.name, Qty: qty, UnitPrice: unitPrice, LineTotal: qty * unitPrice });
+      // ---- Doctors / Sales / Promotions ----
+      var doctors = [
+        { name: 'พญ.วลิน ศรีสุข', minAmount: 1500, commissionPct: 15 },
+        { name: 'นพ.ธนกร รุ่งเรือง', minAmount: 1200, commissionPct: 12 },
+        { name: 'พญ.ปิยะดา แสงทอง', minAmount: 1000, commissionPct: 10 }
+      ].map(function (d) {
+        d.id = 'D' + nextSeq_('DOCTOR', 3);
+        appendRow_(getSheet_(CONFIG.SHEETS.DOCTORS), CONFIG.HEADERS.Doctors, { DoctorID: d.id, Name: d.name, Status: 'active', MinAmount: d.minAmount, CreatedAt: nowStr_(), CommissionPct: d.commissionPct });
+        return d;
+      });
+      var sales = [
+        { name: 'คุณอลิสา มั่งมี', commissionRate: 10 },
+        { name: 'คุณกิตติ ขายเก่ง', commissionRate: 8 }
+      ].map(function (s) {
+        s.id = 'SL' + nextSeq_('SALES', 3);
+        appendRow_(getSheet_(CONFIG.SHEETS.SALES), CONFIG.HEADERS.Sales, { SalesID: s.id, Name: s.name, Status: 'active', CommissionRate: s.commissionRate, MinAmount: 0, CreatedAt: nowStr_() });
+        return s;
+      });
+      var promos = [
+        { name: 'โบท็อกซ์หน้าเรียว 50 ยูนิต', price: 8900, doctorSharePct: 20, status: 'active' },
+        { name: 'ฟิลเลอร์ใต้ตา 1 CC', price: 12500, doctorSharePct: 25, status: 'active' },
+        { name: 'เลเซอร์กระชับผิวหน้า', price: 4500, doctorSharePct: 15, status: 'active' },
+        { name: 'โปรแกรมโปรโมชันเก่า', price: 3000, doctorSharePct: 10, status: 'inactive' }
+      ].map(function (p) {
+        p.id = 'PM' + nextSeq_('PROMO', 3);
+        appendRow_(getSheet_(CONFIG.SHEETS.PROMOTIONS), CONFIG.HEADERS.Promotions, { PromoID: p.id, Name: p.name, Price: p.price, DoctorSharePct: p.doctorSharePct, Status: p.status, CreatedAt: nowStr_(), UpdatedAt: nowStr_() });
+        return p;
+      });
+      var activePromos = promos.filter(function (p) { return p.status === 'active'; });
+
+      // ---- Stock (written at the end with its final Qty) ----
+      var stock = [
+        { type: 'medicine', name: 'โบท็อกซ์ Dysport 500u', category: 'ยาฉีด', unit: 'ขวด', open: 30, min: 8, cost: 2500, prices: [4500, 4300, 4100, 3900, 3700, 3500] },
+        { type: 'medicine', name: 'ฟิลเลอร์ Juvederm 1ml', category: 'ยาฉีด', unit: 'หลอด', open: 20, min: 5, cost: 5200, prices: [9000, 8700, 8400, 8100, '', ''] },
+        { type: 'medicine', name: 'วิตามินซีฉีด 1000mg', category: 'ยาฉีด', unit: 'แอมป์', open: 60, min: 15, cost: 120, prices: [350, 330, 300, 280, 260, 240] },
+        { type: 'medicine', name: 'ครีมทาแผลหลังเลเซอร์', category: 'ยาทา/ยากิน', unit: 'หลอด', open: 25, min: 6, cost: 180, prices: [450, 420, 400, '', '', ''] },
+        { type: 'medicine', name: 'ยาแก้ปวด Paracetamol 500', category: 'ยาทา/ยากิน', unit: 'แผง', open: 12, min: 10, cost: 15, prices: [40, 35, 30, 28, 25, 20] },
+        { type: 'supply', name: 'เข็ม Canula 25G', category: 'อุปกรณ์ทางการแพทย์', unit: 'ชิ้น', open: 150, min: 30 },
+        { type: 'supply', name: 'ไหมร้อยหน้า PDO', category: 'อุปกรณ์ทางการแพทย์', unit: 'เส้น', open: 60, min: 20 },
+        { type: 'supply', name: 'ถุงมือทางการแพทย์', category: 'วัสดุสิ้นเปลือง', unit: 'กล่อง', open: 40, min: 10 },
+        { type: 'supply', name: 'สำลีแอลกอฮอล์', category: 'วัสดุสิ้นเปลือง', unit: 'ห่อ', open: 8, min: 10 },
+        { type: 'supply', name: 'ผ้าก๊อซปลอดเชื้อ', category: 'วัสดุสิ้นเปลือง', unit: 'ห่อ', open: 0, min: 5 }
+      ];
+      stock.forEach(function (s) { s.id = 'ST' + nextSeq_('STOCK', 4); s.qty = 0; });
+      var meds = stock.filter(function (s) { return s.type === 'medicine'; });
+      var supplies = stock.filter(function (s) { return s.type === 'supply'; });
+
+      // ---- Patients ----
+      var patients = [
+        ['สมหญิง', 'ใจดี', 'มิ้นท์', '0812345678', 'female'], ['อนันต์', 'พูลสวัสดิ์', 'บอส', '0898765432', 'male'],
+        ['วิภาวดี', 'รักสวย', 'วิว', '0865551234', 'female'], ['ธีรพงษ์', 'มั่นคง', 'เต้', '0911112222', 'male'],
+        ['ชนิดา', 'แสงจันทร์', 'จันทร์', '0823334444', 'female'], ['ปรีชา', 'ทองดี', 'ชา', '0955556666', 'male'],
+        ['กมลชนก', 'บุญมี', 'ก้อย', '0877778888', 'female'], ['ณัฐวุฒิ', 'ศรีวิไล', 'นัท', '0899990000', 'male'],
+        ['สุภาพร', 'เพชรรัตน์', 'พร', '0801231234', 'female'], ['วรากร', 'ชัยชนะ', 'กร', '0845674567', 'male']
+      ].map(function (p, i) {
+        var id = 'P' + nextSeq_('PATIENT', 5);
+        appendRow_(getSheet_(CONFIG.SHEETS.PATIENTS), CONFIG.HEADERS.Patients, {
+          ID: id, FirstName: p[0], LastName: p[1], Phone: p[3], DOB: '', Gender: p[4], Email: '', PhotoFileId: '',
+          JoinedDate: Utilities.formatDate(new Date(2025, i % 12, (i % 27) + 1), tz, 'yyyy-MM-dd'), CreatedAt: nowStr_(), UpdatedAt: nowStr_(), Nickname: p[2]
+        });
+        return { id: id, name: p[0] + ' ' + p[1], phone: p[3] };
+      });
+
+      // ---- Stock movements are queued as they're generated and replayed in
+      //      date order at the end, so each StockLog row's QtyRemaining is the
+      //      true running balance and the latest row equals Stock.Qty. Each
+      //      replayed row gets a unique CreatedAt so same-day order is fixed. ----
+      var logs = [], deposits = {}, seqInDay = {}, events = [];
+      var stamp = function (date) { var n = seqInDay[date] = (seqInDay[date] || 0) + 1; return date + ' 09:' + String(Math.floor(n / 60)).padStart(2, '0') + ':' + String(n % 60).padStart(2, '0'); };
+      var apply = function (date, item, kind, qtyIn, qtyOut, note) {
+        item.qty = round2_(item.qty + qtyIn - qtyOut);
+        logs.push({ Date: date, ItemID: item.id, ItemName: item.name, QtyIn: qtyIn, QtyRemaining: item.qty, Note: note, CreatedBy: actor, CreatedAt: stamp(date), QtyOut: qtyOut, Kind: kind });
+      };
+      var move = function (date, item, kind, qtyIn, qtyOut, note) {
+        events.push({ date: date, idx: events.length, run: function () { apply(date, item, kind, qtyIn, qtyOut, note); } });
+      };
+      stock.forEach(function (s) { if (s.open) move(dayStr(90), s, 'opening', s.open, 0, 'ยอดยกมา'); });
+
+      // Purchase orders (linked to stock) — every 15 days; the last three supplies
+      // are never restocked so the demo shows ใกล้หมด / หมด items.
+      var orderSheet = getSheet_(CONFIG.SHEETS.ORDERS), lineSheet = getSheet_(CONFIG.SHEETS.ORDER_LINES);
+      var suppliers = ['บริษัท เมดิคอล ซัพพลาย จำกัด', 'ร้านเวชภัณฑ์ไทย', 'บริษัท บิวตี้ อิมปอร์ต จำกัด'];
+      for (var o = 0; o < 5; o++) {
+        var poDate = dayStr(75 - o * 15), poId = 'PO' + nextSeq_('ORDER', 5), total = 0, poLines = [];
+        for (var l = 0; l < 2 + (o % 2); l++) {
+          var it = stock[(o * 2 + l) % 7], q = 10 + l * 5, price = it.cost || (40 + l * 25);
+          total += q * price;
+          poLines.push({ LineID: poId + '-' + (l + 1), PoID: poId, Category: it.category, ItemName: it.name, Qty: q, UnitPrice: price, LineTotal: q * price, ItemID: it.id });
+          move(poDate, it, 'purchase', q, 0, 'จัดซื้อ ' + poId + ' · ' + suppliers[o % suppliers.length]);
+        }
+        // One free-text line (not in stock) to show it doesn't touch stock.
+        if (o === 2) { poLines.push({ LineID: poId + '-9', PoID: poId, Category: 'วัสดุสิ้นเปลือง', ItemName: 'ถุงขยะ', Qty: 5, UnitPrice: 30, LineTotal: 150, ItemID: '' }); total += 150; }
+        appendRow_(orderSheet, CONFIG.HEADERS.Orders, { PoID: poId, Date: poDate, Supplier: suppliers[o % suppliers.length], TotalAmount: total, CreatedBy: actor, CreatedAt: nowStr_(), StockApplied: 'TRUE' });
+        poLines.forEach(function (row) { appendRow_(lineSheet, CONFIG.HEADERS.OrderLines, row); });
       }
-      appendRow_(orderSheet, CONFIG.HEADERS.Orders, { PoID: poId, Date: dateStr_(d2), Supplier: suppliers[o % suppliers.length], TotalAmount: total, CreatedBy: 'admin', CreatedAt: nowStr_() });
-      linesToWrite.forEach(function (row) { appendRow_(lineSheet, CONFIG.HEADERS.OrderLines, row); });
+
+      // Treatment records — 16 days (oldest first), 1-4 records a day.
+      var recSheet = getSheet_(CONFIG.SHEETS.RECORDS);
+      var payMethods = ['เงินสด', 'บัตรเครดิต', 'โอนเงิน'];
+      var perDay = [3, 1, 2, 4, 1, 2, 3, 1, 4, 2, 1, 3, 2, 4, 1, 3];
+      var groups = {}, i = 0;
+      perDay.forEach(function (count, k) {
+        var date = dayStr((perDay.length - 1 - k) * 4);
+        for (var j = 0; j < count; j++, i++) {
+          var patient = patients[i % patients.length], doctor = doctors[i % doctors.length];
+          var salesP = i % 4 !== 0 ? sales[k % sales.length] : null; // one sales person per day, so a day can have several customers for them
+          var cat = cats.treatment[i % cats.treatment.length];
+          var status = i % 11 === 5 ? 'unpaid' : (i % 19 === 7 ? 'cancelled' : 'paid');
+          var amount = 1500 + (i % 8) * 900;
+          var useCanula = i % 4 === 0, canulaAmount = useCanula ? 500 : 0;
+          var rid = 'R' + nextSeq_('RECORD', 6), label = 'บันทึกการรักษา ' + rid + ' · ' + patient.name;
+          // Zone 1: supplies used.
+          var supplyLines = [];
+          if (i % 2 === 0) {
+            var sp = supplies[i % supplies.length];
+            supplyLines.push({ itemId: sp.id, name: sp.name, qty: 1 + (i % 3), unit: sp.unit });
+          }
+          // Zone 2: เบิกยาหน้าคลีนิค (charged; part may be deposited), ใช้ยาฝาก, ถือยาเข้า, Messenger.
+          var medLines = [];
+          if (i % 4 !== 3) {
+            var m = meds[i % meds.length], qd = 1 + (i % 4), qu = i % 5 === 0 ? 1 : qd;
+            var up = seedTierPrice_(m, qd);
+            medLines.push({ itemId: m.id, name: m.name, qtyDispensed: qd, qtyUsed: qu, qtyDeposit: qd - qu, unitPrice: up, amount: round2_(qd * up) });
+          }
+          var depositUse = [];
+          var held = Object.keys(deposits).filter(function (key) { return key.indexOf(patient.id + '|') === 0 && deposits[key].qty > 0; })[0];
+          if (held && i % 2 === 1) depositUse.push({ name: deposits[held].name, qty: 1, itemId: deposits[held].itemId });
+          var ownMed = i % 9 === 4 ? [{ name: 'ยาที่ลูกค้านำมาเอง', qty: 1 }] : [];
+          var messenger = i % 10 === 6 ? [{ name: medLines.length ? medLines[0].name : meds[0].name, qty: 1, note: 'Kerry TH' + (100000 + i) }] : [];
+          // Zone 3: promo / other.
+          var promo = activePromos.length && i % 5 === 0 ? activePromos[i % activePromos.length] : null;
+          var promoLine = promo ? { promoId: promo.id, name: promo.name, price: promo.price, doctorSharePct: promo.doctorSharePct, amount: promo.price } : null;
+          var promoAmount = promo ? promo.price : 0, promoDoctorShare = promo ? round2_(promo.price * promo.doctorSharePct / 100) : 0;
+          var otherAmount = i % 9 === 0 ? 300 : 0;
+          var medicineAmount = round2_(medLines.reduce(function (s, x) { return s + x.amount; }, 0));
+          var shares = computeRecordShares_(amount, promoAmount, promoDoctorShare, canulaAmount, { CommissionPct: doctor.commissionPct }, salesP ? { CommissionRate: salesP.commissionRate } : null);
+          var row = {
+            RID: rid, Date: date, PatientID: patient.id, PatientName: patient.name, Phone: patient.phone, ServiceCategory: cat, Detail: cat + ' - โปรแกรมมาตรฐาน',
+            DoctorID: doctor.id, DoctorName: doctor.name, SalesID: salesP ? salesP.id : '', SalesName: salesP ? salesP.name : '',
+            PaymentMethod: payMethods[i % payMethods.length], SuppliesJSON: JSON.stringify(supplyLines),
+            UseCanula: useCanula ? 'TRUE' : 'FALSE', CanulaAmount: canulaAmount, Amount: amount, Status: status, ReceiptNo: '', Note: '',
+            CreatedBy: actor, CreatedAt: nowStr_(), UpdatedAt: nowStr_(), OtherAmount: otherAmount,
+            SalesCommissionPct: shares.salesPct, SalesShare: shares.salesShare, DoctorCommissionPct: shares.doctorPct,
+            DoctorShareRaw: shares.doctorShareRaw, DoctorShare: shares.doctorShareRaw, DoctorShareNote: '', ClinicShare: shares.clinicShareRaw,
+            VisitStatus: j % 2 === 0 ? 'completed' : 'scheduled',
+            UsePromo: promo ? 'TRUE' : 'FALSE', PromoJSON: JSON.stringify(promoLine ? [promoLine] : []), PromoAmount: promoAmount,
+            UseMedicine: medLines.length ? 'TRUE' : 'FALSE', MedicineJSON: JSON.stringify(medLines), MedicineAmount: medicineAmount,
+            UseOther: otherAmount ? 'TRUE' : 'FALSE', OtherItemsJSON: JSON.stringify(otherAmount ? [{ label: 'ค่าบริการอื่นๆ', amount: otherAmount }] : []),
+            SupplierPayAmount: round2_(medicineAmount + otherAmount), OpdImageFileId: '',
+            UseSupplies: supplyLines.length ? 'TRUE' : 'FALSE',
+            UseOwnMed: ownMed.length ? 'TRUE' : 'FALSE', OwnMedJSON: JSON.stringify(ownMed),
+            UseDepositUse: depositUse.length ? 'TRUE' : 'FALSE', DepositUseJSON: JSON.stringify(depositUse),
+            UseMessenger: messenger.length ? 'TRUE' : 'FALSE', MessengerJSON: JSON.stringify(messenger),
+            StockApplied: 'TRUE'
+          };
+          appendRow_(recSheet, CONFIG.HEADERS.Records, row);
+          // Same effects saveRecord applies, replayed in memory.
+          var eff = recordEffects_(row);
+          Object.keys(eff.stock).forEach(function (id) {
+            var item = stock.filter(function (s) { return s.id === id; })[0];
+            if (item) move(date, item, 'record', 0, eff.stock[id], label);
+          });
+          Object.keys(eff.deposit).forEach(function (key) {
+            var itemId = key.split('|')[1], item = stock.filter(function (s) { return s.id === itemId; })[0];
+            var d = deposits[key] = deposits[key] || { patient: patient, itemId: itemId, name: item ? item.name : '', qty: 0, date: date };
+            d.qty = round2_(d.qty + eff.deposit[key]); d.date = date;
+          });
+          if (status !== 'cancelled') groups[doctor.id + '|' + date] = { doctorId: doctor.id, date: date };
+        }
+      });
+      Object.keys(groups).forEach(function (key) { recomputeDoctorDayShares_(groups[key].doctorId, groups[key].date); });
+
+      // เบิกยาคลีนิค (sales withdrawals at ราคาทุน) — a few recent ones.
+      var wdSheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
+      [[6, 0, 0, [[0, 2], [2, 3]]], [3, 1, 3, [[1, 1]]], [1, 0, 5, [[2, 5], [3, 1]]]].forEach(function (w) {
+        var date = dayStr(w[0]), salesP = sales[w[1]], patient = patients[w[2]], batch = 'WB' + nextSeq_('WITHDRAW_BATCH', 5);
+        w[3].forEach(function (pair) {
+          var m = meds[pair[0]], q = pair[1];
+          appendRow_(wdSheet, CONFIG.HEADERS.MedWithdrawals, {
+            WithdrawID: 'WD' + nextSeq_('WITHDRAW', 5), Date: date, PatientID: patient.id, PatientName: patient.name, Phone: patient.phone,
+            SalesID: salesP.id, SalesName: salesP.name, ItemID: m.id, ItemName: m.name, Qty: q, UnitCost: m.cost, Amount: q * m.cost,
+            Note: '', CreatedBy: actor, CreatedAt: nowStr_(), BatchID: batch
+          });
+          move(date, m, 'withdraw', 0, q, 'เบิกยาคลีนิค · ' + patient.name + ' · ' + salesP.name);
+        });
+      });
+
+      events.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.idx - b.idx; });
+      events.forEach(function (ev) { ev.run(); });
+      // One ปรับยอดคงเหลือ today after a physical count (2 short), so the history shows that kind too.
+      var counted = supplies[1];
+      apply(dayStr(0), counted, 'set', 0, Math.min(2, Math.max(0, counted.qty)), 'นับสต๊อกจริง');
+
+      // ---- Write Stock (final Qty), StockLog, MedDeposits ----
+      var stockSheet = getSheet_(CONFIG.SHEETS.STOCK);
+      stock.forEach(function (s) {
+        var row = { ItemID: s.id, Name: s.name, Category: s.category, Unit: s.unit, Qty: s.qty, CreatedAt: nowStr_(), UpdatedAt: nowStr_(), StockType: s.type, MinQty: s.min, CostPrice: s.cost != null ? s.cost : '' };
+        STOCK_PRICE_TIERS.forEach(function (t, k) { row['Price' + t] = s.prices ? s.prices[k] : ''; });
+        appendRow_(stockSheet, CONFIG.HEADERS.Stock, row);
+      });
+      var logIds = nextSeqBlock_('STOCKLOG', logs.length, 5);
+      var logSheet = getSheet_(CONFIG.SHEETS.STOCK_LOG);
+      var logValues = logs.map(function (lg, k) {
+        lg.LogID = 'SL' + logIds[k];
+        return CONFIG.HEADERS.StockLog.map(function (h) { return lg[h] !== undefined ? lg[h] : ''; });
+      });
+      if (logValues.length) logSheet.getRange(logSheet.getLastRow() + 1, 1, logValues.length, CONFIG.HEADERS.StockLog.length).setValues(logValues);
+      var depSheet = getSheet_(CONFIG.SHEETS.MED_DEPOSITS);
+      Object.keys(deposits).forEach(function (key) {
+        var d = deposits[key];
+        appendRow_(depSheet, CONFIG.HEADERS.MedDeposits, { DepositID: 'DP' + nextSeq_('DEPOSIT', 5), Date: d.date, PatientID: d.patient.id, PatientName: d.patient.name, ItemName: d.name, QtyRemaining: d.qty, CreatedBy: actor, ItemID: d.itemId, UpdatedAt: nowStr_() });
+      });
+
+      // ---- Expenses ----
+      var expSheet = getSheet_(CONFIG.SHEETS.EXPENSES);
+      for (var e = 0; e < 15; e++) {
+        var ec = cats.expense[e % cats.expense.length];
+        appendRow_(expSheet, CONFIG.HEADERS.Expenses, { ExpID: 'EX' + nextSeq_('EXPENSE', 5), Date: dayStr(e * 6), Name: ec + ' ประจำเดือน', Category: ec, Amount: 2000 + (e % 5) * 1500, CreatedBy: actor, CreatedAt: nowStr_() });
+      }
+
+      // ---- ClinicSettings: only fill keys that are still empty (real company info and logo are kept) ----
+      var settingsSheet = getSheet_(CONFIG.SHEETS.CLINIC_SETTINGS);
+      var have = {};
+      getRows_(settingsSheet).forEach(function (r) { if (String(r.Value || '') !== '') have[r.Key] = true; });
+      var defaults = { name: 'VALIN CLINIC', address: '123 ถนนสุขุมวิท แขวงคลองตัน เขตคลองเตย กรุงเทพฯ 10110', phone: '02-123-4567', taxId: '0-1055-12345-67-8', email: 'contact@valinclinic.com' };
+      Object.keys(defaults).forEach(function (key) {
+        if (!have[key]) appendRow_(settingsSheet, CONFIG.HEADERS.ClinicSettings, { Key: key, Value: defaults[key] });
+      });
+
+      invalidateMasterCache_();
+      invalidatePatientsLiteCache_();
+      invalidateStockLiteCache_();
+      bumpDashboardCacheVersion_();
+      return { ok: true, message: 'สร้างข้อมูลตัวอย่างเรียบร้อยแล้ว', data: { records: i, stockItems: stock.length, stockLogs: logs.length, deposits: Object.keys(deposits).length } };
+    } finally {
+      lock.releaseLock();
     }
-
-    // Clinic settings
-    var settingsSheet = getSheet_(CONFIG.SHEETS.CLINIC_SETTINGS);
-    var defaults = {
-      name: 'VALIN CLINIC', address: '123 ถนนสุขุมวิท แขวงคลองตัน เขตคลองเตย กรุงเทพฯ 10110',
-      phone: '02-123-4567', taxId: '0-1055-12345-67-8', email: 'contact@valinclinic.com', logoFileId: ''
-    };
-    Object.keys(defaults).forEach(function (key) {
-      appendRow_(settingsSheet, CONFIG.HEADERS.ClinicSettings, { Key: key, Value: defaults[key] });
-    });
-
-    invalidateMasterCache_();
-    invalidatePatientsLiteCache_();
-    invalidateStockLiteCache_();
-    return { ok: true, message: 'สร้างข้อมูลตัวอย่างเรียบร้อยแล้ว' };
   });
 }
 
