@@ -98,7 +98,7 @@ if (valid) {
   // 2. รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค — the shape explicitly requested.
   if (data.medicineItems && data.medicineItems.length) {
     items.push({ no: lineNo++, label: 'รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค', amount: Number(data.medicineAmount) || 0, sub: false });
-    data.medicineItems.forEach(function (m, i) { items.push({ no: (i + 1), label: m.name || 'ยา/สินค้า', amount: Number(m.amount) || 0, sub: true }); });
+    data.medicineItems.forEach(function (m, i) { items.push({ no: (i + 1), label: (m.name || 'ยา/สินค้า') + (m.qtyDispensed ? ' × ' + m.qtyDispensed : ''), amount: Number(m.amount) || 0, sub: true }); });
   }
 
   // 3. ใช้ canula (เข็มทู่)

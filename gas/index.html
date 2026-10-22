@@ -1412,7 +1412,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
    *  record" openers so a fresh draft always has the checkbox-gated
    *  รายการโปร/ยา/รายการอื่นๆ groups collapsed and empty. */
   function emptyLineItemGroups() {
-    return { usePromo: false, promoItems: [], useSupplies: false, supplies: [], useMedicine: false, medicineItems: [], useOther: false, otherItems: [] };
+    return {
+      usePromo: false, promoItems: [], useSupplies: false, supplies: [], useMedicine: false, medicineItems: [], useOther: false, otherItems: [],
+      useOwnMed: false, ownMedItems: [], useDepositUse: false, depositUseItems: [], useMessenger: false, messengerItems: [],
+      _deposits: undefined, _oldDepositUse: {}, _origPatientId: ''
+    };
   }
   function newRecordModalForPatient(patient) {
     state.records.opdPhotoUrl = null;
@@ -1424,6 +1428,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       opdImageFileId: '',
       _patientQuery: patient.firstName + ' ' + patient.lastName, _patientSuggest: []
     }, emptyLineItemGroups()));
+    loadDraftDeposits();
   }
 
   function patientModalBody() {
@@ -1694,7 +1699,12 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     call('getRecord', session.token, id).then(function (res) {
       var d = res.data;
       d._patientQuery = d.patientName; d._patientSuggest = [];
+      ['ownMedItems', 'depositUseItems', 'messengerItems'].forEach(function (k) { d[k] = d[k] || []; });
+      // What this record already took from ยาฝาก is still available to it while editing (see depositUseOptions).
+      d._origPatientId = d.patientId; d._oldDepositUse = {};
+      if (d.stockApplied && d.useDepositUse) d.depositUseItems.forEach(function (l) { d._oldDepositUse[l.itemId] = (d._oldDepositUse[l.itemId] || 0) + (Number(l.qty) || 0); });
       openModal('record', d);
+      loadDraftDeposits();
       if (d.opdImageFileId) {
         call('getPhotoUrl', session.token, d.opdImageFileId, gsOpts({ quiet: true })).then(function (r) {
           state.records.opdPhotoUrl = r.data; render();
@@ -1779,13 +1789,21 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           r.promoItems.map(function (p) { return '<span class="tag-badge" style="background:var(--hover-bg);color:var(--text-2)">' + esc(p.name) + ' · ' + money(p.amount) + '</span>'; }).join('') +
         '</div>' +
       '</div>';
-    var medicineHtml = !(r.medicineItems && r.medicineItems.length) ? '' :
-      '<div style="grid-column:1/-1;margin-top:2px">' +
-        '<div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);margin-bottom:5px"><span class="ms" style="font-size:13px">medication</span>รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค</div>' +
-        '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
-          r.medicineItems.map(function (m) { return '<span class="tag-badge" style="background:var(--hover-bg);color:var(--text-2)">' + esc(m.name) + ' · ' + money(m.amount) + '</span>'; }).join('') +
-        '</div>' +
-      '</div>';
+    var chipGroup = function (icon, title, items, chipFn) {
+      return !(items && items.length) ? '' :
+        '<div style="grid-column:1/-1;margin-top:2px">' +
+          '<div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);margin-bottom:5px"><span class="ms" style="font-size:13px">' + icon + '</span>' + esc(title) + '</div>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
+            items.map(function (m) { return '<span class="tag-badge" style="background:var(--hover-bg);color:var(--text-2)">' + chipFn(m) + '</span>'; }).join('') +
+          '</div>' +
+        '</div>';
+    };
+    var medicineHtml = chipGroup('medication', 'รายการเบิกยาหน้าคลีนิค', r.medicineItems, function (m) {
+        return esc(m.name) + ('qtyDispensed' in m ? ' ×' + esc(m.qtyDispensed) + ' (ใช้ ' + esc(m.qtyUsed) + ' · ฝาก ' + esc(m.qtyDeposit) + ')' : '') + ' · ' + money(m.amount);
+      }) +
+      chipGroup('medication', 'รายการถือยาเข้า', r.ownMedItems, function (m) { return esc(m.name) + ' ×' + esc(m.qty); }) +
+      chipGroup('medication', 'รายการใช้ยาฝาก', r.depositUseItems, function (m) { return esc(m.name) + ' ×' + esc(m.qty); }) +
+      chipGroup('local_shipping', 'รายการ Messenger/พัสดุ', r.messengerItems, function (m) { return esc(m.name) + ' ×' + esc(m.qty) + (m.note ? ' · ' + esc(m.note) : ''); });
     // Round 14 item 1.7 — OPD photo, shown once its data URI has loaded
     // (fetched separately in openRecordPanel, since getRecord only returns
     // the Drive fileId).
@@ -2070,6 +2088,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     state.draft.patientId = p.id; state.draft.patientName = p.firstName + ' ' + p.lastName; state.draft.phone = p.phone;
     state.draft.patientNickname = p.nickname || '';
     state.draft._patientQuery = state.draft.patientName; state.draft._patientSuggest = [];
+    // ยาฝาก belong to one patient — choices made for another patient no longer apply.
+    if (state.draft.patientId !== state.draft._origPatientId) state.draft.depositUseItems = state.draft.useDepositUse ? [NEW_LINE.depositUseItems()] : [];
+    loadDraftDeposits();
     render();
   }
 
@@ -2082,8 +2103,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function removePromoRow(idx) { state.draft.promoItems.splice(idx, 1); render(); }
   function addSupplyRow() { state.draft.supplies.push({ itemId: '', name: '', qty: 1, unit: '' }); render(); }
   function removeSupplyRow(idx) { state.draft.supplies.splice(idx, 1); render(); }
-  function addMedicineRow() { state.draft.medicineItems.push({ name: '', amount: 0 }); render(); }
-  function removeMedicineRow(idx) { state.draft.medicineItems.splice(idx, 1); render(); }
+  function addMedicineRow() { state.draft.medicineItems.push(newDispenseLine()); render(); }
+  function removeMedicineRow(idx) { state.draft.medicineItems.splice(idx, 1); render(); updateRecordPreview(); }
+  /** ถือยาเข้า / ใช้ยาฝาก / Messenger rows: add takes the group name, remove takes "group:index". */
+  function addLineRow(group) { state.draft[group].push(NEW_LINE[group]()); render(); }
+  function removeLineRow(arg) { var p = String(arg).split(':'); state.draft[p[0]].splice(Number(p[1]), 1); render(); }
   function addOtherRow() { state.draft.otherItems.push({ label: '', amount: 0 }); render(); }
   function removeOtherRow(idx) { state.draft.otherItems.splice(idx, 1); render(); }
 
@@ -2239,10 +2263,84 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
 
   /** Section heading + checkbox toggle used by the round-13 repeatable
    *  รายการโปร/ยา/รายการอื่นๆ groups in recordModalBody(). */
-  function lineGroupToggle(path, label, action) {
+  function lineGroupToggle(path, label, note) {
     return '<div style="display:flex;align-items:center;gap:8px;margin:14px 0 8px">' +
-      bindInput(path, 'checkbox') + '<label style="font-weight:600;font-size:13px">' + esc(label) + '</label></div>';
+      bindInput(path, 'checkbox') + '<label style="font-weight:600;font-size:13px">' + esc(label) + '</label>' +
+      (note ? '<span style="font-size:11px;color:var(--muted)">' + esc(note) + '</span>' : '') + '</div>';
   }
+
+  /* ---- Record modal: ยา zone helpers ---- */
+  var DISPENSE_COLS = 'minmax(0,1fr) 64px 64px 54px 84px 80px 40px';
+  /** ราคาต่อหน่วย for `qty` units: the price of the largest ราคาขาย tier <= qty that has a price, else the smallest priced tier. */
+  function medicineUnitPrice(itemId, qty) {
+    var s = stockItemsOfType('medicine').filter(function (x) { return x.id === itemId; })[0];
+    var prices = (s && s.prices) || [];
+    var pick = null, first = null;
+    STOCK_PRICE_TIERS.forEach(function (t, i) {
+      if (prices[i] == null) return;
+      if (first == null) first = prices[i];
+      if (t <= (Number(qty) || 0)) pick = prices[i];
+    });
+    return pick != null ? pick : first;
+  }
+  function recalcDispenseLine(line) {
+    if (!('qtyDispensed' in line)) return;
+    var qd = Number(line.qtyDispensed) || 0, qu = Number(line.qtyUsed) || 0;
+    line.qtyDeposit = Math.max(0, Math.round((qd - qu) * 100) / 100);
+    line.amount = Math.round(qd * (Number(line.unitPrice) || 0) * 100) / 100;
+  }
+  /** Updates one dispense row's computed cells (and its ราคาต่อหน่วย input when auto-set) without a render, so the caret stays put. */
+  function patchDispenseRow(i, priceChanged) {
+    var line = state.draft.medicineItems[i];
+    var dep = document.getElementById('dispDep' + i), net = document.getElementById('dispNet' + i);
+    if (dep) dep.innerHTML = esc(line.qtyDeposit || 0);
+    if (net) net.innerHTML = num(line.amount);
+    if (priceChanged) {
+      var priceEl = document.querySelector('[data-bind="medicineItems.' + i + '.unitPrice"]');
+      if (priceEl) priceEl.value = line.unitPrice == null ? '' : line.unitPrice;
+    }
+    updateRecordPreview();
+  }
+  /** Deposit choices for รายการใช้ยาฝาก. When editing a record, what it already used is still "available" to it. */
+  function depositUseOptions(d) {
+    var oldUse = d.patientId === d._origPatientId ? (d._oldDepositUse || {}) : {};
+    var byItem = {};
+    (d._deposits || []).forEach(function (x) { byItem[x.itemId] = { name: x.name, qty: x.qty }; });
+    Object.keys(oldUse).forEach(function (id) {
+      var line = (d.depositUseItems || []).filter(function (l) { return l.itemId === id; })[0];
+      if (!byItem[id]) byItem[id] = { name: line ? line.name : id, qty: 0 };
+    });
+    return Object.keys(byItem).map(function (id) {
+      var avail = byItem[id].qty + (oldUse[id] || 0);
+      var s = stockItemsOfType('medicine').filter(function (x) { return x.id === id; })[0];
+      return { value: id, label: byItem[id].name + ' (ฝาก ' + avail + (s && s.unit ? ' ' + s.unit : '') + ')' };
+    });
+  }
+  /** "ยาฝากของลูกค้า" summary shown under the picked patient. */
+  function patientDepositsHtml(d) {
+    var box = function (inner) { return '<div style="font-size:12px;background:var(--hover-bg);border-radius:var(--r-sm);padding:8px 12px;margin:-4px 0 12px"><span class="ms" style="font-size:15px;vertical-align:middle;color:var(--muted)">medication</span> <b>ยาฝากของลูกค้า:</b> ' + inner + '</div>'; };
+    if (d._deposits === null || d._deposits === undefined) return box('<span class="spin"></span>');
+    if (!d._deposits.length) return box('<span style="color:var(--muted)">ไม่มียาฝาก</span>');
+    return box(d._deposits.map(function (x) {
+      var s = stockItemsOfType('medicine').filter(function (it) { return it.id === x.itemId; })[0];
+      return '<span class="tag-badge" style="background:var(--surface);color:var(--text-2);margin:2px 4px 2px 0">' + esc(x.name) + ' · ' + esc(x.qty) + (s && s.unit ? ' ' + esc(s.unit) : '') + '</span>';
+    }).join(''));
+  }
+  function loadDraftDeposits() {
+    var d = state.draft;
+    if (!d || !d.patientId) return;
+    var pid = d.patientId;
+    d._deposits = null;
+    call('listPatientDeposits', session.token, pid, gsOpts({ quiet: true })).then(function (res) {
+      if (state.draft && state.draft.patientId === pid) { state.draft._deposits = res.data; render(); }
+    });
+  }
+  var NEW_LINE = {
+    ownMedItems: function () { return { name: '', qty: 1 }; },
+    depositUseItems: function () { return { itemId: '', name: '', qty: 1 }; },
+    messengerItems: function () { return { name: '', qty: 1, note: '' }; }
+  };
+  function newDispenseLine() { return { itemId: '', name: '', qtyDispensed: 1, qtyUsed: 1, qtyDeposit: 0, unitPrice: '', amount: 0 }; }
   function recordModalBody() {
     var d = state.draft;
     var docOpts = [{ value: '', label: '— เลือกแพทย์ —' }].concat((state.master.doctors || []).map(function (x) { return { value: x.id, label: x.name }; }));
@@ -2297,12 +2395,70 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       }).join('') + '</datalist>';
     }
 
-    // Round 13 — รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค: free-text name + amount,
-    // not linked to Stock quantities (see the Records.MedicineJSON schema
-    // comment in Code.gs); the name only suggests from ยา-type stock items.
-    var medicineRows = d.medicineItems.map(function (m, i) {
-      return moneyRow('<input type="text" list="dlMedicineStock" autocomplete="off" placeholder="ชื่อยา/สินค้า" value="' + esc(m.name) + '" data-bind="medicineItems.' + i + '.name" style="' + inputStyle + '">', 'medicineItems.' + i + '.amount', 'จำนวนเงินยา', removeBtn('remove-medicine-row', i));
+    var numInput = function (path, v, placeholder) {
+      return '<input type="number" min="0" step="any" value="' + esc(v == null ? '' : v) + '" data-bind="' + path + '" style="' + inputStyle + ';padding:9px 6px" placeholder="' + esc(placeholder || '') + '">';
+    };
+    var gridRow = function (cols, cells) { return '<div style="display:grid;grid-template-columns:' + cols + ';gap:6px;align-items:center;margin-bottom:6px">' + cells.join('') + '</div>'; };
+    var gridHead = function (cols, labels) {
+      return '<div style="display:grid;grid-template-columns:' + cols + ';gap:6px;font-size:11px;color:var(--muted);margin-bottom:4px">' + labels.map(function (l) { return '<span>' + esc(l) + '</span>'; }).join('') + '</div>';
+    };
+    var cellBox = function (id, html) { return '<div id="' + id + '" style="font-size:13px;font-weight:600;text-align:right;padding-right:4px">' + html + '</div>'; };
+
+    // รายการเบิกยาหน้าคลีนิค: ยาจากสต๊อกยา | จำนวนที่เบิก (ตัดสต๊อก) | จำนวนที่ใช้ |
+    // จำนวนฝาก (= เบิก - ใช้, เข้ายาฝากของลูกค้า) | ราคาต่อหน่วย (ตั้งจากราคาขาย
+    // ตามจำนวนที่เบิก, แก้ได้) | ราคาสุทธิ (= เบิก × ราคาต่อหน่วย, ที่คิดเงิน).
+    // ฝาก/สุทธิ are patched in place while typing (patchDispenseRow).
+    // Lines saved before this table existed ({name, amount}) show read-only.
+    var medicineRows = (d.medicineItems.length ? gridHead(DISPENSE_COLS, ['รายการยา', 'จำนวนที่เบิก', 'จำนวนที่ใช้', 'จำนวนฝาก', 'ราคาต่อหน่วย', 'ราคาสุทธิ', '']) : '') +
+      d.medicineItems.map(function (m, i) {
+        var p = 'medicineItems.' + i + '.';
+        if (!('qtyDispensed' in m)) {
+          return gridRow(DISPENSE_COLS, ['<div style="grid-column:1/6;font-size:13px">' + esc(m.name || 'ยา') + ' <span style="color:var(--muted);font-size:11px">(รายการเดิม)</span></div>', cellBox('dispNet' + i, num(m.amount)), removeBtn('remove-medicine-row', i)]);
+        }
+        return gridRow(DISPENSE_COLS, [
+          '<input type="text" list="dlMedicineStock" autocomplete="off" placeholder="เลือกยาจากสต๊อก" value="' + esc(m.name) + '" data-bind="' + p + 'name" style="' + inputStyle + '">',
+          numInput(p + 'qtyDispensed', m.qtyDispensed), numInput(p + 'qtyUsed', m.qtyUsed),
+          cellBox('dispDep' + i, esc(m.qtyDeposit || 0)),
+          numInput(p + 'unitPrice', m.unitPrice, 'บาท'),
+          cellBox('dispNet' + i, num(m.amount)),
+          removeBtn('remove-medicine-row', i)
+        ]);
+      }).join('');
+
+    // รายการถือยาเข้า (ลูกค้านำยามาเอง) — not charged, no stock.
+    var ownMedRows = d.ownMedItems.map(function (m, i) {
+      return gridRow('minmax(0,1fr) 80px 40px', [
+        '<input type="text" list="dlMedicineStock" autocomplete="off" placeholder="ชื่อยา" value="' + esc(m.name) + '" data-bind="ownMedItems.' + i + '.name" style="' + inputStyle + '">',
+        numInput('ownMedItems.' + i + '.qty', m.qty, 'จำนวน'), removeBtn('remove-line-row', 'ownMedItems:' + i)
+      ]);
     }).join('');
+
+    // รายการใช้ยาฝาก — pick from the patient's ยาฝาก; the qty comes out of their deposit balance. Not charged.
+    var depositOpts = depositUseOptions(d);
+    var depositUseRows = !d.patientId ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">เลือกคนไข้ก่อน เพื่อแสดงรายการยาฝาก</div>' :
+      (d._deposits === null ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><span class="spin"></span> กำลังโหลดยาฝาก...</div>' :
+      (!depositOpts.length ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">ลูกค้าไม่มียาฝาก</div>' :
+      d.depositUseItems.map(function (m, i) {
+        return gridRow('minmax(0,1fr) 80px 40px', [
+          bindSelect('depositUseItems.' + i + '.itemId', [{ value: '', label: '— เลือกยาฝาก —' }].concat(depositOpts)),
+          numInput('depositUseItems.' + i + '.qty', m.qty, 'จำนวน'), removeBtn('remove-line-row', 'depositUseItems:' + i)
+        ]);
+      }).join('')));
+
+    // รายการ Messenger/พัสดุ — medicine sent out; recorded only, not charged, no stock.
+    var messengerRows = d.messengerItems.map(function (m, i) {
+      return gridRow('minmax(0,1fr) 70px 130px 40px', [
+        '<input type="text" list="dlMedicineStock" autocomplete="off" placeholder="ชื่อยา" value="' + esc(m.name) + '" data-bind="messengerItems.' + i + '.name" style="' + inputStyle + '">',
+        numInput('messengerItems.' + i + '.qty', m.qty, 'จำนวน'),
+        '<input type="text" placeholder="หมายเหตุ / เลขพัสดุ" value="' + esc(m.note) + '" data-bind="messengerItems.' + i + '.note" style="' + inputStyle + '">',
+        removeBtn('remove-line-row', 'messengerItems:' + i)
+      ]);
+    }).join('');
+    var addRowBtn = function (group, label) { return '<button class="btn" data-action="add-line-row" data-arg="' + group + '" style="margin-bottom:6px"><span class="ms">add</span> ' + esc(label) + '</button>'; };
+    var zoneBox = function (title, inner) {
+      return '<div style="border:1px solid var(--border);border-radius:var(--r-sm);padding:2px 14px 8px;margin:14px 0">' +
+        '<div style="font-size:11.5px;font-weight:700;color:var(--muted);margin-top:10px;letter-spacing:.3px">' + esc(title) + '</div>' + inner + '</div>';
+    };
 
     // รายการเวชภัณฑ์ที่ใช้: name (suggested from เวชภัณฑ์-type stock) + qty +
     // unit, no money — the qty+unit pair is sized to the amount column's
@@ -2347,7 +2503,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
 
     return header +
       '<div style="margin-bottom:12px">' + searchInputHtml('', d._patientQuery, 'ค้นหาลูกค้า (ชื่อ / เบอร์โทร)', 'window.__valin.onPatientSuggestSearch(this.value)') + patientSuggestBox(d._patientSuggest) + '</div>' +
-      (d.patientId ? '<div style="font-size:12px;color:var(--green-dark);margin:-6px 0 10px">เลือก: ' + esc(d.patientName) + ' (' + esc(d.phone) + ')' + (d.patientNickname ? ' · ชื่อเล่น ' + esc(d.patientNickname) : '') + '</div>' : '') +
+      (d.patientId ? '<div style="font-size:12px;color:var(--green-dark);margin:-6px 0 10px">เลือก: ' + esc(d.patientName) + ' (' + esc(d.phone) + ')' + (d.patientNickname ? ' · ชื่อเล่น ' + esc(d.patientNickname) : '') + '</div>' + patientDepositsHtml(d) : '') +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
         field('วันที่', bindInput('date', 'date')) +
         field('สถานะ', pillGroup('visitStatus', [{ value: 'scheduled', label: 'นัดหมาย' }, { value: 'completed', label: 'เสร็จสิ้น' }], 'set-visit-status')) +
@@ -2370,23 +2526,30 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       // Round 15 item 2.2: "บาท" suffix in the row's trailing slot.
       moneyRow('<div style="font-size:13px;font-weight:600;display:flex;align-items:center;height:100%">จำนวนเงินหัตถการ</div>', 'amount', 'จำนวนเงินหัตถการ', 'บาท', 'recAmount') +
 
-      lineGroupToggle('usePromo', 'รายการโปรหน้าคลีนิค') +
-      (d.usePromo ? promoRows + '<button class="btn" data-action="add-promo-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการโปร</button>' : '') +
+      // Three zones. Stock is deducted on save for zone 1 and for
+      // เบิกยาหน้าคลีนิค (see applyRecordEffects_ in Code.gs); the other three
+      // zone-2 groups are never charged.
+      zoneBox('1 · เวชภัณฑ์',
+        lineGroupToggle('useSupplies', 'รายการเวชภัณฑ์ที่ใช้', 'ตัดสต๊อก') +
+        (d.useSupplies ? supplyRows + '<button class="btn" data-action="add-supply-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการเวชภัณฑ์</button>' : '')) +
 
-      '<div style="display:flex;align-items:center;gap:8px;margin:14px 0 6px">' + bindInput('useCanula', 'checkbox') + '<label style="font-weight:600;font-size:13px">ใช้ Canula (เข็มทู่)</label></div>' +
-      (d.useCanula ? moneyRow('<div style="font-size:13px;font-weight:600;color:var(--text-2);display:flex;align-items:center;height:100%">จำนวนเงิน Canula</div>', 'canulaAmount', '', '', 'recCanulaAmount') : '') +
+      zoneBox('2 · ยา',
+        lineGroupToggle('useMedicine', 'รายการเบิกยาหน้าคลีนิค', 'ตัดสต๊อก · คิดค่ายา') +
+        (d.useMedicine ? medicineRows + '<button class="btn" data-action="add-medicine-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการยา</button>' : '') +
+        lineGroupToggle('useOwnMed', 'รายการถือยาเข้า', 'ไม่คิดค่ายา') +
+        (d.useOwnMed ? ownMedRows + addRowBtn('ownMedItems', 'เพิ่มรายการ') : '') +
+        lineGroupToggle('useDepositUse', 'รายการใช้ยาฝาก', 'ตัดจากยาฝาก · ไม่คิดค่ายา') +
+        (d.useDepositUse ? depositUseRows + (depositOpts.length ? addRowBtn('depositUseItems', 'เพิ่มรายการ') : '') : '') +
+        lineGroupToggle('useMessenger', 'รายการ Messenger/พัสดุ', 'ไม่คิดค่ายา') +
+        (d.useMessenger ? messengerRows + addRowBtn('messengerItems', 'เพิ่มรายการ') : '')) +
 
-      // รายการเวชภัณฑ์ที่ใช้ — brought back as a checkbox group (Round 14
-      // item 1.2 had removed the old picker); still no automatic stock
-      // deduction, see saveRecord in Code.gs.
-      lineGroupToggle('useSupplies', 'รายการเวชภัณฑ์ที่ใช้') +
-      (d.useSupplies ? supplyRows + '<button class="btn" data-action="add-supply-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการเวชภัณฑ์</button>' : '') +
-
-      lineGroupToggle('useMedicine', 'รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค') +
-      (d.useMedicine ? medicineRows + '<button class="btn" data-action="add-medicine-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการยา</button>' : '') +
-
-      lineGroupToggle('useOther', 'รายการอื่นๆ') +
-      (d.useOther ? otherRows + '<button class="btn" data-action="add-other-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการ</button>' : '') +
+      zoneBox('3 · โปรโมชัน และรายการอื่นๆ',
+        lineGroupToggle('usePromo', 'รายการโปรหน้าคลีนิค') +
+        (d.usePromo ? promoRows + '<button class="btn" data-action="add-promo-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการโปร</button>' : '') +
+        '<div style="display:flex;align-items:center;gap:8px;margin:14px 0 6px">' + bindInput('useCanula', 'checkbox') + '<label style="font-weight:600;font-size:13px">ใช้ Canula (เข็มทู่)</label></div>' +
+        (d.useCanula ? moneyRow('<div style="font-size:13px;font-weight:600;color:var(--text-2);display:flex;align-items:center;height:100%">จำนวนเงิน Canula</div>', 'canulaAmount', '', '', 'recCanulaAmount') : '') +
+        lineGroupToggle('useOther', 'รายการอื่นๆ') +
+        (d.useOther ? otherRows + '<button class="btn" data-action="add-other-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการ</button>' : '')) +
 
       opdPhotoBlock +
       stockDatalist('dlSupplyStock', 'supply') + stockDatalist('dlMedicineStock', 'medicine') +
@@ -2420,7 +2583,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function saveRecordModal() {
     if (!state.draft.patientId) { toast('error', 'กรุณาเลือกคนไข้'); return; }
     var payload = Object.assign({}, state.draft);
-    delete payload._patientQuery; delete payload._patientSuggest;
+    Object.keys(payload).forEach(function (k) { if (k.charAt(0) === '_') delete payload[k]; }); // client-only (_patientQuery, _deposits, ...)
     call('saveRecord', session.token, payload).then(function () {
       toast('success', 'บันทึกข้อมูลการรักษาแล้ว'); closeModal();
       // Round 12 item 1.3: refresh whichever Records view is on screen — the
@@ -2446,7 +2609,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   var STOCK_TABS = [{ id: 'supply', label: 'รายการเวชภัณฑ์' }, { id: 'medicine', label: 'รายการยา' }];
   // Must match STOCK_PRICE_TIERS in Code.gs — item.prices[i] is the ราคาขาย for STOCK_PRICE_TIERS[i] ชิ้น.
   var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
-  var STOCK_LOG_KIND_LABELS = { update: 'อัพเดตสต๊อก', in: 'รับเข้า', out: 'เบิกออก', set: 'ปรับยอดคงเหลือ', import: 'นำเข้า CSV', opening: 'ยอดยกมา' };
+  var STOCK_LOG_KIND_LABELS = { update: 'อัพเดตสต๊อก', in: 'รับเข้า', out: 'เบิกออก', set: 'ปรับยอดคงเหลือ', import: 'นำเข้า CSV', opening: 'ยอดยกมา', record: 'บันทึกการรักษา' };
   function stockTypeLabel(type) { return type === 'medicine' ? 'ยา' : 'เวชภัณฑ์'; }
   function stockTab(type) {
     if (type === state.stock.type) return;
@@ -3576,6 +3739,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'set-visit-status': state.draft.visitStatus = arg; render(); break;
       case 'add-promo-row': addPromoRow(); break;
       case 'remove-promo-row': removePromoRow(Number(arg)); break;
+      case 'add-line-row': addLineRow(arg); break;
+      case 'remove-line-row': removeLineRow(arg); break;
       case 'add-supply-row': addSupplyRow(); break;
       case 'remove-supply-row': removeSupplyRow(Number(arg)); break;
       case 'add-medicine-row': addMedicineRow(); break;
@@ -3676,6 +3841,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   // value the staff already typed/edited.
   var PROMO_PICK_RE = /^promoItems\.(\d+)\.promoId$/;
   var STOCK_NAME_PICK_RE = /^(supplies|medicineItems)\.(\d+)\.name$/;
+  var DISPENSE_FIELD_RE = /^medicineItems\.(\d+)\.(qtyDispensed|qtyUsed|unitPrice)$/;
   document.addEventListener('input', function (ev) {
     var el = ev.target;
     var bindPath = el.getAttribute && el.getAttribute('data-bind');
@@ -3707,7 +3873,36 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           var unitEl = document.querySelector('[data-bind="supplies.' + stockPick[2] + '.unit"]');
           if (unitEl) unitEl.value = stockItem.unit;
         }
+        // A picked ยา fills ราคาต่อหน่วย from its ราคาขาย tiers unless staff typed a price themselves.
+        if (stockItem && stockPick[1] === 'medicineItems' && !stockLine._priceManual) {
+          var tierPrice = medicineUnitPrice(stockItem.id, stockLine.qtyDispensed);
+          if (tierPrice != null) {
+            stockLine.unitPrice = tierPrice;
+            recalcDispenseLine(stockLine);
+            patchDispenseRow(Number(stockPick[2]), true);
+          }
+        }
       }
+      return;
+    }
+    var dispense = bindPath.match(DISPENSE_FIELD_RE);
+    if (dispense) {
+      var dLine = state.draft.medicineItems[Number(dispense[1])];
+      var priceChanged = false;
+      if (dispense[2] === 'unitPrice') dLine._priceManual = true;
+      if (dispense[2] === 'qtyDispensed' && !dLine._priceManual && dLine.itemId) {
+        var p2 = medicineUnitPrice(dLine.itemId, dLine.qtyDispensed);
+        if (p2 != null && p2 !== dLine.unitPrice) { dLine.unitPrice = p2; priceChanged = true; }
+      }
+      recalcDispenseLine(dLine);
+      patchDispenseRow(Number(dispense[1]), priceChanged);
+      return;
+    }
+    var depositPick = bindPath.match(/^depositUseItems\.(\d+)\.itemId$/);
+    if (depositPick) {
+      var dep = (state.draft._deposits || []).filter(function (x) { return x.itemId === val; })[0];
+      var useLine = state.draft.depositUseItems[Number(depositPick[1])];
+      if (useLine) useLine.name = dep ? dep.name : (useLine.itemId ? useLine.name : '');
       return;
     }
     var promoPick = bindPath.match(PROMO_PICK_RE);
@@ -3728,7 +3923,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       if (val === true) {
         if (bindPath === 'usePromo' && !state.draft.promoItems.length) state.draft.promoItems.push({ promoId: '', name: '', price: 0, doctorSharePct: 0, amount: 0 });
         else if (bindPath === 'useSupplies' && !state.draft.supplies.length) state.draft.supplies.push({ itemId: '', name: '', qty: 1, unit: '' });
-        else if (bindPath === 'useMedicine' && !state.draft.medicineItems.length) state.draft.medicineItems.push({ name: '', amount: 0 });
+        else if (bindPath === 'useMedicine' && !state.draft.medicineItems.length) state.draft.medicineItems.push(newDispenseLine());
+        else if (bindPath === 'useOwnMed' && !state.draft.ownMedItems.length) state.draft.ownMedItems.push(NEW_LINE.ownMedItems());
+        else if (bindPath === 'useDepositUse' && !state.draft.depositUseItems.length) state.draft.depositUseItems.push(NEW_LINE.depositUseItems());
+        else if (bindPath === 'useMessenger' && !state.draft.messengerItems.length) state.draft.messengerItems.push(NEW_LINE.messengerItems());
         else if (bindPath === 'useOther' && !state.draft.otherItems.length) state.draft.otherItems.push({ label: '', amount: 0 });
       }
       render();

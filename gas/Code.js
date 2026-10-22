@@ -153,6 +153,7 @@ var CONFIG = {
     STAFF: 'Staff',
     CLINIC_SETTINGS: 'ClinicSettings',
     COUNTERS: 'Counters',
+    MED_DEPOSITS: 'MedDeposits',
     AUDIT_LOG: 'AuditLog'
   },
   HEADERS: {
@@ -198,7 +199,11 @@ var CONFIG = {
     // supplier" in the record modal); a DIFFERENT concept from the
     // dashboard's Orders-based "ยอดจ่าย Supplier" slice (purchase orders) —
     // the two are not reconciled/merged.
-    Records: ['RID', 'Date', 'PatientID', 'PatientName', 'Phone', 'ServiceCategory', 'Detail', 'DoctorID', 'DoctorName', 'SalesID', 'SalesName', 'PaymentMethod', 'SuppliesJSON', 'UseCanula', 'CanulaAmount', 'Amount', 'Status', 'ReceiptNo', 'Note', 'CreatedBy', 'CreatedAt', 'UpdatedAt', 'OtherAmount', 'SalesCommissionPct', 'SalesShare', 'DoctorCommissionPct', 'DoctorShareRaw', 'DoctorShare', 'DoctorShareNote', 'ClinicShare', 'VisitStatus', 'UsePromo', 'PromoJSON', 'PromoAmount', 'UseMedicine', 'MedicineJSON', 'MedicineAmount', 'UseOther', 'OtherItemsJSON', 'SupplierPayAmount', 'OpdImageFileId', 'UseSupplies'],
+    Records: ['RID', 'Date', 'PatientID', 'PatientName', 'Phone', 'ServiceCategory', 'Detail', 'DoctorID', 'DoctorName', 'SalesID', 'SalesName', 'PaymentMethod', 'SuppliesJSON', 'UseCanula', 'CanulaAmount', 'Amount', 'Status', 'ReceiptNo', 'Note', 'CreatedBy', 'CreatedAt', 'UpdatedAt', 'OtherAmount', 'SalesCommissionPct', 'SalesShare', 'DoctorCommissionPct', 'DoctorShareRaw', 'DoctorShare', 'DoctorShareNote', 'ClinicShare', 'VisitStatus', 'UsePromo', 'PromoJSON', 'PromoAmount', 'UseMedicine', 'MedicineJSON', 'MedicineAmount', 'UseOther', 'OtherItemsJSON', 'SupplierPayAmount', 'OpdImageFileId', 'UseSupplies', 'UseOwnMed', 'OwnMedJSON', 'UseDepositUse', 'DepositUseJSON', 'UseMessenger', 'MessengerJSON', 'StockApplied'],
+    // MedDeposits — ยาฝาก: one balance row per patient + medicine item, kept
+    // in sync by applyRecordEffects_ (เบิกยาหน้าคลีนิค lines add their จำนวนฝาก,
+    // รายการใช้ยาฝาก lines take it back out). Date/CreatedBy are the latest change.
+    MedDeposits: ['DepositID', 'Date', 'PatientID', 'PatientName', 'ItemName', 'QtyRemaining', 'CreatedBy', 'ItemID', 'UpdatedAt'],
     // StockType: 'supply' (เวชภัณฑ์) | 'medicine' (ยา) — splits the Stock page
     // into two tabs and feeds the record modal's stock-backed name
     // suggestions (รายการเวชภัณฑ์ที่ใช้ / รายการซื้อยาเพิ่ม). Blank on rows
@@ -282,7 +287,7 @@ var CONFIG = {
     // Lightweight full-list caches used to power client-side autocomplete
     // (patient/stock suggest boxes) without a server round-trip per keystroke.
     PATIENTS_LITE_KEY: 'PATIENTS_LITE_V1',
-    STOCK_LITE_KEY: 'STOCK_LITE_V2', // V2: entries carry `type`
+    STOCK_LITE_KEY: 'STOCK_LITE_V3', // V3: entries carry `type` and sale `prices` (never cost)
     LITE_TTL: 21600,
     // Round 19 item 4: getDashboardData's per-date-range result cache. Keyed
     // by a version tag (DASH_VERSION_KEY, bumped by any write that could
@@ -386,6 +391,8 @@ function getSheet_(name) {
   if (_sheetCache_[name]) return _sheetCache_[name];
   var ss = getSS_();
   var sh = ss.getSheetByName(name);
+  // A sheet added to CONFIG after setup (e.g. MedDeposits) is created on first use.
+  if (!sh && CONFIG.HEADERS[name]) sh = ensureSheet_(ss, name, CONFIG.HEADERS[name]);
   if (!sh) throw new Error('ไม่พบชีต: ' + name + ' — กรุณารัน setupProject() ก่อน');
   // Columns are only ever appended (see CONFIG.HEADERS), so a header row
   // narrower than the schema means a newly-appended column hasn't been
@@ -883,7 +890,9 @@ function listAllStockLite(token) {
     var raw = cache.get(CONFIG.CACHE.STOCK_LITE_KEY);
     if (raw) return { ok: true, data: JSON.parse(raw) };
     var rows = getRows_(getSheet_(CONFIG.SHEETS.STOCK));
-    var data = rows.map(function (s) { return { id: s.ItemID, name: s.Name, category: s.Category, unit: s.Unit, type: stockTypeOf_(s) }; });
+    var data = rows.map(function (s) {
+      return { id: s.ItemID, name: s.Name, category: s.Category, unit: s.Unit, type: stockTypeOf_(s), prices: STOCK_PRICE_TIERS.map(function (t) { return numOrNull_(s['Price' + t]); }) };
+    });
     try { cache.put(CONFIG.CACHE.STOCK_LITE_KEY, JSON.stringify(data), CONFIG.CACHE.LITE_TTL); } catch (e) { /* too large for cache — still return live data */ }
     return { ok: true, data: data };
   });
@@ -1464,7 +1473,7 @@ function saveClinicSettings(token, settings) {
 // ราคาขาย quantity tiers — one Stock column per tier (Price1, Price3, ...).
 var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
 // StockLog.Kind values. '' (rows written before Kind existed) reads as 'update'.
-var STOCK_LOG_KINDS = { update: 1, in: 1, out: 1, set: 1, import: 1, opening: 1 };
+var STOCK_LOG_KINDS = { update: 1, in: 1, out: 1, set: 1, import: 1, opening: 1, record: 1 };
 
 function listStock(token, opts) {
   return safeCall_(function () {
@@ -1975,12 +1984,21 @@ function deleteStockLogEntry(token, id) {
    Status enum: 'unpaid' | 'paid' | 'cancelled'
    SuppliesJSON: JSON array of {itemId,name,qty,unit} — "รายการเวชภัณฑ์ที่ใช้",
      gated by UseSupplies; names are suggested from เวชภัณฑ์-type Stock items
-     but saving does NOT deduct Stock qty (Stock.Qty comes from StockLog only).
+     and lines with an itemId are taken out of Stock (see recordEffects_).
    PromoJSON: JSON array of {promoId,name,price,doctorSharePct,amount} — round
      13 "รายการโปร"; doctorSharePct is snapshotted server-side from the
      Promotions sheet at save time (never trust the client's copy).
-   MedicineJSON: JSON array of {name,amount} — round 13 "ยา", free-text, NOT
-     linked to Stock/inventory.
+   MedicineJSON: "รายการเบิกยาหน้าคลีนิค" — JSON array of {itemId, name,
+     qtyDispensed, qtyUsed, qtyDeposit, unitPrice, amount}: qtyDispensed is
+     taken out of Stock, qtyDeposit (= dispensed - used) goes into the
+     patient's MedDeposits balance, amount = qtyDispensed * unitPrice is
+     charged. Lines saved before this shape existed are {name, amount}.
+   OwnMedJSON {name,qty} "รายการถือยาเข้า", DepositUseJSON {itemId,name,qty}
+     "รายการใช้ยาฝาก" (taken out of MedDeposits), MessengerJSON {name,qty,
+     note} "รายการ Messenger/พัสดุ" — none of these three are charged.
+   StockApplied: 'TRUE' on records created since stock/deposit effects
+     existed — only those records' lines move Stock/MedDeposits (see
+     recordEffects_), so editing an older record never re-deducts it.
    OtherItemsJSON: JSON array of {label,amount} — round 13 itemized
      "รายการอื่นๆ" (OtherAmount column keeps the denormalized sum).
    ====================================================================== */
@@ -2039,6 +2057,10 @@ function mapRecordOut_(r) {
     medicineItems: parseLineItems_(r.MedicineJSON), medicineAmount: medicineAmount,
     useOther: String(r.UseOther) === 'TRUE' || r.UseOther === true,
     otherItems: parseLineItems_(r.OtherItemsJSON),
+    useOwnMed: String(r.UseOwnMed) === 'TRUE', ownMedItems: parseLineItems_(r.OwnMedJSON),
+    useDepositUse: String(r.UseDepositUse) === 'TRUE', depositUseItems: parseLineItems_(r.DepositUseJSON),
+    useMessenger: String(r.UseMessenger) === 'TRUE', messengerItems: parseLineItems_(r.MessengerJSON),
+    stockApplied: String(r.StockApplied) === 'TRUE',
     supplierPayAmount: Number(r.SupplierPayAmount) || round2_(medicineAmount + otherAmount),
     estimatedRevenue: grossBase,
     totalCollected: round2_(grossBase + medicineAmount + otherAmount),
@@ -2374,6 +2396,142 @@ function sumLineItems_(items, useFlag, fieldLabel) {
   return { items: out, total: round2_(total) };
 }
 
+/** รายการเบิกยาหน้าคลีนิค lines -> {items, total}; see the MedicineJSON note above. */
+function medicineLines_(record) {
+  var out = { items: [], total: 0 };
+  if (!record.useMedicine || !Array.isArray(record.medicineItems)) return out;
+  record.medicineItems.forEach(function (it, i) {
+    if (!it || (!String(it.name || '').trim() && !it.itemId)) return;
+    var line = ' (บรรทัดที่ ' + (i + 1) + ')';
+    if (!('qtyDispensed' in it)) { // pre-dispense-table line: name + amount only
+      var legacyAmt = requireNumber_(it.amount || 0, 'จำนวนเงินยา' + line, { min: 0 });
+      out.items.push({ name: it.name || '', amount: legacyAmt });
+      out.total += legacyAmt;
+      return;
+    }
+    if (!it.itemId) throw ValidationError_('กรุณาเลือกยาจากรายการสต๊อกยา' + line);
+    var qd = requireNumber_(it.qtyDispensed || 0, 'จำนวนที่เบิก' + line, { min: 0 });
+    var qu = requireNumber_(it.qtyUsed || 0, 'จำนวนที่ใช้' + line, { min: 0 });
+    if (qu > qd) throw ValidationError_('จำนวนที่ใช้มากกว่าจำนวนที่เบิก' + line);
+    var up = requireNumber_(it.unitPrice || 0, 'ราคาต่อหน่วย' + line, { min: 0 });
+    var amt = round2_(qd * up);
+    out.items.push({ itemId: it.itemId, name: String(it.name || '').trim(), qtyDispensed: qd, qtyUsed: qu, qtyDeposit: round2_(qd - qu), unitPrice: up, amount: amt });
+    out.total += amt;
+  });
+  out.total = round2_(out.total);
+  return out;
+}
+
+/** Uncharged quantity lines (ถือยาเข้า / ใช้ยาฝาก / Messenger): blank names dropped, qty validated, only `fields` kept. */
+function qtyLines_(items, use, label, fields, requireItem) {
+  if (!use || !Array.isArray(items)) return [];
+  return items.filter(function (it) { return it && (String(it.name || '').trim() || it.itemId); }).map(function (it, i) {
+    var line = ' (' + label + ' บรรทัดที่ ' + (i + 1) + ')';
+    if (requireItem && !it.itemId) throw ValidationError_('กรุณาเลือกรายการ' + line);
+    var o = { name: String(it.name || '').trim(), qty: requireNumber_(it.qty || 0, 'จำนวน' + line, { min: 0 }) };
+    fields.forEach(function (f) { o[f] = it[f] || ''; });
+    return o;
+  });
+}
+
+/**
+ * What a saved Records row takes out of Stock and puts into / takes out of
+ * MedDeposits: {stock: {itemId: qty}, deposit: {'patientId|itemId': qty}}.
+ * Rows without StockApplied=TRUE (saved before this existed) have none.
+ */
+function recordEffects_(r) {
+  var eff = { stock: {}, deposit: {} };
+  if (String(r.StockApplied) !== 'TRUE') return eff;
+  var add = function (map, key, n) { if (key && n) map[key] = round2_((map[key] || 0) + n); };
+  if (String(r.UseSupplies) === 'TRUE') {
+    parseLineItems_(r.SuppliesJSON).forEach(function (l) { add(eff.stock, l.itemId, Number(l.qty) || 0); });
+  }
+  if (String(r.UseMedicine) === 'TRUE') {
+    parseLineItems_(r.MedicineJSON).forEach(function (l) {
+      add(eff.stock, l.itemId, Number(l.qtyDispensed) || 0);
+      add(eff.deposit, l.itemId && (r.PatientID + '|' + l.itemId), Number(l.qtyDeposit) || 0);
+    });
+  }
+  if (String(r.UseDepositUse) === 'TRUE') {
+    parseLineItems_(r.DepositUseJSON).forEach(function (l) { add(eff.deposit, l.itemId && (r.PatientID + '|' + l.itemId), -(Number(l.qty) || 0)); });
+  }
+  return eff;
+}
+
+/**
+ * Moves Stock and MedDeposits by (newEff - oldEff) — so a new record applies
+ * its lines, an edit applies only what changed, and a delete (newEff empty)
+ * puts everything back. Checks every item first and throws before writing
+ * anything if stock or a deposit balance would go below zero. Stock moves
+ * are StockLog 'record' rows dated today (not the record's date, so they
+ * are always the item's latest entry and Stock.Qty follows them).
+ * Must run inside the caller's script lock.
+ */
+function applyRecordEffects_(session, oldEff, newEff, label, patientName) {
+  var diff = function (a, b) {
+    var out = {};
+    Object.keys(a).concat(Object.keys(b)).forEach(function (k) { var d = round2_((b[k] || 0) - (a[k] || 0)); if (d) out[k] = d; });
+    return out;
+  };
+  var stockDelta = diff(oldEff.stock, newEff.stock);     // + = more taken out of stock
+  var depositDelta = diff(oldEff.deposit, newEff.deposit); // + = more deposited
+  if (!Object.keys(stockDelta).length && !Object.keys(depositDelta).length) return;
+
+  var stockById = {};
+  getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (r) { stockById[r.ItemID] = r; });
+  Object.keys(stockDelta).forEach(function (id) {
+    var item = stockById[id];
+    if (!item) { if (stockDelta[id] > 0) throw ValidationError_('ไม่พบรายการในสต๊อก (อาจถูกลบไปแล้ว)'); return; }
+    var cur = Number(item.Qty) || 0;
+    if (stockDelta[id] > cur) throw ValidationError_('สต๊อก ' + item.Name + ' ไม่พอ (คงเหลือ ' + cur + ' ' + item.Unit + ')');
+  });
+  var depSheet = getSheet_(CONFIG.SHEETS.MED_DEPOSITS);
+  var depByKey = {};
+  getRows_(depSheet).forEach(function (r) { depByKey[r.PatientID + '|' + r.ItemID] = r; });
+  Object.keys(depositDelta).forEach(function (k) {
+    var row = depByKey[k], bal = row ? Number(row.QtyRemaining) || 0 : 0;
+    if (bal + depositDelta[k] < 0) {
+      var name = row ? row.ItemName : (stockById[k.split('|')[1]] || {}).Name || '';
+      throw ValidationError_('ยาฝาก ' + name + ' ไม่พอ (คงเหลือ ' + bal + ')');
+    }
+  });
+
+  var logSheet = getSheet_(CONFIG.SHEETS.STOCK_LOG);
+  var movedIds = Object.keys(stockDelta).filter(function (id) { return stockById[id]; });
+  movedIds.forEach(function (id) {
+    var item = stockById[id], d = stockDelta[id], cur = Number(item.Qty) || 0;
+    appendRow_(logSheet, CONFIG.HEADERS.StockLog,
+      stockLogRow_(session, 'SL' + nextSeq_('STOCKLOG', 5), todayStr_(), item, 'record', d < 0 ? -d : 0, d > 0 ? d : 0, round2_(cur - d), label));
+    resyncStockQtyFromLog_(id);
+  });
+  if (movedIds.length) invalidateStockLiteCache_();
+
+  Object.keys(depositDelta).forEach(function (k) {
+    var row = depByKey[k], parts = k.split('|');
+    if (row) {
+      updateRowByIndex_(depSheet, CONFIG.HEADERS.MedDeposits, row._row, Object.assign({}, row, {
+        Date: todayStr_(), QtyRemaining: round2_((Number(row.QtyRemaining) || 0) + depositDelta[k]), CreatedBy: session.username, UpdatedAt: nowStr_()
+      }));
+    } else {
+      appendRow_(depSheet, CONFIG.HEADERS.MedDeposits, {
+        DepositID: 'DP' + nextSeq_('DEPOSIT', 5), Date: todayStr_(), PatientID: parts[0], PatientName: patientName || '',
+        ItemName: (stockById[parts[1]] || {}).Name || '', QtyRemaining: depositDelta[k], CreatedBy: session.username, ItemID: parts[1], UpdatedAt: nowStr_()
+      });
+    }
+  });
+}
+
+/** ยาฝาก the patient still has (balance > 0), for the record modal. */
+function listPatientDeposits(token, patientId) {
+  return safeCall_(function () {
+    requireAuth_(token, 'staff');
+    var rows = getRows_(getSheet_(CONFIG.SHEETS.MED_DEPOSITS)).filter(function (r) { return r.PatientID === patientId && (Number(r.QtyRemaining) || 0) > 0; });
+    return { ok: true, data: rows.map(function (r) {
+      return { id: r.DepositID, itemId: r.ItemID, name: r.ItemName, qty: Number(r.QtyRemaining) || 0, date: dateStr_(r.Date), createdBy: r.CreatedBy };
+    }) };
+  });
+}
+
 function saveRecord(token, record) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'staff');
@@ -2392,7 +2550,8 @@ function saveRecord(token, record) {
     // amount (always) and promo (round 13) feed the commissionable base.
     var amount = requireNumber_(record.amount || 0, 'จำนวนเงินหัตถการ', { min: 0 });
     var canulaAmount = requireNumber_(record.canulaAmount || 0, 'ค่าใช้ Canula', { min: 0 });
-    // รายการเวชภัณฑ์ที่ใช้ — quantity only (no money); blank-name lines dropped.
+    // รายการเวชภัณฑ์ที่ใช้ — quantity only (no money); blank-name lines dropped;
+    // lines picked from stock (itemId) are deducted via applyRecordEffects_.
     var supplies = (record.useSupplies && Array.isArray(record.supplies) ? record.supplies : [])
       .filter(function (it) { return it && String(it.name || '').trim(); })
       .map(function (it) {
@@ -2404,7 +2563,10 @@ function saveRecord(token, record) {
 
     // Round 13 repeatable line-item groups — sums are ALWAYS recomputed
     // server-side from the line arrays (never trust a client-sent aggregate).
-    var medicineGroup = sumLineItems_(record.medicineItems, !!record.useMedicine, 'จำนวนเงินยา');
+    var medicineGroup = medicineLines_(record);
+    var ownMedItems = qtyLines_(record.ownMedItems, !!record.useOwnMed, 'ถือยาเข้า', [], false);
+    var depositUseItems = qtyLines_(record.depositUseItems, !!record.useDepositUse, 'ใช้ยาฝาก', ['itemId'], true);
+    var messengerItems = qtyLines_(record.messengerItems, !!record.useMessenger, 'Messenger/พัสดุ', ['note'], false);
     var otherGroup = sumLineItems_(record.otherItems, !!record.useOther, 'จำนวนเงินอื่นๆ');
     var otherAmount = otherGroup.total;
 
@@ -2485,8 +2647,17 @@ function saveRecord(token, record) {
         // client-side via the shared resumable-chunk-upload flow before
         // save; see startResumableUpload's 'opd-photo' kind).
         OpdImageFileId: record.opdImageFileId || '',
-        UseSupplies: supplies.length ? 'TRUE' : 'FALSE'
+        UseSupplies: supplies.length ? 'TRUE' : 'FALSE',
+        UseOwnMed: ownMedItems.length ? 'TRUE' : 'FALSE', OwnMedJSON: JSON.stringify(ownMedItems),
+        UseDepositUse: depositUseItems.length ? 'TRUE' : 'FALSE', DepositUseJSON: JSON.stringify(depositUseItems),
+        UseMessenger: messengerItems.length ? 'TRUE' : 'FALSE', MessengerJSON: JSON.stringify(messengerItems),
+        StockApplied: isNew ? 'TRUE' : (existing.StockApplied || '')
       };
+
+      // Stock + ยาฝาก first: it throws (before anything is written) if
+      // stock or a deposit balance would go negative.
+      applyRecordEffects_(session, isNew ? { stock: {}, deposit: {} } : recordEffects_(existing), recordEffects_(obj),
+        'บันทึกการรักษา ' + obj.RID + ' · ' + obj.PatientName, obj.PatientName);
 
       if (isNew) {
         appendRow_(sheet, CONFIG.HEADERS.Records, obj);
@@ -2511,14 +2682,6 @@ function saveRecord(token, record) {
       if (!isNew && existing && existing.OpdImageFileId && existing.OpdImageFileId !== obj.OpdImageFileId) {
         try { DriveApp.getFileById(existing.OpdImageFileId).setTrashed(true); } catch (e) { /* already gone/inaccessible — nothing to clean up */ }
       }
-
-      // Round 14 item 1.2: automatic stock deduction on save/delete removed
-      // — the อุปกรณ์/เวชภัณฑ์ picker (and Stock ตัดสต๊อกอัตโนมัติ) is gone
-      // from the record modal. SuppliesJSON is now fed by the
-      // "รายการเวชภัณฑ์ที่ใช้" checkbox group, which is still a record of
-      // what was used only — adjustStockQty_ is not called from here. Stock
-      // quantities are now only ever changed by the standalone Stock page
-      // (manual CRUD) or จัดซื้อ (purchase orders).
 
       // Round 19 item 4: read the Records sheet ONCE now that the write
       // above is done, and hand that single snapshot to both
@@ -2566,8 +2729,9 @@ function deleteRecord(token, id) {
       var rows = getRows_(sheet);
       var existing = rows.filter(function (r) { return r.RID === id; })[0];
       if (!existing) throw ValidationError_('ไม่พบข้อมูลการรักษา');
-      // Round 14 item 1.2: no longer restores stock on delete — automatic
-      // stock deduction/restoration was removed from the record flow.
+      // Put back whatever this record took out of Stock / moved in ยาฝาก
+      // (throws, deleting nothing, if its deposited medicine was already used).
+      applyRecordEffects_(session, recordEffects_(existing), { stock: {}, deposit: {} }, 'ลบบันทึกการรักษา ' + id + ' · ' + existing.PatientName, existing.PatientName);
       var doctorId = existing.DoctorID, date = dateStr_(existing.Date);
       deleteRowByIndex_(sheet, existing._row);
       // The deleted record's share of the daily minimum (if any) needs to
