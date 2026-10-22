@@ -203,7 +203,11 @@ var CONFIG = {
     // into two tabs and feeds the record modal's stock-backed name
     // suggestions (รายการเวชภัณฑ์ที่ใช้ / รายการซื้อยาเพิ่ม). Blank on rows
     // created before the split, which read as 'supply' (see stockTypeOf_).
-    Stock: ['ItemID', 'Name', 'Category', 'Unit', 'Qty', 'CreatedAt', 'UpdatedAt', 'StockType'],
+    // MinQty = จำนวนสต๊อกขั้นต่ำ (drives the ใกล้หมด badge); CostPrice =
+    // ราคาทุน (admin-only — stripped from every non-admin response and never
+    // overwritten by a non-admin save); Price1..Price50 = ราคาขาย per quantity
+    // tier, see STOCK_PRICE_TIERS.
+    Stock: ['ItemID', 'Name', 'Category', 'Unit', 'Qty', 'CreatedAt', 'UpdatedAt', 'StockType', 'MinQty', 'CostPrice', 'Price1', 'Price3', 'Price5', 'Price10', 'Price20', 'Price50'],
     // StockLog (round 25) — one row per item PER "อัพเดตสต๊อก" batch save; a
     // single save (one Date + one Note) can spawn several StockLog rows,
     // one per item line, sharing that Date/Note (mirrors the
@@ -220,7 +224,10 @@ var CONFIG = {
     // display logic and any other reader of Stock.Qty keeps working
     // unchanged; the Stock page's new table always shows the latest
     // StockLog entry's QtyRemaining per item, sorted by that entry's Date.
-    StockLog: ['LogID', 'Date', 'ItemID', 'ItemName', 'QtyIn', 'QtyRemaining', 'Note', 'CreatedBy', 'CreatedAt'],
+    // QtyOut/Kind appended later: Kind is what produced the row (see
+    // STOCK_LOG_KINDS); rows written before QtyOut existed have it blank and
+    // getStockLog derives it from the previous row's QtyRemaining instead.
+    StockLog: ['LogID', 'Date', 'ItemID', 'ItemName', 'QtyIn', 'QtyRemaining', 'Note', 'CreatedBy', 'CreatedAt', 'QtyOut', 'Kind'],
     Expenses: ['ExpID', 'Date', 'Name', 'Category', 'Amount', 'CreatedBy', 'CreatedAt'],
     Orders: ['PoID', 'Date', 'Supplier', 'TotalAmount', 'CreatedBy', 'CreatedAt'],
     OrderLines: ['LineID', 'PoID', 'Category', 'ItemName', 'Qty', 'UnitPrice', 'LineTotal'],
@@ -1454,9 +1461,14 @@ function saveClinicSettings(token, settings) {
    จัดการสต๊อกสินค้า/อุปกรณ์ — Stock
    ====================================================================== */
 
+// ราคาขาย quantity tiers — one Stock column per tier (Price1, Price3, ...).
+var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
+// StockLog.Kind values. '' (rows written before Kind existed) reads as 'update'.
+var STOCK_LOG_KINDS = { update: 1, in: 1, out: 1, set: 1, import: 1, opening: 1 };
+
 function listStock(token, opts) {
   return safeCall_(function () {
-    requireAuth_(token, 'staff');
+    var session = requireAuth_(token, 'staff');
     opts = opts || {};
     var filters = compactFilters_(opts.filters);
     var rows = getRows_(getSheet_(CONFIG.SHEETS.STOCK));
@@ -1471,10 +1483,8 @@ function listStock(token, opts) {
     // StockLog entry's Date (items with no log entries yet sink to the
     // bottom, then alphabetical as a tiebreaker/fallback). Join once here
     // rather than per-item, and hand the same latest-entry object to
-    // mapStockOut_ so the summary row can show "จำนวนคงเหลือ (ดึงข้อมูลจาก
-    // วันที่ล่าสุด)" without a second round-trip per item — the full history
-    // for the expandable sub-table is fetched separately via getStockLog
-    // when a row is expanded.
+    // mapStockOut_ so the row can show the latest จำนวนคงเหลือ without a
+    // second round-trip per item.
     var latestByItem = latestStockLogByItem_();
     rows.sort(function (a, b) {
       var la = latestByItem[a.ItemID], lb = latestByItem[b.ItemID];
@@ -1483,13 +1493,14 @@ function listStock(token, opts) {
       if (da !== db) return db.localeCompare(da);
       return String(a.Name).localeCompare(String(b.Name), 'th');
     });
+    var showCost = session.level === 'admin';
     var page = paginate_(rows, opts.page, opts.pageSize);
-    page.items = page.items.map(function (r) { return mapStockOut_(r, latestByItem[r.ItemID]); });
+    page.items = page.items.map(function (r) { return mapStockOut_(r, latestByItem[r.ItemID], showCost); });
     return { ok: true, data: page };
   });
 }
 
-/** Returns {ItemID: latestStockLogRow} — the most recent (by Date, then CreatedAt as a same-day tiebreaker) StockLog row per item. Shared by listStock's sort/display and by saveStockUpdate/editStockLogEntry/deleteStockLogEntry's Stock.Qty re-sync so "latest wins" is defined in exactly one place. */
+/** Returns {ItemID: latestStockLogRow} — the most recent (by Date, then CreatedAt as a same-day tiebreaker) StockLog row per item. Shared by listStock's sort/display and by every StockLog write's Stock.Qty re-sync so "latest wins" is defined in exactly one place. */
 function latestStockLogByItem_() {
   var logRows = getRows_(getSheet_(CONFIG.SHEETS.STOCK_LOG));
   var latestByItem = {};
@@ -1519,52 +1530,99 @@ function stockTypeOf_(s) {
   return s.StockType === 'medicine' ? 'medicine' : 'supply';
 }
 
-function mapStockOut_(s, latestLog) {
-  return {
+/** Blank cell -> null (so the client can show "-"), anything else -> Number. */
+function numOrNull_(v) {
+  return (v === '' || v === null || v === undefined) ? null : (Number(v) || 0);
+}
+
+/** Optional numeric input (blank allowed, else must be >= 0) -> value to store ('' for blank). */
+function optionalNumber_(v, label) {
+  if (v === '' || v === null || v === undefined) return '';
+  return requireNumber_(v, label, { min: 0 });
+}
+
+/** `showCost` must only be true for admins — ราคาทุน never leaves the server otherwise. */
+function mapStockOut_(s, latestLog, showCost) {
+  var out = {
     id: s.ItemID, name: s.Name, category: s.Category, unit: s.Unit, qty: Number(s.Qty) || 0, row: s._row,
     type: stockTypeOf_(s),
+    minQty: numOrNull_(s.MinQty),
+    prices: STOCK_PRICE_TIERS.map(function (t) { return numOrNull_(s['Price' + t]); }),
     latestDate: latestLog ? dateStr_(latestLog.Date) : null,
     latestQtyRemaining: latestLog ? (Number(latestLog.QtyRemaining) || 0) : null
   };
+  if (showCost) out.costPrice = numOrNull_(s.CostPrice);
+  return out;
 }
 
 function searchStock(token, q, limit) {
   return safeCall_(function () {
-    requireAuth_(token, 'staff');
+    var session = requireAuth_(token, 'staff');
     q = String(q || '').trim().toLowerCase();
     if (!q) return { ok: true, data: [] };
     var rows = getRows_(getSheet_(CONFIG.SHEETS.STOCK));
     var matches = rows.filter(function (r) { return String(r.Name).toLowerCase().indexOf(q) > -1; }).slice(0, limit || 8);
-    return { ok: true, data: matches.map(mapStockOut_) };
+    return { ok: true, data: matches.map(function (r) { return mapStockOut_(r, null, session.level === 'admin'); }) };
   });
 }
 
+/** Builds one StockLog row object. qtyIn/qtyOut/qtyRemaining are already-validated numbers. */
+function stockLogRow_(session, logId, date, item, kind, qtyIn, qtyOut, qtyRemaining, note) {
+  return {
+    LogID: logId, Date: date, ItemID: item.ItemID, ItemName: item.Name,
+    QtyIn: qtyIn, QtyRemaining: qtyRemaining, Note: note || '',
+    CreatedBy: session.username, CreatedAt: nowStr_(), QtyOut: qtyOut, Kind: kind
+  };
+}
+
+/**
+ * item: {id?, type, name, category, unit, minQty, costPrice, prices:[6], qty}.
+ * `qty` is only used when creating an item (written as a ยอดยกมา StockLog
+ * entry); an existing item's quantity only changes through StockLog writes
+ * (adjustStock / saveStockUpdate / importStockCsv), never through this form.
+ */
 function saveStockItem(token, item) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'staff');
     requireFields_(item, { name: 'ชื่อสินค้า', category: 'หมวดหมู่', unit: 'หน่วยนับ' });
-    var qty = requireNumber_(item.qty || 0, 'จำนวนคงเหลือ', { min: 0 });
+    var isAdmin = session.level === 'admin';
+    var prices = Array.isArray(item.prices) ? item.prices : [];
 
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     try {
       var sheet = getSheet_(CONFIG.SHEETS.STOCK);
       var isNew = !item.id;
-      var obj = {
+      var existing = null;
+      if (!isNew) {
+        existing = getRows_(sheet).filter(function (r) { return r.ItemID === item.id; })[0];
+        if (!existing) throw ValidationError_('ไม่พบสินค้า');
+      }
+      var initialQty = isNew ? requireNumber_(item.qty || 0, 'จำนวนคงเหลือ', { min: 0 }) : 0;
+      var obj = Object.assign({}, existing || {}, {
         ItemID: isNew ? ('ST' + nextSeq_('STOCK', 4)) : item.id,
-        Name: item.name, Category: item.category, Unit: item.unit, Qty: qty,
-        CreatedAt: isNew ? nowStr_() : (item.createdAt || nowStr_()), UpdatedAt: nowStr_(),
-        StockType: item.type === 'medicine' ? 'medicine' : 'supply'
-      };
-      if (isNew) appendRow_(sheet, CONFIG.HEADERS.Stock, obj);
-      else {
-        var rowIndex = findRowIndexById_(sheet, 'ItemID', item.id);
-        if (rowIndex < 0) throw ValidationError_('ไม่พบสินค้า');
-        updateRowByIndex_(sheet, CONFIG.HEADERS.Stock, rowIndex, obj);
+        Name: item.name, Category: item.category, Unit: item.unit,
+        Qty: isNew ? initialQty : (Number(existing.Qty) || 0),
+        CreatedAt: isNew ? nowStr_() : existing.CreatedAt, UpdatedAt: nowStr_(),
+        StockType: item.type === 'medicine' ? 'medicine' : 'supply',
+        MinQty: optionalNumber_(item.minQty, 'จำนวนสต๊อกขั้นต่ำ'),
+        CostPrice: isAdmin ? optionalNumber_(item.costPrice, 'ราคาทุน') : (existing ? existing.CostPrice : '')
+      });
+      STOCK_PRICE_TIERS.forEach(function (t, i) { obj['Price' + t] = optionalNumber_(prices[i], 'ราคาขาย ' + t + ' ชิ้น'); });
+      delete obj._row;
+
+      if (isNew) {
+        appendRow_(sheet, CONFIG.HEADERS.Stock, obj);
+        if (initialQty > 0) {
+          appendRow_(getSheet_(CONFIG.SHEETS.STOCK_LOG), CONFIG.HEADERS.StockLog,
+            stockLogRow_(session, 'SL' + nextSeq_('STOCKLOG', 5), todayStr_(), obj, 'opening', initialQty, 0, initialQty, 'ยอดยกมา'));
+        }
+      } else {
+        updateRowByIndex_(sheet, CONFIG.HEADERS.Stock, existing._row, obj);
       }
       writeAudit_(session, isNew ? 'CREATE' : 'UPDATE', 'Stock', obj.ItemID, obj.Name);
       invalidateStockLiteCache_();
-      return { ok: true, data: mapStockOut_(Object.assign({ _row: 0 }, obj)) };
+      return { ok: true, data: mapStockOut_(Object.assign({ _row: 0 }, obj), null, isAdmin) };
     } finally {
       lock.releaseLock();
     }
@@ -1574,10 +1632,9 @@ function saveStockItem(token, item) {
 /**
  * Adjusts stock quantity by a signed delta. Previously called automatically
  * from saveRecord/deleteRecord to deduct/restore supplies used on a
- * treatment record; Round 14 item 1.2 removed that automatic linkage (the
- * อุปกรณ์/เวชภัณฑ์ picker was cut from the record modal). Left in place,
- * currently unused, in case a future feature needs a signed stock
- * adjustment helper again.
+ * treatment record; Round 14 item 1.2 removed that automatic linkage.
+ * Left in place, currently unused (manual adjustments go through
+ * adjustStock below, which also writes the StockLog history).
  */
 function adjustStockQty_(itemId, delta) {
   var sheet = getSheet_(CONFIG.SHEETS.STOCK);
@@ -1599,6 +1656,187 @@ function deleteStockItem(token, id) {
     writeAudit_(session, 'DELETE', 'Stock', id, '');
     invalidateStockLiteCache_();
     return { ok: true };
+  });
+}
+
+/**
+ * Adjust one item's stock. payload: {itemId, date, kind, qty, note} where
+ * kind is 'in' (รับเข้า: +qty), 'out' (เบิกออก: -qty) or 'set' (ปรับยอด:
+ * the counted remaining becomes qty). The starting point is the item's
+ * current Stock.Qty (= its latest StockLog QtyRemaining).
+ */
+function adjustStock(token, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'staff');
+    payload = payload || {};
+    requireFields_(payload, { itemId: 'สินค้า', date: 'วันที่', kind: 'ประเภทการปรับ' });
+    requireDateStr_(payload.date, 'วันที่');
+    if (['in', 'out', 'set'].indexOf(payload.kind) === -1) throw ValidationError_('ประเภทการปรับไม่ถูกต้อง');
+    var qty = requireNumber_(payload.qty, 'จำนวน', { min: 0 });
+
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var item = getRows_(getSheet_(CONFIG.SHEETS.STOCK)).filter(function (r) { return r.ItemID === payload.itemId; })[0];
+      if (!item) throw ValidationError_('ไม่พบสินค้า');
+      var current = Number(item.Qty) || 0;
+      var qtyIn = 0, qtyOut = 0, remaining;
+      if (payload.kind === 'in') { qtyIn = qty; remaining = current + qty; }
+      else if (payload.kind === 'out') {
+        if (qty > current) throw ValidationError_('จำนวนเบิกออก (' + qty + ') มากกว่าจำนวนคงเหลือ (' + current + ')');
+        qtyOut = qty; remaining = current - qty;
+      } else {
+        remaining = qty;
+        if (qty > current) qtyIn = qty - current; else qtyOut = current - qty;
+      }
+      var logId = 'SL' + nextSeq_('STOCKLOG', 5);
+      appendRow_(getSheet_(CONFIG.SHEETS.STOCK_LOG), CONFIG.HEADERS.StockLog,
+        stockLogRow_(session, logId, payload.date, item, payload.kind, qtyIn, qtyOut, remaining, payload.note));
+      resyncStockQtyFromLog_(item.ItemID);
+      writeAudit_(session, 'ADJUST', 'StockLog', logId, item.Name + ' ' + payload.kind + ' ' + qty);
+      invalidateStockLiteCache_();
+      return { ok: true, data: { logId: logId, qtyRemaining: remaining } };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+/** Reserves `n` consecutive sequence numbers in one Counters read/write (bulk imports). */
+function nextSeqBlock_(counterKey, n, pad) {
+  if (n <= 0) return [];
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var sheet = getSheet_(CONFIG.SHEETS.COUNTERS);
+    var found = getRows_(sheet).filter(function (r) { return r.Key === counterKey; })[0];
+    var last = found ? Number(found.LastSeq) || 0 : 0;
+    if (found) updateRowByIndex_(sheet, CONFIG.HEADERS.Counters, found._row, { Key: counterKey, LastSeq: last + n });
+    else appendRow_(sheet, CONFIG.HEADERS.Counters, { Key: counterKey, LastSeq: n });
+    var out = [];
+    for (var i = 1; i <= n; i++) out.push(String(last + i).padStart(pad || 4, '0'));
+    return out;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * CSV upload. payload: {type, rows:[{name, category, unit, minQty, qty,
+ * costPrice, prices:[6]}]} — already parsed client-side. Rows are matched to
+ * existing items of the same type by name (trimmed, case-insensitive):
+ * matches are updated, the rest created. A blank cell leaves that field as
+ * it was; a non-blank จำนวนคงเหลือ that differs from the current quantity is
+ * written as an 'import' StockLog entry dated today. ราคาทุน is ignored for
+ * non-admins. Unknown หมวดหมู่ names are added as stock categories.
+ * Writes are batched (one setValues per sheet) so a few hundred rows fit
+ * comfortably inside the Apps Script time limit.
+ */
+function importStockCsv(token, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'staff');
+    payload = payload || {};
+    var type = payload.type === 'medicine' ? 'medicine' : 'supply';
+    var input = Array.isArray(payload.rows) ? payload.rows : [];
+    if (!input.length) throw ValidationError_('ไม่พบรายการในไฟล์ CSV');
+    var isAdmin = session.level === 'admin';
+
+    // Validate everything before writing anything.
+    var clean = input.map(function (r, i) {
+      var line = ' (แถวที่ ' + (i + 1) + ')';
+      var name = String(r.name || '').trim();
+      if (!name) throw ValidationError_('ไม่มีชื่อรายการ' + line);
+      var prices = Array.isArray(r.prices) ? r.prices : [];
+      return {
+        name: name, category: String(r.category || '').trim(), unit: String(r.unit || '').trim(),
+        minQty: optionalNumber_(r.minQty, 'จำนวนสต๊อกขั้นต่ำ' + line),
+        qty: optionalNumber_(r.qty, 'จำนวนคงเหลือ' + line),
+        costPrice: isAdmin ? optionalNumber_(r.costPrice, 'ราคาทุน' + line) : '',
+        prices: STOCK_PRICE_TIERS.map(function (t, k) { return optionalNumber_(prices[k], 'ราคาขาย ' + t + ' ชิ้น' + line); })
+      };
+    });
+
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var stockSheet = getSheet_(CONFIG.SHEETS.STOCK);
+      var headers = CONFIG.HEADERS.Stock;
+      var allRows = getRows_(stockSheet);
+      var byName = {};
+      allRows.forEach(function (r) { if (stockTypeOf_(r) === type) byName[String(r.Name).trim().toLowerCase()] = r; });
+
+      var newCount = clean.filter(function (r, i) {
+        var key = r.name.toLowerCase();
+        // a name repeated inside the file only creates one item
+        return !byName[key] && clean.map(function (x) { return x.name.toLowerCase(); }).indexOf(key) === i;
+      }).length;
+      var newIds = nextSeqBlock_('STOCK', newCount, 4);
+      var created = [], updated = 0, logs = [], now = nowStr_(), today = todayStr_();
+
+      clean.forEach(function (r) {
+        var key = r.name.toLowerCase();
+        var row = byName[key];
+        var isNew = !row;
+        if (isNew) {
+          row = { ItemID: 'ST' + newIds.shift(), Name: r.name, Category: '', Unit: '', Qty: 0, CreatedAt: now, StockType: type };
+          byName[key] = row;
+          created.push(row);
+        } else if (created.indexOf(row) === -1) {
+          updated++;
+        }
+        if (r.category) row.Category = r.category;
+        if (r.unit) row.Unit = r.unit;
+        if (r.minQty !== '') row.MinQty = r.minQty;
+        if (r.costPrice !== '') row.CostPrice = r.costPrice;
+        STOCK_PRICE_TIERS.forEach(function (t, k) { if (r.prices[k] !== '') row['Price' + t] = r.prices[k]; });
+        row.UpdatedAt = now;
+        if (r.qty !== '') {
+          var current = Number(row.Qty) || 0;
+          if (isNew || r.qty !== current) {
+            logs.push({ row: row, qtyIn: Math.max(0, r.qty - current), qtyOut: Math.max(0, current - r.qty), remaining: r.qty });
+            row.Qty = r.qty;
+          }
+        }
+      });
+
+      // One rewrite of the existing block (blank rows kept as they are) + one append block for new rows.
+      var toValues = function (obj) { return headers.map(function (h) { return obj[h] !== undefined ? obj[h] : ''; }); };
+      if (allRows.length) {
+        var lastRow = stockSheet.getLastRow();
+        var block = stockSheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+        allRows.forEach(function (r) { block[r._row - 2] = toValues(r); });
+        stockSheet.getRange(2, 1, lastRow - 1, headers.length).setValues(block);
+      }
+      if (created.length) {
+        stockSheet.getRange(stockSheet.getLastRow() + 1, 1, created.length, headers.length).setValues(created.map(toValues));
+      }
+      if (logs.length) {
+        var logIds = nextSeqBlock_('STOCKLOG', logs.length, 5);
+        var logSheet = getSheet_(CONFIG.SHEETS.STOCK_LOG);
+        var logValues = logs.map(function (l, i) {
+          var obj = stockLogRow_(session, 'SL' + logIds[i], today, l.row, 'import', l.qtyIn, l.qtyOut, l.remaining, 'นำเข้า CSV');
+          return CONFIG.HEADERS.StockLog.map(function (h) { return obj[h] !== undefined ? obj[h] : ''; });
+        });
+        logSheet.getRange(logSheet.getLastRow() + 1, 1, logValues.length, CONFIG.HEADERS.StockLog.length).setValues(logValues);
+      }
+
+      // Add any หมวดหมู่ the file used that isn't a stock category yet.
+      var catSheet = getSheet_(CONFIG.SHEETS.CATEGORIES);
+      var knownCats = {};
+      getRows_(catSheet).forEach(function (c) { if (c.Type === 'stock') knownCats[c.Name] = true; });
+      var newCats = [];
+      clean.forEach(function (r) { if (r.category && !knownCats[r.category]) { knownCats[r.category] = true; newCats.push(r.category); } });
+      newCats.forEach(function (name) {
+        appendRow_(catSheet, CONFIG.HEADERS.Categories, { CategoryID: 'C' + nextSeq_('CATEGORY', 3), Type: 'stock', Name: name, SortOrder: 0 });
+      });
+      if (newCats.length) invalidateMasterCache_();
+
+      writeAudit_(session, 'IMPORT', 'Stock', '', type + ': +' + created.length + ' / ~' + updated + ' / log ' + logs.length);
+      invalidateStockLiteCache_();
+      return { ok: true, data: { created: created.length, updated: updated, logged: logs.length, newCategories: newCats } };
+    } finally {
+      lock.releaseLock();
+    }
   });
 }
 
@@ -1636,11 +1874,12 @@ function saveStockUpdate(token, payload) {
       var createdIds = [];
       items.forEach(function (it) {
         var logId = 'SL' + nextSeq_('STOCKLOG', 5);
-        appendRow_(logSheet, CONFIG.HEADERS.StockLog, {
-          LogID: logId, Date: payload.date, ItemID: it.itemId, ItemName: stockById[it.itemId].Name,
-          QtyIn: Number(it.qtyIn) || 0, QtyRemaining: Number(it.qtyRemaining),
-          Note: payload.note || '', CreatedBy: session.username, CreatedAt: nowStr_()
-        });
+        var item = stockById[it.itemId];
+        var qtyIn = Number(it.qtyIn) || 0, remaining = Number(it.qtyRemaining);
+        // จำนวนออก = whatever left between the previous count (+ this receipt) and the new count.
+        var qtyOut = Math.max(0, (Number(item.Qty) || 0) + qtyIn - remaining);
+        appendRow_(logSheet, CONFIG.HEADERS.StockLog, stockLogRow_(session, logId, payload.date, item, 'update', qtyIn, qtyOut, remaining, payload.note));
+        item.Qty = remaining; // same item twice in one batch chains off the first line
         createdIds.push(logId);
       });
       var touchedIds = {};
@@ -1655,31 +1894,43 @@ function saveStockUpdate(token, payload) {
   });
 }
 
-/** Full movement history for one item, newest first — lazy-loaded by the client when a Stock page row is expanded (mirrors the day panel's round-20 collapsible-detail pattern). */
+/** Full movement history for one item, newest first — shown in the Stock page's history side panel. Rows from before QtyOut existed get it derived from the previous row's remaining (prev + in - remaining). */
 function getStockLog(token, itemId) {
   return safeCall_(function () {
     requireAuth_(token, 'staff');
     var rows = getRows_(getSheet_(CONFIG.SHEETS.STOCK_LOG)).filter(function (l) { return l.ItemID === itemId; });
     rows.sort(function (a, b) {
-      var d = dateStr_(b.Date).localeCompare(dateStr_(a.Date));
+      var d = dateStr_(a.Date).localeCompare(dateStr_(b.Date));
       if (d !== 0) return d;
-      return String(b.CreatedAt).localeCompare(String(a.CreatedAt));
+      return String(a.CreatedAt).localeCompare(String(b.CreatedAt));
     });
-    return { ok: true, data: rows.map(mapStockLogOut_) };
+    var prev = 0;
+    var out = rows.map(function (l) {
+      var m = mapStockLogOut_(l);
+      if (l.QtyOut === '' || l.QtyOut === null || l.QtyOut === undefined) m.qtyOut = Math.max(0, prev + m.qtyIn - m.qtyRemaining);
+      prev = m.qtyRemaining;
+      return m;
+    });
+    return { ok: true, data: out.reverse() };
   });
 }
 
 function mapStockLogOut_(l) {
-  return { id: l.LogID, date: dateStr_(l.Date), itemId: l.ItemID, itemName: l.ItemName, qtyIn: Number(l.QtyIn) || 0, qtyRemaining: Number(l.QtyRemaining) || 0, note: l.Note, row: l._row };
+  return {
+    id: l.LogID, date: dateStr_(l.Date), itemId: l.ItemID, itemName: l.ItemName,
+    qtyIn: Number(l.QtyIn) || 0, qtyOut: Number(l.QtyOut) || 0, qtyRemaining: Number(l.QtyRemaining) || 0,
+    note: l.Note, kind: STOCK_LOG_KINDS[l.Kind] ? l.Kind : 'update', createdBy: l.CreatedBy || '', row: l._row
+  };
 }
 
-/** entry: {id, date, qtyIn, qtyRemaining, note} — edits ONE StockLog row (e.g. fixing a typo in a single item's line after the fact); does not touch the other item rows from that same original batch save. */
+/** entry: {id, date, qtyIn, qtyOut, qtyRemaining, note} — edits ONE StockLog row (e.g. fixing a typo in a single item's line after the fact); does not touch the other item rows from that same original batch save. */
 function editStockLogEntry(token, entry) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'staff');
     requireFields_(entry, { id: 'รายการ', date: 'วันที่' });
     requireDateStr_(entry.date, 'วันที่');
-    requireNumber_(entry.qtyIn || 0, 'จำนวนรับเข้า', { min: 0 });
+    requireNumber_(entry.qtyIn || 0, 'จำนวนเข้า', { min: 0 });
+    requireNumber_(entry.qtyOut || 0, 'จำนวนออก', { min: 0 });
     requireNumber_(entry.qtyRemaining, 'จำนวนคงเหลือ', { min: 0 });
 
     var lock = LockService.getScriptLock();
@@ -1690,8 +1941,8 @@ function editStockLogEntry(token, entry) {
       if (rowIndex < 0) throw ValidationError_('ไม่พบรายการ');
       var existing = getRows_(logSheet).filter(function (l) { return l._row === rowIndex; })[0];
       var obj = Object.assign({}, existing, {
-        Date: entry.date, QtyIn: Number(entry.qtyIn) || 0, QtyRemaining: Number(entry.qtyRemaining),
-        Note: entry.note || ''
+        Date: entry.date, QtyIn: Number(entry.qtyIn) || 0, QtyOut: Number(entry.qtyOut) || 0,
+        QtyRemaining: Number(entry.qtyRemaining), Note: entry.note || ''
       });
       updateRowByIndex_(logSheet, CONFIG.HEADERS.StockLog, rowIndex, obj);
       resyncStockQtyFromLog_(existing.ItemID);

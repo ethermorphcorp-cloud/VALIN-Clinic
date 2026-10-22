@@ -332,6 +332,11 @@ button,input,textarea,select{font-family:inherit}
    overlay (item 4). The panel itself opts back into normal hit-testing. */
 .side-panel-backdrop.side-panel-backdrop-passthrough{pointer-events:none}
 .side-panel-backdrop.side-panel-backdrop-passthrough .side-panel{pointer-events:auto}
+/* The stock history panel opens ปรับสต๊อก / แก้ไขรายการ modals on top of
+   itself, so it sits below the modal layer (2000) instead of above it. */
+#stockPanelRoot .side-panel-backdrop{z-index:1900}
+/* Stock table: cells never wrap; the wrapper scrolls sideways instead (รายการยา has 11-12 columns). */
+.stock-table th,.stock-table td{white-space:nowrap;padding-left:12px;padding-right:12px}
 </style>
 </head>
 <body>
@@ -345,6 +350,7 @@ button,input,textarea,select{font-family:inherit}
 <div id="patientPanelRoot"></div>
 <div id="recordPanelRoot"></div>
 <div id="dayPanelRoot"></div>
+<div id="stockPanelRoot"></div>
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script>
 var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
@@ -511,13 +517,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // once a suggestion is picked.
     patients: { list: null, page: 1, q: '', panel: null, photoProgress: null, searchSuggest: [] },
     records: { list: null, page: 1, q: '', doctorId: '', status: '', view: 'list', calYear: new Date().getFullYear(), calMonth: new Date().getMonth() + 1, calData: null, panel: null, dayPanel: null, opdPhotoUrl: null, opdPhotoProgress: null, searchSuggest: [], reloading: false },
-    // Round 25: `expanded` tracks which item rows have their history
-    // sub-table open (keyed by ItemID); `logCache` lazy-holds each expanded
-    // item's fetched StockLog history so re-expanding a row already opened
-    // this session doesn't re-fetch — cleared entry-by-entry whenever a
-    // save/edit/delete touches that item's log (see loadStockLog below).
     // `type` is the active tab: 'supply' (รายการเวชภัณฑ์) | 'medicine' (รายการยา).
-    stock: { type: 'supply', list: null, page: 1, q: '', category: '', searchSuggest: [], reloading: false, expanded: {}, logCache: {} },
+    // `panel` is the open history side panel: {item, log} (log null while loading).
+    stock: { type: 'supply', list: null, page: 1, q: '', category: '', searchSuggest: [], reloading: false, panel: null },
     // Round 19 item 2: `reloading`/`orderReloading` drive a dim-in-place
     // transition on the table (instead of a hard content-swap with zero
     // feedback in between) while a dropdown-filter-triggered reload is in
@@ -848,6 +850,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var target = NAV.filter(function (n) { return n.id === screenId; })[0];
     if (target && target.adminOnly && !isAdmin()) return;
     state.screen = screenId;
+    if (screenId !== 'stock' && state.stock.panel) closeStockPanel();
     render();
     if (screenId === 'dash' && !state.dash.data) loadDash();
     if (screenId === 'patients' && !state.patients.list) loadPatients();
@@ -2431,7 +2434,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
 
   /* ================================================================== */
-  /* STOCK — จัดการสต๊อกสินค้า/อุปกรณ์                                     */
+  /* STOCK — จัดการสต๊อก (tabs: รายการเวชภัณฑ์ / รายการยา)                  */
   /* ================================================================== */
   function loadStock() {
     var type = state.stock.type;
@@ -2441,6 +2444,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     });
   }
   var STOCK_TABS = [{ id: 'supply', label: 'รายการเวชภัณฑ์' }, { id: 'medicine', label: 'รายการยา' }];
+  // Must match STOCK_PRICE_TIERS in Code.gs — item.prices[i] is the ราคาขาย for STOCK_PRICE_TIERS[i] ชิ้น.
+  var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
+  var STOCK_LOG_KIND_LABELS = { update: 'อัพเดตสต๊อก', in: 'รับเข้า', out: 'เบิกออก', set: 'ปรับยอดคงเหลือ', import: 'นำเข้า CSV', opening: 'ยอดยกมา' };
   function stockTypeLabel(type) { return type === 'medicine' ? 'ยา' : 'เวชภัณฑ์'; }
   function stockTab(type) {
     if (type === state.stock.type) return;
@@ -2448,119 +2454,156 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     state.stock.list = null; state.stock.page = 1; state.stock.q = ''; state.stock.category = ''; state.stock.searchSuggest = [];
     render(); loadStock();
   }
+  function stockNumCell(v) { return v == null ? '<span style="color:var(--muted)">-</span>' : esc(Number(v).toLocaleString('en-US')); }
+  function stockMoneyCell(v) { return v == null ? '<span style="color:var(--muted)">-</span>' : esc(money(v)); }
+
   /**
-   * Round 25 item 1: restructured from a flat one-row-per-item table into a
-   * two-tier accordion — each item is a summary row (name/category/latest
-   * qty, "เรียงตาม update ล่าสุด" per listStock's server-side sort) that
-   * expands to a nested history sub-table of every StockLog entry for that
-   * item (date/qtyIn/qtyRemaining/note/edit-delete). Reuses the same
-   * always-in-DOM + CSS max-height toggle technique as the day panel's
-   * round-20 collapsible rows (see toggleDaySection) so expanding/collapsing
-   * a row animates smoothly, but driven through the normal render() cycle
-   * (not a hand-patched DOM node) since — unlike the day panel's live-typing
-   * inputs — nothing here needs focus/caret preservation across a re-render.
+   * Flat table, one row per item. รายการยา shows the full price sheet
+   * (ราคาทุน for admins only — the server never sends it to staff — and the
+   * six ราคาขาย tiers under one grouped header), so it scrolls sideways on
+   * narrow screens. Movement history moved from an expandable row into the
+   * per-row "ประวัติ" side panel (see stockPanelTemplate).
    */
   function stockTemplate() {
     var catOpts = [{ value: '', label: 'หมวดหมู่ทั้งหมด' }].concat((state.master.stockCategories || []).map(function (c) { return { value: c.name, label: c.name }; }));
     var L = state.stock.list;
-    var typeLabel = stockTypeLabel(state.stock.type);
-    var rows = !L ? '<tr><td colspan="4" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
-      (!L.items.length ? '<tr><td colspan="4" class="empty-state">ไม่พบรายการ' + typeLabel + '</td></tr>' :
-      L.items.map(stockItemRowsHtml).join(''));
+    var type = state.stock.type, typeLabel = stockTypeLabel(type);
+    var isMed = type === 'medicine', showCost = isMed && isAdmin();
+    var colCount = isMed ? (showCost ? 12 : 11) : 5;
+    var rows = !L ? '<tr><td colspan="' + colCount + '" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
+      (!L.items.length ? '<tr><td colspan="' + colCount + '" class="empty-state">ไม่พบรายการ' + typeLabel + '</td></tr>' :
+      L.items.map(function (s) { return stockItemRowHtml(s, isMed, showCost); }).join(''));
+    var th = 'padding:10px 12px;white-space:nowrap';
+    var head = isMed
+      ? '<tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
+          '<th rowspan="2" style="' + th + '">ชื่อยา</th><th rowspan="2" style="' + th + '">หมวดหมู่</th><th rowspan="2" style="' + th + '">จำนวนสต๊อกขั้นต่ำ</th><th rowspan="2" style="' + th + '">จำนวนคงเหลือ</th>' +
+          (showCost ? '<th rowspan="2" style="' + th + '">ราคาทุน</th>' : '') +
+          '<th colspan="6" style="' + th + ';text-align:center;border-bottom:1px solid var(--border)">ราคาขาย</th><th rowspan="2"></th></tr>' +
+        '<tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
+          STOCK_PRICE_TIERS.map(function (t) { return '<th style="' + th + '">จำนวน ' + t + ' ชิ้น</th>'; }).join('') + '</tr>'
+      : '<tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
+          '<th style="' + th + '">ชื่อเวชภัณฑ์</th><th style="' + th + '">หมวดหมู่</th><th style="' + th + '">จำนวนสต๊อกขั้นต่ำ</th><th style="' + th + '">จำนวนคงเหลือ</th><th></th></tr>';
     return '' +
-      tabBar(STOCK_TABS, state.stock.type, 'stock-tab') +
+      tabBar(STOCK_TABS, type, 'stock-tab') +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">' +
         searchScopeBoxHtml('stock', '240px') +
         '<button id="ddStockCat" class="btn" data-action="dd-stockcat">' + esc((catOpts.filter(function (o) { return o.value === state.stock.category; })[0] || {}).label || 'หมวดหมู่ทั้งหมด') + ' <span class="ms">expand_more</span></button>' +
-        '<button class="btn" style="margin-left:auto" data-action="new-stock"><span class="ms">add</span> เพิ่ม' + typeLabel + '</button>' +
+        '<button class="btn" style="margin-left:auto" data-action="stock-csv-template" title="ดาวน์โหลดไฟล์ตัวอย่าง CSV"><span class="ms">download</span> Template CSV</button>' +
+        '<button class="btn" data-action="stock-csv-upload"><span class="ms">upload_file</span> อัปโหลด CSV</button>' +
+        '<input type="file" id="stockCsvInput" accept=".csv,text/csv" style="display:none">' +
+        '<button class="btn" data-action="new-stock"><span class="ms">add</span> เพิ่ม' + typeLabel + '</button>' +
         '<button class="btn btn-primary" data-action="new-stock-update"><span class="ms">inventory</span> อัพเดตสต๊อก' + typeLabel + '</button>' +
       '</div>' +
       listCardWrap(
-        '<table class="table" style="width:100%;border-collapse:collapse;table-layout:fixed">' +
-          // Fixed colgroup widths so the collapsible history sub-table below
-          // (same 100%-width, table-layout:fixed scheme) can share the exact
-          // same "actions" column width/edge — see stockLogTableHtml(). Do
-          // not change these percentages without updating the matching set
-          // there too.
-          '<colgroup><col style="width:35%"><col style="width:20%"><col style="width:30%"><col style="width:15%"></colgroup>' +
-          '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">ชื่อ' + typeLabel + '</th><th>หมวดหมู่</th><th>จำนวนคงเหลือ (ล่าสุด)</th><th></th></tr></thead>' +
-          '<tbody>' + rows + '</tbody></table>', state.stock.reloading) + pagerHtml(L, 'stock-page');
+        '<div style="overflow-x:auto"><table class="table stock-table" style="width:100%;border-collapse:collapse">' +
+          '<thead>' + head + '</thead>' +
+          '<tbody>' + rows + '</tbody></table></div>', state.stock.reloading) + pagerHtml(L, 'stock-page');
   }
-  /** The two <tr>s (summary + collapsible history) for one Stock item. */
-  function stockItemRowsHtml(s) {
-    var expanded = !!state.stock.expanded[s.id];
-    var low = s.qty <= 10;
-    var qtyBadge = s.qty === 0 ? ' <span class="tag-badge" style="background:var(--red-soft);color:var(--red-dark)">หมด</span>' : (low ? ' <span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark)">ใกล้หมด</span>' : '');
-    var qtyText = s.latestQtyRemaining != null ? (esc(s.latestQtyRemaining) + ' ' + esc(s.unit)) : (esc(s.qty) + ' ' + esc(s.unit));
-    var dateNote = s.latestDate ? '<div style="font-size:11px;color:var(--muted)">อัพเดตล่าสุด ' + esc(s.latestDate) + '</div>' : '<div style="font-size:11px;color:var(--muted)">ยังไม่มีประวัติอัพเดต</div>';
-    return '' +
-      '<tr data-action="toggle-stock-row" data-arg="' + esc(s.id) + '" style="cursor:pointer">' +
-        '<td><span class="ms" style="vertical-align:middle;font-size:19px;color:var(--muted)">' + (expanded ? 'expand_less' : 'expand_more') + '</span> ' + esc(s.name) + '</td>' +
-        '<td>' + esc(s.category) + '</td>' +
-        '<td>' + qtyText + qtyBadge + dateNote + '</td>' +
-        '<td style="text-align:right" onclick="event.stopPropagation()">' +
-          '<button class="btn" data-action="edit-stock" data-arg="' + esc(s.id) + '" title="แก้ไขข้อมูลสินค้า"><span class="ms">edit</span></button> ' +
-          (isAdmin() ? '<button class="btn" data-action="delete-stock" data-arg="' + esc(s.id) + '" title="ลบสินค้า"><span class="ms">delete</span></button>' : '') +
-        '</td></tr>' +
-      // Note: unlike the day panel's `.day-detail-wrap` (a <div>, animatable
-      // via CSS max-height), this detail lives in its own <tr> — table rows
-      // don't animate cleanly via max-height across browsers, so this just
-      // shows/hides via inline `display` on a full render(). That's fine
-      // here (no focus/caret to preserve mid-toggle, unlike the day panel's
-      // live-typing inputs), just not animated.
-      // No horizontal padding on this wrapping <td>: the nested history
-      // table below needs to render at the exact same width as the outer
-      // table above (both 100% of the row) so their matching <colgroup>
-      // widths land at identical pixel positions — the "จัดการ" actions
-      // column in particular needs to sit directly under the outer table's
-      // actions column. Each nested table row still gets its own inset via
-      // ordinary cell padding (same as the outer table), so this doesn't
-      // read as flush-to-the-card-edge.
-      '<tr data-stock-detail="' + esc(s.id) + '"' + (expanded ? '' : ' style="display:none"') + '><td colspan="4" style="padding:0 0 12px;border:none">' +
-        '<div class="day-detail-inner" style="margin-top:0;padding-top:8px;border-top:1px dashed var(--border)">' + stockLogTableHtml(s.id) + '</div>' +
-      '</td></tr>';
+  function stockItemRowHtml(s, isMed, showCost) {
+    var qty = s.latestQtyRemaining != null ? s.latestQtyRemaining : s.qty;
+    // ใกล้หมด uses the item's own จำนวนสต๊อกขั้นต่ำ when set, else the old fixed threshold of 10.
+    var low = s.minQty != null ? qty <= s.minQty : qty <= 10;
+    var qtyBadge = qty === 0 ? ' <span class="tag-badge" style="background:var(--red-soft);color:var(--red-dark)">หมด</span>' : (low ? ' <span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark)">ใกล้หมด</span>' : '');
+    var dateNote = s.latestDate ? '<div style="font-size:11px;color:var(--muted)">อัพเดตล่าสุด ' + esc(s.latestDate) + '</div>' : '<div style="font-size:11px;color:var(--muted)">ยังไม่มีประวัติ</div>';
+    var actions = '<td style="text-align:right;white-space:nowrap">' +
+      '<button class="btn" data-action="stock-history" data-arg="' + esc(s.id) + '" title="ประวัติการเคลื่อนไหว"><span class="ms">history</span></button> ' +
+      '<button class="btn" data-action="stock-adjust" data-arg="' + esc(s.id) + '" title="ปรับสต๊อก"><span class="ms">tune</span></button> ' +
+      '<button class="btn" data-action="edit-stock" data-arg="' + esc(s.id) + '" title="แก้ไขข้อมูล"><span class="ms">edit</span></button> ' +
+      (isAdmin() ? '<button class="btn" data-action="delete-stock" data-arg="' + esc(s.id) + '" title="ลบ"><span class="ms">delete</span></button>' : '') +
+    '</td>';
+    return '<tr>' +
+      '<td style="padding:10px 12px">' + esc(s.name) + '</td>' +
+      '<td>' + esc(s.category) + '</td>' +
+      '<td>' + stockNumCell(s.minQty) + '</td>' +
+      '<td style="white-space:nowrap">' + esc(qty) + ' ' + esc(s.unit) + qtyBadge + dateNote + '</td>' +
+      (isMed ? (showCost ? '<td>' + stockMoneyCell(s.costPrice) + '</td>' : '') + (s.prices || []).map(function (p) { return '<td>' + stockMoneyCell(p) + '</td>'; }).join('') : '') +
+      actions + '</tr>';
   }
-  /** The nested "ประวัติการอัพเดต" sub-table for one item, lazy-loaded on first expand (see toggleStockRow/loadStockLog). */
-  function stockLogTableHtml(itemId) {
-    var log = state.stock.logCache[itemId];
-    if (!state.stock.expanded[itemId]) return '';
-    if (!log) return '<div class="empty-state" style="padding:14px 0"><span class="spin"></span> กำลังโหลดประวัติ...</div>';
-    if (!log.length) return '<div class="empty-state" style="padding:14px 0">ยังไม่มีประวัติอัพเดตสต๊อก</div>';
-    var rows = log.map(function (l) {
-      return '<tr>' +
-        '<td>' + esc(l.date) + '</td><td>' + esc(l.qtyIn) + '</td><td>' + esc(l.qtyRemaining) + '</td><td>' + esc(l.note || '') + '</td>' +
-        '<td style="text-align:right"><button class="btn" data-action="edit-stock-log" data-arg="' + esc(l.id) + '" title="แก้ไข"><span class="ms">edit</span></button> ' +
-          (isAdmin() ? '<button class="btn" data-action="delete-stock-log" data-arg="' + esc(l.id) + '" title="ลบ"><span class="ms">delete</span></button>' : '') + '</td></tr>';
-    }).join('');
-    return '<table class="table" style="width:100%;border-collapse:collapse;table-layout:fixed;background:var(--hover-bg);border-radius:var(--r-sm)">' +
-      // Same 100%-width/table-layout:fixed scheme as the outer stock table
-      // (stockTemplate()) — the first four columns here sum to 85%, matching
-      // the outer table's first three (35+20+30=85%), and the last column
-      // ("จัดการ") is 15% on both, so the two tables' actions columns land
-      // at the same pixel edges. Keep these two colgroups in sync.
-      '<colgroup><col style="width:15%"><col style="width:15%"><col style="width:15%"><col style="width:40%"><col style="width:15%"></colgroup>' +
-      '<thead><tr style="text-align:left;font-size:11.5px;color:var(--muted)"><th style="padding:8px 10px">วันที่</th><th>จำนวนรับเข้า</th><th>จำนวนคงเหลือ</th><th>หมายเหตุ</th><th>จัดการ</th></tr></thead>' +
-      '<tbody>' + rows + '</tbody></table>';
+  function stockItemById(id) { return ((state.stock.list && state.stock.list.items) || []).filter(function (x) { return x.id === id; })[0]; }
+
+  /* ---- ประวัติการเคลื่อนไหว side panel (own root, see renderStockPanel) ---- */
+  var stockPanelEl = document.getElementById('stockPanelRoot');
+  function renderStockPanel() { stockPanelEl.innerHTML = stockPanelTemplate(); }
+  function openStockPanel(id) {
+    var item = stockItemById(id);
+    if (!item) return;
+    state.stock.panel = { item: item, log: null };
+    renderStockPanel();
+    loadStockLog(id);
   }
-  function toggleStockRow(id) {
-    var nowExpanded = !state.stock.expanded[id];
-    state.stock.expanded[id] = nowExpanded;
-    render();
-    if (nowExpanded && !state.stock.logCache[id]) loadStockLog(id);
-  }
+  function closeStockPanel() { state.stock.panel = null; renderStockPanel(); }
   function loadStockLog(id) {
     call('getStockLog', session.token, id).then(function (res) {
-      state.stock.logCache[id] = res.data; render();
+      var p = state.stock.panel;
+      if (!p || p.item.id !== id) return; // panel closed/switched meanwhile
+      p.log = res.data;
+      var fresh = stockItemById(id);
+      if (fresh) p.item = fresh;
+      renderStockPanel();
     });
   }
+  /** Reloads whatever a StockLog write could have changed: the list, and the open history panel. */
+  function afterStockLogWrite() {
+    loadStock();
+    if (state.stock.panel) loadStockLog(state.stock.panel.item.id);
+  }
+  function stockPanelTemplate() {
+    var p = state.stock.panel;
+    if (!p) return '';
+    var it = p.item;
+    var log = p.log;
+    var td = 'padding:8px 6px;white-space:nowrap';
+    var table = !log ? '<div class="empty-state" style="padding:40px 0"><span class="spin"></span> กำลังโหลดประวัติ...</div>' :
+      (!log.length ? '<div class="empty-state" style="padding:40px 0">ยังไม่มีประวัติการเคลื่อนไหว</div>' :
+      '<table class="table" style="width:100%;border-collapse:collapse;font-size:12.5px">' +
+        '<thead><tr style="text-align:left;font-size:11px;color:var(--muted);background:var(--hover-bg)">' +
+          '<th style="' + td + ';padding-left:10px">วันที่</th><th style="' + td + '">รายละเอียด</th><th style="' + td + '">user</th>' +
+          '<th style="' + td + ';text-align:right">จำนวนเข้า</th><th style="' + td + ';text-align:right">จำนวนออก</th><th style="' + td + ';text-align:right">จำนวนคงเหลือ</th><th></th></tr></thead>' +
+        '<tbody>' + log.map(function (l) {
+          var detail = '<div style="font-weight:600">' + esc(STOCK_LOG_KIND_LABELS[l.kind] || l.kind) + '</div>' + (l.note ? '<div style="font-size:11px;color:var(--muted);white-space:normal">' + esc(l.note) + '</div>' : '');
+          return '<tr>' +
+            '<td style="' + td + ';padding-left:10px">' + esc(l.date) + '</td>' +
+            '<td style="padding:8px 6px">' + detail + '</td>' +
+            '<td style="' + td + '">' + esc(l.createdBy || '-') + '</td>' +
+            '<td style="' + td + ';text-align:right;color:var(--green-dark)">' + (l.qtyIn ? '+' + esc(l.qtyIn) : '-') + '</td>' +
+            '<td style="' + td + ';text-align:right;color:var(--red-dark)">' + (l.qtyOut ? '-' + esc(l.qtyOut) : '-') + '</td>' +
+            '<td style="' + td + ';text-align:right;font-weight:600">' + esc(l.qtyRemaining) + '</td>' +
+            '<td style="' + td + ';text-align:right">' +
+              '<button class="btn" data-action="edit-stock-log" data-arg="' + esc(l.id) + '" title="แก้ไข" style="padding:4px 6px"><span class="ms" style="font-size:16px">edit</span></button>' +
+              (isAdmin() ? ' <button class="btn" data-action="delete-stock-log" data-arg="' + esc(l.id) + '" title="ลบ" style="padding:4px 6px"><span class="ms" style="font-size:16px">delete</span></button>' : '') +
+            '</td></tr>';
+        }).join('') + '</tbody></table>');
+    var qty = it.latestQtyRemaining != null ? it.latestQtyRemaining : it.qty;
+    var body = '' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:18px 22px;border-bottom:1px solid var(--border);flex:none">' +
+        '<div><div style="font-size:16px;font-weight:700">' + esc(it.name) + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:2px">ประวัติการเคลื่อนไหว · ' + esc(stockTypeLabel(it.type)) + (it.category ? ' · ' + esc(it.category) : '') + '</div>' +
+        '<div style="font-size:13px;margin-top:6px">คงเหลือ <b>' + esc(qty) + ' ' + esc(it.unit) + '</b></div></div>' +
+        '<button data-action="close-stock-panel" style="border:none;background:none;cursor:pointer"><span class="ms">close</span></button>' +
+      '</div>' +
+      '<div style="flex:1;overflow:auto;padding:12px 16px">' + table + '</div>' +
+      '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;flex:none">' +
+        '<button class="btn" data-action="close-stock-panel">ปิด</button>' +
+        '<button class="btn btn-primary" data-action="stock-adjust" data-arg="' + esc(it.id) + '"><span class="ms">tune</span> ปรับสต๊อก</button>' +
+      '</div>';
+    return sidePanelShell('close-stock-panel', body, 'side-panel-wide');
+  }
 
-  function newStockModal() { openModal('stock', { type: state.stock.type, name: '', category: (state.master.stockCategories[0] || {}).name || '', unit: '', qty: 0 }); }
+  /* ---- เพิ่ม/แก้ไข รายการ ---- */
+  function newStockModal() {
+    openModal('stock', { type: state.stock.type, name: '', category: (state.master.stockCategories[0] || {}).name || '', unit: '', minQty: '', qty: 0, costPrice: '', prices: STOCK_PRICE_TIERS.map(function () { return ''; }) });
+  }
   function editStockModal(id) {
-    var s = state.stock.list.items.filter(function (x) { return x.id === id; })[0];
-    if (s) openModal('stock', Object.assign({}, s));
+    var s = stockItemById(id);
+    if (!s) return;
+    var blank = function (v) { return v == null ? '' : v; };
+    openModal('stock', Object.assign({}, s, {
+      minQty: blank(s.minQty), costPrice: blank(s.costPrice),
+      prices: STOCK_PRICE_TIERS.map(function (t, i) { return blank((s.prices || [])[i]); })
+    }));
   }
   function deleteStockConfirm(id) {
-    Swal.fire({ icon: 'warning', title: 'ลบสินค้านี้?', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
+    Swal.fire({ icon: 'warning', title: 'ลบรายการนี้?', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
       if (!r.isConfirmed) return;
       call('deleteStockItem', session.token, id).then(function () { toast('success', 'ลบแล้ว'); loadStock(); refreshStockSuggestCache(); });
     });
@@ -2570,16 +2613,172 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var catOpts = (state.master.stockCategories || []).map(function (c) { return { value: c.name, label: c.name }; });
     var typeOpts = STOCK_TABS.map(function (t) { return { value: t.id, label: stockTypeLabel(t.id) }; });
     var typeLabel = stockTypeLabel(d.type);
+    var optNum = function (path) { return bindInput(path, 'number', 'min="0" step="any" data-blank-ok'); };
+    var priceFields = d.type !== 'medicine' ? '' :
+      (isAdmin() ? field('ราคาทุน', optNum('costPrice')) : '') +
+      '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">ราคาขาย</label></div>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">' +
+        STOCK_PRICE_TIERS.map(function (t, i) { return field('จำนวน ' + t + ' ชิ้น', optNum('prices.' + i)); }).join('') +
+      '</div>';
     return modalHeader(d.id ? 'แก้ไข' + typeLabel : 'เพิ่ม' + typeLabel + 'ใหม่') +
       field('ประเภทสต๊อก', bindSelect('type', typeOpts)) +
       field('ชื่อ' + typeLabel, bindInput('name')) +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
         field('หมวดหมู่', bindSelect('category', catOpts)) + field('หน่วยนับ', bindInput('unit')) +
+        field('จำนวนสต๊อกขั้นต่ำ', optNum('minQty')) +
+        // An existing item's quantity only changes through ปรับสต๊อก/อัพเดตสต๊อก (so it lands in the history).
+        (d.id ? '' : field('จำนวนคงเหลือเริ่มต้น', bindInput('qty', 'number', 'min="0"'))) +
       '</div>' +
-      field('จำนวนคงเหลือ', bindInput('qty', 'number')) + saveBtn();
+      priceFields + saveBtn();
   }
   function saveStockModal() {
-    call('saveStockItem', session.token, state.draft).then(function () { toast('success', 'บันทึกแล้ว'); closeModal(); loadStock(); refreshStockSuggestCache(); });
+    call('saveStockItem', session.token, state.draft).then(function () { toast('success', 'บันทึกแล้ว'); closeModal(); afterStockLogWrite(); refreshStockSuggestCache(); });
+  }
+
+  /* ---- ปรับสต๊อก: one item, รับเข้า / เบิกออก / ปรับยอดคงเหลือ ---- */
+  function newStockAdjustModal(id) {
+    var s = stockItemById(id) || (state.stock.panel && state.stock.panel.item);
+    if (!s) return;
+    var qty = s.latestQtyRemaining != null ? s.latestQtyRemaining : s.qty;
+    openModal('stockadjust', { itemId: s.id, itemName: s.name, unit: s.unit, current: qty, date: todayStr(), kind: 'in', qty: 0, note: '' });
+  }
+  function stockAdjustResult(d) {
+    var q = Number(d.qty) || 0, cur = Number(d.current) || 0;
+    return d.kind === 'in' ? cur + q : (d.kind === 'out' ? cur - q : q);
+  }
+  /** Live "คงเหลือหลังปรับ" line — patched in place by the input listener (see STOCK_ADJUST_LIVE_PATHS) so typing never re-renders the modal. */
+  function stockAdjustPreviewHtml(d) {
+    var after = stockAdjustResult(d);
+    return 'คงเหลือปัจจุบัน <b>' + esc(d.current) + '</b> → หลังปรับ <b style="color:' + (after < 0 ? 'var(--red-dark)' : 'var(--green-dark)') + '">' + esc(after) + '</b> ' + esc(d.unit) +
+      (after < 0 ? '<div style="color:var(--red-dark);font-size:12px;margin-top:4px">จำนวนเบิกออกมากกว่าจำนวนคงเหลือ</div>' : '');
+  }
+  function stockAdjustModalBody() {
+    var d = state.draft;
+    var kindOpts = [{ value: 'in', label: 'รับเข้า (+)' }, { value: 'out', label: 'เบิกออก (−)' }, { value: 'set', label: 'ปรับยอดคงเหลือ (นับจริง)' }];
+    return modalHeader('ปรับสต๊อก: ' + d.itemName) +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
+        field('วันที่', bindInput('date', 'date')) + field('ประเภทการปรับ', bindSelect('kind', kindOpts)) +
+      '</div>' +
+      field(d.kind === 'set' ? 'จำนวนคงเหลือที่นับได้' : 'จำนวน', bindInput('qty', 'number', 'min="0" step="any"')) +
+      '<div id="stockAdjustPreview" style="background:var(--hover-bg);border-radius:var(--r-sm);padding:10px 14px;margin-bottom:12px;font-size:13px">' + stockAdjustPreviewHtml(d) + '</div>' +
+      field('หมายเหตุ / รายละเอียด', bindTextarea('note', 2)) + saveBtn();
+  }
+  function saveStockAdjustModal() {
+    var d = state.draft;
+    if (stockAdjustResult(d) < 0) { toast('error', 'จำนวนเบิกออกมากกว่าจำนวนคงเหลือ'); return; }
+    call('adjustStock', session.token, { itemId: d.itemId, date: d.date, kind: d.kind, qty: d.qty, note: d.note }).then(function () {
+      toast('success', 'ปรับสต๊อกแล้ว'); closeModal(); afterStockLogWrite();
+    });
+  }
+
+  /* ---- อัปโหลด CSV ---- */
+  // Header text -> field. The ราคาขาย tier columns are matched by their "N ชิ้น" number.
+  var STOCK_CSV_COLUMNS = [
+    { re: /^ชื่อ/, key: 'name' }, { re: /หมวด/, key: 'category' }, { re: /หน่วย/, key: 'unit' },
+    { re: /ขั้นต่ำ/, key: 'minQty' }, { re: /คงเหลือ/, key: 'qty' }, { re: /ทุน/, key: 'costPrice' }
+  ];
+  function stockCsvHeaders(type) {
+    var h = [type === 'medicine' ? 'ชื่อยา' : 'ชื่อเวชภัณฑ์', 'หมวดหมู่', 'หน่วย', 'จำนวนสต๊อกขั้นต่ำ', 'จำนวนคงเหลือ'];
+    return type === 'medicine' ? h.concat(['ราคาทุน'], STOCK_PRICE_TIERS.map(function (t) { return 'ราคาขาย จำนวน ' + t + ' ชิ้น'; })) : h;
+  }
+  function downloadStockCsvTemplate() {
+    var csv = '﻿' + stockCsvHeaders(state.stock.type).join(',') + '\r\n';
+    var a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+    a.download = 'stock-' + state.stock.type + '-template.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+  /** Minimal RFC-4180 CSV parser (quoted fields, "" escapes, CRLF/LF). */
+  function parseCsv(text) {
+    var rows = [], row = [], cell = '', q = false;
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charAt(i);
+      if (q) {
+        if (c === '"') { if (text.charAt(i + 1) === '"') { cell += '"'; i++; } else q = false; }
+        else cell += c;
+      } else if (c === '"') q = true;
+      else if (c === ',') { row.push(cell); cell = ''; }
+      else if (c === '\n' || c === '\r') {
+        if (c === '\r' && text.charAt(i + 1) === '\n') i++;
+        row.push(cell); rows.push(row); row = []; cell = '';
+      } else cell += c;
+    }
+    if (cell !== '' || row.length) { row.push(cell); rows.push(row); }
+    return rows;
+  }
+  /** CSV text -> {rows, columns} in importStockCsv's shape, or {error}. The header row is the first row with a "ชื่อ..." cell, so a merged "ราคาขาย" row above it is skipped. */
+  function stockRowsFromCsv(text) {
+    var grid = parseCsv(text.replace(/^﻿/, ''));
+    var hi = -1;
+    for (var r = 0; r < grid.length && hi < 0; r++) {
+      if (grid[r].some(function (c) { return /^ชื่อ/.test(String(c).trim()); })) hi = r;
+    }
+    if (hi < 0) return { error: 'ไม่พบหัวตาราง (ต้องมีคอลัมน์ที่ขึ้นต้นด้วย "ชื่อ" เช่น ชื่อยา)' };
+    var colMap = {}, found = [];
+    grid[hi].forEach(function (raw, ci) {
+      var h = String(raw).trim();
+      if (!h) return;
+      var tier = h.match(/(\d+)\s*ชิ้น/);
+      if (tier && STOCK_PRICE_TIERS.indexOf(Number(tier[1])) > -1) { colMap[ci] = 'price' + tier[1]; found.push(h); return; }
+      for (var k = 0; k < STOCK_CSV_COLUMNS.length; k++) {
+        if (STOCK_CSV_COLUMNS[k].re.test(h) && Object.keys(colMap).map(function (x) { return colMap[x]; }).indexOf(STOCK_CSV_COLUMNS[k].key) === -1) {
+          colMap[ci] = STOCK_CSV_COLUMNS[k].key; found.push(h); return;
+        }
+      }
+    });
+    var num = function (v) { v = String(v == null ? '' : v).replace(/[,\s฿]/g, ''); return v === '' ? '' : v; };
+    var rows = grid.slice(hi + 1).filter(function (cells) { return cells.some(function (c) { return String(c).trim(); }); }).map(function (cells) {
+      var o = { prices: STOCK_PRICE_TIERS.map(function () { return ''; }) };
+      Object.keys(colMap).forEach(function (ci) {
+        var key = colMap[ci], v = cells[ci] == null ? '' : String(cells[ci]).trim();
+        if (key.indexOf('price') === 0) o.prices[STOCK_PRICE_TIERS.indexOf(Number(key.slice(5)))] = num(v);
+        else o[key] = (key === 'name' || key === 'category' || key === 'unit') ? v : num(v);
+      });
+      return o;
+    });
+    if (!rows.length) return { error: 'ไม่พบรายการใต้หัวตาราง' };
+    return { rows: rows, columns: found };
+  }
+  function pickStockCsv() {
+    var input = document.getElementById('stockCsvInput');
+    input.onchange = function () {
+      var file = input.files && input.files[0];
+      input.value = '';
+      if (file) readStockCsv(file);
+    };
+    input.click();
+  }
+  function readStockCsv(file) {
+    var read = function (encoding, done) {
+      var fr = new FileReader();
+      fr.onload = function () { done(String(fr.result || '')); };
+      fr.readAsText(file, encoding);
+    };
+    // Excel's plain "CSV" save on Thai Windows is windows-874, not UTF-8 — retry if UTF-8 decoding produced replacement chars.
+    read('UTF-8', function (text) {
+      if (text.indexOf('�') > -1) read('windows-874', importStockCsvText);
+      else importStockCsvText(text);
+    });
+  }
+  function importStockCsvText(text) {
+    var parsed = stockRowsFromCsv(text);
+    if (parsed.error) { toast('error', parsed.error); return; }
+    var type = state.stock.type, typeLabel = stockTypeLabel(type);
+    var costNote = (!isAdmin() && parsed.columns.some(function (c) { return /ทุน/.test(c); })) ? '<div style="margin-top:6px;color:var(--amber-dark)">คอลัมน์ราคาทุนจะไม่ถูกนำเข้า (ต้องใช้สิทธิ์ผู้ดูแลระบบ)</div>' : '';
+    Swal.fire({
+      icon: 'question', title: 'นำเข้า ' + parsed.rows.length + ' รายการ เข้าสต๊อก' + typeLabel + '?',
+      html: '<div style="font-size:13px;text-align:left">คอลัมน์ที่พบ: ' + esc(parsed.columns.join(', ')) +
+        '<div style="margin-top:6px">ชื่อที่มีอยู่แล้วในสต๊อก' + typeLabel + 'จะถูกอัพเดต ชื่อใหม่จะถูกเพิ่ม ช่องว่างจะไม่เปลี่ยนค่าเดิม และจำนวนคงเหลือที่เปลี่ยนจะบันทึกลงประวัติ</div>' + costNote + '</div>',
+      showCancelButton: true, confirmButtonText: 'นำเข้า', cancelButtonText: 'ยกเลิก'
+    }).then(function (r) {
+      if (!r.isConfirmed) return;
+      call('importStockCsv', session.token, { type: type, rows: parsed.rows }).then(function (res) {
+        var d = res.data;
+        toast('success', 'นำเข้าแล้ว: เพิ่ม ' + d.created + ' · อัพเดต ' + d.updated + ' รายการ');
+        if (d.newCategories && d.newCategories.length) refreshMaster();
+        afterStockLogWrite(); refreshStockSuggestCache();
+      });
+    });
   }
 
   /* ---- อัพเดตสต๊อก (round 25 item 2): batch multi-item stock-log entry,
@@ -2614,50 +2813,35 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (!d.items.length) { toast('error', 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ'); return; }
     if (d.items.some(function (it) { return !it.itemId; })) { toast('error', 'กรุณาเลือกสินค้าให้ครบทุกรายการ'); return; }
     call('saveStockUpdate', session.token, d).then(function () {
-      toast('success', 'บันทึกอัพเดตสต๊อกแล้ว'); closeModal();
-      // Invalidate any cached history for the touched items so re-expanding
-      // those rows fetches the fresh entries instead of the stale cache.
-      d.items.forEach(function (it) { delete state.stock.logCache[it.itemId]; });
-      loadStock();
+      toast('success', 'บันทึกอัพเดตสต๊อกแล้ว'); closeModal(); afterStockLogWrite();
     });
   }
 
-  /* ---- แก้ไข/ลบ รายการประวัติอัพเดตสต๊อก (a single StockLog row) ---- */
+  /* ---- แก้ไข/ลบ รายการประวัติ (a single StockLog row, from the history panel) ---- */
   function editStockLogModal(logId) {
-    var itemId = Object.keys(state.stock.logCache).filter(function (iid) {
-      return (state.stock.logCache[iid] || []).some(function (l) { return l.id === logId; });
-    })[0];
-    var entry = itemId && state.stock.logCache[itemId].filter(function (l) { return l.id === logId; })[0];
-    if (entry) openModal('stocklogentry', Object.assign({ itemId: itemId }, entry));
+    var p = state.stock.panel;
+    var entry = p && (p.log || []).filter(function (l) { return l.id === logId; })[0];
+    if (entry) openModal('stocklogentry', Object.assign({}, entry));
   }
   function stockLogEntryModalBody() {
     var d = state.draft;
-    return modalHeader('แก้ไขรายการ (' + esc(d.itemName) + ')') +
+    return modalHeader('แก้ไขรายการ (' + d.itemName + ')') +
       field('วันที่', bindInput('date', 'date')) +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
-        field('จำนวนรับเข้า', bindInput('qtyIn', 'number')) + field('จำนวนคงเหลือ', bindInput('qtyRemaining', 'number')) +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">' +
+        field('จำนวนเข้า', bindInput('qtyIn', 'number')) + field('จำนวนออก', bindInput('qtyOut', 'number')) + field('จำนวนคงเหลือ', bindInput('qtyRemaining', 'number')) +
       '</div>' +
       field('หมายเหตุ', bindTextarea('note', 2)) + saveBtn();
   }
   function saveStockLogEntryModal() {
-    var d = state.draft;
-    call('editStockLogEntry', session.token, d).then(function () {
-      toast('success', 'บันทึกแล้ว'); closeModal();
-      delete state.stock.logCache[d.itemId];
-      loadStock();
-      if (state.stock.expanded[d.itemId]) loadStockLog(d.itemId);
+    call('editStockLogEntry', session.token, state.draft).then(function () {
+      toast('success', 'บันทึกแล้ว'); closeModal(); afterStockLogWrite();
     });
   }
   function deleteStockLogConfirm(logId) {
     Swal.fire({ icon: 'warning', title: 'ลบรายการประวัตินี้?', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
       if (!r.isConfirmed) return;
-      var itemId = Object.keys(state.stock.logCache).filter(function (iid) {
-        return (state.stock.logCache[iid] || []).some(function (l) { return l.id === logId; });
-      })[0];
       call('deleteStockLogEntry', session.token, logId).then(function () {
-        toast('success', 'ลบแล้ว');
-        if (itemId) { delete state.stock.logCache[itemId]; loadStock(); if (state.stock.expanded[itemId]) loadStockLog(itemId); }
-        else loadStock();
+        toast('success', 'ลบแล้ว'); afterStockLogWrite();
       });
     });
   }
@@ -3254,6 +3438,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'stock': return stockModalBody();
       case 'stockupdate': return stockUpdateModalBody();
       case 'stocklogentry': return stockLogEntryModalBody();
+      case 'stockadjust': return stockAdjustModalBody();
       case 'expense': return expenseModalBody();
       case 'order': return orderModalBody();
       case 'doctor': return doctorModalBody();
@@ -3272,6 +3457,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'stock': return saveStockModal();
       case 'stockupdate': return saveStockUpdateModal();
       case 'stocklogentry': return saveStockLogEntryModal();
+      case 'stockadjust': return saveStockAdjustModal();
       case 'expense': return saveExpenseModal();
       case 'order': return saveOrderModal();
       case 'doctor': return saveDoctorModal();
@@ -3402,7 +3588,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'edit-stock': editStockModal(arg); break;
       case 'delete-stock': deleteStockConfirm(arg); break;
       case 'stock-page': state.stock.page = Number(arg); render(); loadStock(); break;
-      case 'toggle-stock-row': toggleStockRow(arg); break;
+      case 'stock-history': openStockPanel(arg); break;
+      case 'close-stock-panel': case 'close-stock-panel-bg': if (ev.target === el || action === 'close-stock-panel') closeStockPanel(); break;
+      case 'stock-adjust': newStockAdjustModal(arg); break;
+      case 'stock-csv-upload': pickStockCsv(); break;
+      case 'stock-csv-template': downloadStockCsvTemplate(); break;
       case 'new-stock-update': newStockUpdateModal(); break;
       case 'add-stock-update-line': addStockUpdateLine(); break;
       case 'remove-stock-update-line': removeStockUpdateLine(Number(arg)); break;
@@ -3492,7 +3682,15 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (!bindPath || !state.draft) return;
     var moneyField = isMoneyBindPath(bindPath);
     var val = el.type === 'checkbox' ? el.checked : (moneyField ? parseMoneyInput(el.value) : (el.type === 'number' ? Number(el.value) : el.value));
+    // Optional numeric fields (e.g. stock prices) keep '' instead of 0 when cleared.
+    if (el.type === 'number' && el.value === '' && el.hasAttribute('data-blank-ok')) val = '';
     setPath(state.draft, bindPath, val);
+    if (state.modal && state.modal.type === 'stockadjust') {
+      if (bindPath === 'kind') { render(); return; } // label of the qty field depends on the kind
+      var adjustPreview = document.getElementById('stockAdjustPreview');
+      if (adjustPreview) adjustPreview.innerHTML = stockAdjustPreviewHtml(state.draft);
+      return;
+    }
     // Typing/picking a name that exactly matches a stock item links the line
     // to it (itemId) and, for a เวชภัณฑ์ line, fills its unit — patched
     // straight into the unit input, not via render(), so the caret stays put.
