@@ -622,6 +622,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var p = state.portal;
     portalEl.innerHTML = p.options.map(function (o) {
       var active = String(o.value) === String(p.value) ? ' active' : '';
+      // Optional `icon` (Material Symbols name) and `danger` (red, for delete-type actions) — used by action menus.
+      if (o.icon) {
+        return '<div class="opt' + active + '" data-portal-pick="' + esc(o.value) + '" style="justify-content:flex-start;align-items:center' + (o.danger ? ';color:var(--red-dark)' : '') + '">' +
+          '<span class="ms" style="font-size:18px;margin-right:10px' + (o.danger ? '' : ';color:var(--muted-2)') + '">' + esc(o.icon) + '</span>' + esc(o.label) + '</div>';
+      }
       return '<div class="opt' + active + '" data-portal-pick="' + esc(o.value) + '">' + esc(o.label) + '</div>';
     }).join('') || '<div class="opt" style="color:var(--muted)">ไม่มีตัวเลือก</div>';
     portalEl.classList.add('open');
@@ -2754,11 +2759,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var low = s.minQty != null ? qty <= s.minQty : qty <= 10;
     var qtyBadge = qty < 0 ? ' <span class="tag-badge" style="background:var(--red-soft);color:var(--red-dark)">ติดลบ</span>' : qty === 0 ? ' <span class="tag-badge" style="background:var(--red-soft);color:var(--red-dark)">หมด</span>' : (low ? ' <span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark)">ใกล้หมด</span>' : '');
     var dateNote = s.latestDate ? '<div style="font-size:11px;color:var(--muted)">อัพเดตล่าสุด ' + esc(s.latestDate) + '</div>' : '<div style="font-size:11px;color:var(--muted)">ยังไม่มีประวัติ</div>';
+    // One "จัดการ" button per row opening the shared portal dropdown (see openStockActions).
     var actions = '<td style="text-align:right;white-space:nowrap">' +
-      '<button class="btn" data-action="stock-history" data-arg="' + esc(s.id) + '" title="ประวัติการเคลื่อนไหว"><span class="ms">history</span></button> ' +
-      '<button class="btn" data-action="stock-adjust" data-arg="' + esc(s.id) + '" title="ปรับสต๊อก"><span class="ms">tune</span></button> ' +
-      '<button class="btn" data-action="edit-stock" data-arg="' + esc(s.id) + '" title="แก้ไขข้อมูล"><span class="ms">edit</span></button> ' +
-      (isAdmin() ? '<button class="btn" data-action="delete-stock" data-arg="' + esc(s.id) + '" title="ลบ"><span class="ms">delete</span></button>' : '') +
+      '<button class="btn" id="stockAct_' + esc(s.id) + '" data-action="dd-stock-actions" data-arg="' + esc(s.id) + '">จัดการ <span class="ms">expand_more</span></button>' +
     '</td>';
     return '<tr>' +
       '<td style="padding:10px 12px">' + esc(s.name) + '</td>' +
@@ -2772,6 +2775,23 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       actions + '</tr>';
   }
   function stockItemById(id) { return ((state.stock.list && state.stock.list.items) || []).filter(function (x) { return x.id === id; })[0]; }
+  /** The row's จัดการ menu: ประวัติ / ปรับสต๊อก / แก้ไข, plus ลบ for admins. */
+  function openStockActions(id) {
+    var triggerId = 'stockAct_' + id;
+    if (state.portal && state.portal.triggerId === triggerId) { closePortal(); return; } // second click closes
+    var opts = [
+      { value: 'history', label: 'ประวัติการเคลื่อนไหว', icon: 'history' },
+      { value: 'adjust', label: 'ปรับสต๊อก', icon: 'tune' },
+      { value: 'edit', label: 'แก้ไขข้อมูล', icon: 'edit' }
+    ];
+    if (isAdmin()) opts.push({ value: 'delete', label: 'ลบรายการ', icon: 'delete', danger: true });
+    openPortal(triggerId, opts, function (v) {
+      if (v === 'history') openStockPanel(id);
+      else if (v === 'adjust') newStockAdjustModal(id);
+      else if (v === 'edit') editStockModal(id);
+      else if (v === 'delete') deleteStockConfirm(id);
+    }, null);
+  }
 
   /* ---- ประวัติการเคลื่อนไหว side panel (own root, see renderStockPanel) ---- */
   var stockPanelEl = document.getElementById('stockPanelRoot');
@@ -4166,6 +4186,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'delete-stock': deleteStockConfirm(arg); break;
       case 'stock-page': state.stock.page = Number(arg); render(); loadStock(); break;
       case 'stock-history': openStockPanel(arg); break;
+      case 'dd-stock-actions': openStockActions(arg); break;
       case 'close-stock-panel': case 'close-stock-panel-bg': if (ev.target === el || action === 'close-stock-panel') closeStockPanel(); break;
       case 'stock-adjust': newStockAdjustModal(arg); break;
       case 'stock-csv-upload': pickStockCsv(); break;
