@@ -271,6 +271,15 @@ var CONFIG = {
     MedWithdrawals: ['Phone'],
     Staff: ['Username']
   },
+  // Numeric columns whose cell format is reset to automatic on every write
+  // (see applyTextColumnFormat_), so a cell left date-formatted from earlier
+  // data can't turn a quantity or price into a date.
+  NUMBER_COLUMNS: {
+    Stock: ['Qty', 'MinQty', 'CostPrice', 'Price1', 'Price3', 'Price5', 'Price10', 'Price20', 'Price50'],
+    StockLog: ['QtyIn', 'QtyRemaining', 'QtyOut'],
+    MedDeposits: ['QtyRemaining'],
+    MedWithdrawals: ['Qty', 'UnitCost', 'Amount']
+  },
   PROPS: {
     SPREADSHEET_ID: 'SPREADSHEET_ID',
     PHOTOS_FOLDER_ID: 'PHOTOS_FOLDER_ID',
@@ -457,20 +466,46 @@ function applyTextColumnFormat_(sheet, headers, rowIndex) {
     var idx = headers.indexOf(col);
     if (idx > -1) sheet.getRange(rowIndex, idx + 1, 1, 1).setNumberFormat('@');
   });
+  resetNumberFormats_(sheet, headers, rowIndex, 1);
+}
+
+/**
+ * NUMBER_COLUMNS: resets any leftover (e.g. date) format on `numRows` rows
+ * from `rowIndex` so numbers are stored as numbers — one call per
+ * contiguous run of numeric columns. Bulk writers (CSV import, seed) call
+ * this directly for their whole block.
+ */
+function resetNumberFormats_(sheet, headers, rowIndex, numRows) {
+  var numIdx = (CONFIG.NUMBER_COLUMNS[sheet.getName()] || []).map(function (c) { return headers.indexOf(c); })
+    .filter(function (i) { return i > -1; }).sort(function (a, b) { return a - b; });
+  for (var k = 0; k < numIdx.length; k++) {
+    var start = numIdx[k];
+    while (k + 1 < numIdx.length && numIdx[k + 1] === numIdx[k] + 1) k++;
+    sheet.getRange(rowIndex, start + 1, numRows, numIdx[k] - start + 1).clearFormat();
+  }
+}
+
+function isDate_(v) { return Object.prototype.toString.call(v) === '[object Date]'; }
+
+/** obj -> row values in header order; a NUMBER_COLUMNS value that was read back as a Date (see numOrNull_) goes back as its number. */
+function rowValues_(sheet, headers, obj) {
+  var numCols = CONFIG.NUMBER_COLUMNS[sheet.getName()] || [];
+  return headers.map(function (h) {
+    var v = obj[h] !== undefined ? obj[h] : '';
+    return isDate_(v) && numCols.indexOf(h) > -1 ? numOrNull_(v) : v;
+  });
 }
 
 function appendRow_(sheet, headers, obj) {
   var rowIndex = sheet.getLastRow() + 1;
   applyTextColumnFormat_(sheet, headers, rowIndex);
-  var row = headers.map(function (h) { return obj[h] !== undefined ? obj[h] : ''; });
-  sheet.getRange(rowIndex, 1, 1, headers.length).setValues([row]);
+  sheet.getRange(rowIndex, 1, 1, headers.length).setValues([rowValues_(sheet, headers, obj)]);
   return rowIndex;
 }
 
 function updateRowByIndex_(sheet, headers, rowIndex, obj) {
   applyTextColumnFormat_(sheet, headers, rowIndex);
-  var row = headers.map(function (h) { return obj[h] !== undefined ? obj[h] : ''; });
-  sheet.getRange(rowIndex, 1, 1, headers.length).setValues([row]);
+  sheet.getRange(rowIndex, 1, 1, headers.length).setValues([rowValues_(sheet, headers, obj)]);
 }
 
 function deleteRowByIndex_(sheet, rowIndex) {
@@ -1577,7 +1612,15 @@ function stockTypeOf_(s) {
 
 /** Blank cell -> null (so the client can show "-"), anything else -> Number. */
 function numOrNull_(v) {
-  return (v === '' || v === null || v === undefined) ? null : (Number(v) || 0);
+  if (v === '' || v === null || v === undefined) return null;
+  // A number written into a date-formatted cell is stored as a date serial
+  // (10 -> 1900-01-09) and read back as a Date — recover the number (days
+  // since 1899-12-30), snapping tiny old-timezone offsets to whole numbers.
+  if (isDate_(v)) {
+    var days = (v.getTime() - new Date(1899, 11, 30).getTime()) / 864e5;
+    return Math.abs(days - Math.round(days)) < 0.05 ? Math.round(days) : round2_(days);
+  }
+  return Number(v) || 0;
 }
 
 /** Optional numeric input (blank allowed, else must be >= 0) -> value to store ('' for blank). */
@@ -1843,15 +1886,20 @@ function importStockCsv(token, payload) {
       });
 
       // One rewrite of the existing block (blank rows kept as they are) + one append block for new rows.
-      var toValues = function (obj) { return headers.map(function (h) { return obj[h] !== undefined ? obj[h] : ''; }); };
+      // Numeric cells that were read back as dates (see numOrNull_) are written back as numbers.
+      var numCols = CONFIG.NUMBER_COLUMNS.Stock;
+      var toValues = function (obj) { return headers.map(function (h) { var v = obj[h] !== undefined ? obj[h] : ''; return isDate_(v) && numCols.indexOf(h) > -1 ? numOrNull_(v) : v; }); };
       if (allRows.length) {
         var lastRow = stockSheet.getLastRow();
         var block = stockSheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
         allRows.forEach(function (r) { block[r._row - 2] = toValues(r); });
+        resetNumberFormats_(stockSheet, headers, 2, lastRow - 1);
         stockSheet.getRange(2, 1, lastRow - 1, headers.length).setValues(block);
       }
       if (created.length) {
-        stockSheet.getRange(stockSheet.getLastRow() + 1, 1, created.length, headers.length).setValues(created.map(toValues));
+        var firstNew = stockSheet.getLastRow() + 1;
+        resetNumberFormats_(stockSheet, headers, firstNew, created.length);
+        stockSheet.getRange(firstNew, 1, created.length, headers.length).setValues(created.map(toValues));
       }
       if (logs.length) {
         var logIds = nextSeqBlock_('STOCKLOG', logs.length, 5);
@@ -1860,7 +1908,9 @@ function importStockCsv(token, payload) {
           var obj = stockLogRow_(session, 'SL' + logIds[i], today, l.row, 'import', l.qtyIn, l.qtyOut, l.remaining, 'นำเข้า CSV');
           return CONFIG.HEADERS.StockLog.map(function (h) { return obj[h] !== undefined ? obj[h] : ''; });
         });
-        logSheet.getRange(logSheet.getLastRow() + 1, 1, logValues.length, CONFIG.HEADERS.StockLog.length).setValues(logValues);
+        var firstLog = logSheet.getLastRow() + 1;
+        resetNumberFormats_(logSheet, CONFIG.HEADERS.StockLog, firstLog, logValues.length);
+        logSheet.getRange(firstLog, 1, logValues.length, CONFIG.HEADERS.StockLog.length).setValues(logValues);
       }
 
       // Add any หมวดหมู่ the file used that isn't a stock category yet.
@@ -3690,9 +3740,10 @@ function removeLogo(token) {
    accounts), its STAFF counter, and ClinicSettings (company info + logo).
    ====================================================================== */
 
+/** Empties every data row (values and formats — so no stale date formats linger); the header row is kept. */
 function clearSheetData_(sheet) {
   var lastRow = sheet.getLastRow();
-  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clearContent();
+  if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clear();
 }
 
 /** Every sheet except Staff and ClinicSettings, plus all counters except STAFF. */
@@ -3969,7 +4020,11 @@ function seedDemoData(token) {
         lg.LogID = 'SL' + logIds[k];
         return CONFIG.HEADERS.StockLog.map(function (h) { return lg[h] !== undefined ? lg[h] : ''; });
       });
-      if (logValues.length) logSheet.getRange(logSheet.getLastRow() + 1, 1, logValues.length, CONFIG.HEADERS.StockLog.length).setValues(logValues);
+      if (logValues.length) {
+        var firstLogRow = logSheet.getLastRow() + 1;
+        resetNumberFormats_(logSheet, CONFIG.HEADERS.StockLog, firstLogRow, logValues.length);
+        logSheet.getRange(firstLogRow, 1, logValues.length, CONFIG.HEADERS.StockLog.length).setValues(logValues);
+      }
       var depSheet = getSheet_(CONFIG.SHEETS.MED_DEPOSITS);
       Object.keys(deposits).forEach(function (key) {
         var d = deposits[key];
