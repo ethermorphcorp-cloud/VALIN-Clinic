@@ -208,7 +208,8 @@ var CONFIG = {
     // MedWithdrawals — เมนู "เบิกยาคลีนิค": one row per medicine line. UnitCost
     // is the item's ราคาทุน snapshotted at save time (Amount = Qty * UnitCost);
     // both are admin-only on the way out. Qty is taken out of Stock.
-    MedWithdrawals: ['WithdrawID', 'Date', 'PatientID', 'PatientName', 'Phone', 'SalesID', 'SalesName', 'ItemID', 'ItemName', 'Qty', 'UnitCost', 'Amount', 'Note', 'CreatedBy', 'CreatedAt'],
+    // BatchID groups the lines saved together (one รายงานเซลล์ row / PDF).
+    MedWithdrawals: ['WithdrawID', 'Date', 'PatientID', 'PatientName', 'Phone', 'SalesID', 'SalesName', 'ItemID', 'ItemName', 'Qty', 'UnitCost', 'Amount', 'Note', 'CreatedBy', 'CreatedAt', 'BatchID'],
     // StockType: 'supply' (เวชภัณฑ์) | 'medicine' (ยา) — splits the Stock page
     // into two tabs and feeds the record modal's stock-backed name
     // suggestions (รายการเวชภัณฑ์ที่ใช้ / รายการซื้อยาเพิ่ม). Blank on rows
@@ -2888,7 +2889,6 @@ function listMedWithdrawals(token, opts) {
     var showCost = session.level === 'admin';
     var page = paginate_(rows, opts.page, opts.pageSize);
     page.items = page.items.map(function (r) { return mapWithdrawalOut_(r, showCost); });
-    if (showCost) page.totalAmount = round2_(rows.reduce(function (s, r) { return s + (Number(r.Amount) || 0); }, 0));
     return { ok: true, data: page };
   });
 }
@@ -2898,7 +2898,7 @@ function saveMedWithdrawal(token, payload) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'staff');
     payload = payload || {};
-    requireFields_(payload, { date: 'วันที่', patientId: 'คนไข้' });
+    requireFields_(payload, { date: 'วันที่', patientId: 'คนไข้', salesId: 'ชื่อเซลล์' });
     requireDateStr_(payload.date, 'วันที่');
     var lines = (Array.isArray(payload.lines) ? payload.lines : []).filter(function (l) { return l && l.itemId; });
     if (!lines.length) throw ValidationError_('กรุณาเลือกยาอย่างน้อย 1 รายการ');
@@ -2908,8 +2908,8 @@ function saveMedWithdrawal(token, payload) {
     try {
       var patient = getRows_(getSheet_(CONFIG.SHEETS.PATIENTS)).filter(function (p) { return p.ID === payload.patientId; })[0];
       if (!patient) throw ValidationError_('ไม่พบข้อมูลคนไข้ที่เลือก');
-      var sales = payload.salesId ? getRows_(getSheet_(CONFIG.SHEETS.SALES)).filter(function (s) { return s.SalesID === payload.salesId; })[0] : null;
-      if (payload.salesId && !sales) throw ValidationError_('ไม่พบข้อมูลเซลล์ที่เลือก');
+      var sales = getRows_(getSheet_(CONFIG.SHEETS.SALES)).filter(function (s) { return s.SalesID === payload.salesId; })[0];
+      if (!sales) throw ValidationError_('ไม่พบข้อมูลเซลล์ที่เลือก');
       var stockById = {};
       getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (r) { stockById[r.ItemID] = r; });
       var patientName = patient.FirstName + ' ' + patient.LastName;
@@ -2924,15 +2924,16 @@ function saveMedWithdrawal(token, payload) {
         take[item.ItemID] = round2_((take[item.ItemID] || 0) + qty);
         return {
           Date: payload.date, PatientID: patient.ID, PatientName: patientName, Phone: patient.Phone,
-          SalesID: sales ? sales.SalesID : '', SalesName: sales ? sales.Name : '', ItemID: item.ItemID, ItemName: item.Name,
+          SalesID: sales.SalesID, SalesName: sales.Name, ItemID: item.ItemID, ItemName: item.Name,
           Qty: qty, UnitCost: cost, Amount: round2_(qty * cost), Note: payload.note || '', CreatedBy: session.username, CreatedAt: nowStr_()
         };
       });
       applyRecordEffects_(session, { stock: {}, deposit: {} }, { stock: take, deposit: {} },
-        'เบิกยาคลีนิค · ' + patientName + (sales ? ' · ' + sales.Name : ''), patientName, 'withdraw');
+        'เบิกยาคลีนิค · ' + patientName + ' · ' + sales.Name, patientName, 'withdraw');
       var sheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
       var ids = nextSeqBlock_('WITHDRAW', rows.length, 5);
-      rows.forEach(function (r, i) { r.WithdrawID = 'WD' + ids[i]; appendRow_(sheet, CONFIG.HEADERS.MedWithdrawals, r); });
+      var batchId = 'WB' + nextSeq_('WITHDRAW_BATCH', 5); // groups this save's lines in รายงานเซลล์
+      rows.forEach(function (r, i) { r.WithdrawID = 'WD' + ids[i]; r.BatchID = batchId; appendRow_(sheet, CONFIG.HEADERS.MedWithdrawals, r); });
       writeAudit_(session, 'CREATE', 'MedWithdrawal', rows.map(function (r) { return r.WithdrawID; }).join(','), patientName + ' x' + rows.length);
       return { ok: true, data: { ids: rows.map(function (r) { return r.WithdrawID; }) } };
     } finally {
@@ -2960,6 +2961,49 @@ function deleteMedWithdrawal(token, id) {
     } finally {
       lock.releaseLock();
     }
+  });
+}
+
+/**
+ * รายงานเซลล์ (admin only — amounts are at ราคาทุน). opts: {salesId, dateFrom,
+ * dateTo}; blank salesId = every sales person. One row per เบิกยาคลีนิค save
+ * (BatchID), carrying its lines so the client can show the detail panel and
+ * build the PDF without another round trip.
+ */
+function getSalesReport(token, opts) {
+  return safeCall_(function () {
+    requireAuth_(token, 'admin');
+    opts = opts || {};
+    if (opts.dateFrom) requireDateStr_(opts.dateFrom, 'วันที่เริ่มต้น');
+    if (opts.dateTo) requireDateStr_(opts.dateTo, 'วันที่สิ้นสุด');
+    var unitById = {};
+    getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { unitById[s.ItemID] = s.Unit || ''; });
+    var groups = {}, order = [];
+    getRows_(getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS)).forEach(function (w) {
+      var d = dateStr_(w.Date);
+      if (opts.salesId && w.SalesID !== opts.salesId) return;
+      if (opts.dateFrom && d < opts.dateFrom) return;
+      if (opts.dateTo && d > opts.dateTo) return;
+      var key = w.BatchID || w.WithdrawID;
+      var g = groups[key];
+      if (!g) {
+        g = groups[key] = {
+          id: key, date: d, salesId: w.SalesID, salesName: w.SalesName, patientId: w.PatientID, patientName: w.PatientName,
+          phone: w.Phone, note: w.Note || '', createdBy: w.CreatedBy, createdAt: String(w.CreatedAt), items: [], totalQty: 0, totalAmount: 0
+        };
+        order.push(g);
+      }
+      var qty = Number(w.Qty) || 0, amount = Number(w.Amount) || 0;
+      g.items.push({ itemName: w.ItemName, qty: qty, unit: unitById[w.ItemID] || '', unitCost: Number(w.UnitCost) || 0, amount: amount });
+      g.totalQty = round2_(g.totalQty + qty);
+      g.totalAmount = round2_(g.totalAmount + amount);
+    });
+    order.sort(function (a, b) { return b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt); });
+    return { ok: true, data: {
+      rows: order,
+      totalQty: round2_(order.reduce(function (s, g) { return s + g.totalQty; }, 0)),
+      totalAmount: round2_(order.reduce(function (s, g) { return s + g.totalAmount; }, 0))
+    } };
   });
 }
 
