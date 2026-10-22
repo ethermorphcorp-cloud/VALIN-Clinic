@@ -1,2 +1,5 @@
 # Reference images (local only)
 Ref_Image/
+
+# Local UI test harness (mocked google.script.run)
+.test-harness/

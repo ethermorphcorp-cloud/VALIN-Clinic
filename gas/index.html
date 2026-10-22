@@ -490,7 +490,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     { id: 'dash', label: 'Dashboard', icon: 'space_dashboard', sub: 'ภาพรวมรายได้ ค่าใช้จ่าย และกำไรของคลินิก', adminOnly: true },
     { id: 'patients', label: 'ข้อมูลคนไข้', icon: 'groups', sub: 'ฐานข้อมูลลูกค้าและประวัติการติดต่อ' },
     { id: 'records', label: 'บันทึกการรักษา', icon: 'medical_services', sub: 'รายการรักษา นัดหมาย และการออกใบเสร็จ' },
-    { id: 'stock', label: 'จัดการสต๊อก', icon: 'inventory_2', sub: 'เวชภัณฑ์และสินค้าคงคลัง' },
+    { id: 'stock', label: 'จัดการสต๊อก', icon: 'inventory_2', sub: 'สต๊อกเวชภัณฑ์และสต๊อกยา' },
     { id: 'expense', label: 'ค่าใช้จ่าย & จัดซื้อ', icon: 'receipt_long', sub: 'ค่าใช้จ่ายคลินิกและรายการสั่งซื้อ', adminOnly: true },
     { id: 'promotions', label: 'จัดการโปรโมชันหน้าคลินิก', icon: 'local_offer', sub: 'รายการโปรโมชันและส่วนแบ่งแพทย์/คลินิก' },
     { id: 'settings', label: 'ตั้งค่าคลินิก', icon: 'settings', sub: 'แพทย์ หมวดหมู่ ข้อมูลคลินิก และผู้ใช้งาน', adminOnly: true }
@@ -516,7 +516,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // item's fetched StockLog history so re-expanding a row already opened
     // this session doesn't re-fetch — cleared entry-by-entry whenever a
     // save/edit/delete touches that item's log (see loadStockLog below).
-    stock: { list: null, page: 1, q: '', category: '', searchSuggest: [], reloading: false, expanded: {}, logCache: {} },
+    // `type` is the active tab: 'supply' (รายการเวชภัณฑ์) | 'medicine' (รายการยา).
+    stock: { type: 'supply', list: null, page: 1, q: '', category: '', searchSuggest: [], reloading: false, expanded: {}, logCache: {} },
     // Round 19 item 2: `reloading`/`orderReloading` drive a dim-in-place
     // transition on the table (instead of a hard content-swap with zero
     // feedback in between) while a dropdown-filter-triggered reload is in
@@ -944,10 +945,14 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       return { id: p.id, primary: p.firstName + ' ' + p.lastName + (p.nickname ? ' (' + p.nickname + ')' : ''), secondary: p.phone, commitText: p.firstName + ' ' + p.lastName };
     });
   }
+  /** Stock suggest-cache entries of one type ('supply' | 'medicine'). */
+  function stockItemsOfType(type) {
+    return (state.suggestCache.stock || []).filter(function (s) { return (s.type || 'supply') === type; });
+  }
   function stockSuggestions(q) {
     if (!state.suggestCache.stock) return null;
     var ql = q.trim().toLowerCase();
-    return state.suggestCache.stock.filter(function (s) { return String(s.name).toLowerCase().indexOf(ql) > -1; })
+    return stockItemsOfType(state.stock.type).filter(function (s) { return String(s.name).toLowerCase().indexOf(ql) > -1; })
       .slice(0, 8).map(function (s) { return { id: s.id, primary: s.name, secondary: s.category + (s.unit ? ' · ' + s.unit : ''), commitText: s.name }; });
   }
   function expenseSuggestionsAsync(q) {
@@ -1404,7 +1409,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
    *  record" openers so a fresh draft always has the checkbox-gated
    *  รายการโปร/ยา/รายการอื่นๆ groups collapsed and empty. */
   function emptyLineItemGroups() {
-    return { usePromo: false, promoItems: [], useMedicine: false, medicineItems: [], useOther: false, otherItems: [] };
+    return { usePromo: false, promoItems: [], useSupplies: false, supplies: [], useMedicine: false, medicineItems: [], useOther: false, otherItems: [] };
   }
   function newRecordModalForPatient(patient) {
     state.records.opdPhotoUrl = null;
@@ -1759,7 +1764,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var r = st.record;
     var suppliesHtml = !r.supplies.length ? '' :
       '<div style="grid-column:1/-1;margin-top:2px">' +
-        '<div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);margin-bottom:5px"><span class="ms" style="font-size:13px">inventory_2</span>อุปกรณ์/เวชภัณฑ์ที่ใช้</div>' +
+        '<div style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--muted);margin-bottom:5px"><span class="ms" style="font-size:13px">inventory_2</span>รายการเวชภัณฑ์ที่ใช้</div>' +
         '<div style="display:flex;flex-wrap:wrap;gap:6px">' +
           r.supplies.map(function (s) { return '<span class="tag-badge" style="background:var(--hover-bg);color:var(--text-2)">' + esc(s.name) + ' ×' + esc(s.qty) + (s.unit ? ' ' + esc(s.unit) : '') + '</span>'; }).join('') +
         '</div>' +
@@ -2072,6 +2077,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
    * manual "+เพิ่มรายการ" path for every row after the first. */
   function addPromoRow() { state.draft.promoItems.push({ promoId: '', name: '', price: 0, doctorSharePct: 0, amount: 0 }); render(); }
   function removePromoRow(idx) { state.draft.promoItems.splice(idx, 1); render(); }
+  function addSupplyRow() { state.draft.supplies.push({ itemId: '', name: '', qty: 1, unit: '' }); render(); }
+  function removeSupplyRow(idx) { state.draft.supplies.splice(idx, 1); render(); }
   function addMedicineRow() { state.draft.medicineItems.push({ name: '', amount: 0 }); render(); }
   function removeMedicineRow(idx) { state.draft.medicineItems.splice(idx, 1); render(); }
   function addOtherRow() { state.draft.otherItems.push({ label: '', amount: 0 }); render(); }
@@ -2278,11 +2285,32 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       return moneyRow(bindSelect('promoItems.' + i + '.promoId', promoOpts), 'promoItems.' + i + '.amount', 'จำนวนเงินโปร', removeBtn('remove-promo-row', i));
     }).join('');
 
+    // Name suggestions for the two stock-backed groups below come from a
+    // native <datalist> of that stock type — the input stays free text, so
+    // a name that isn't in stock can still be typed.
+    function stockDatalist(id, type) {
+      return '<datalist id="' + id + '">' + stockItemsOfType(type).map(function (s) {
+        return '<option value="' + esc(s.name) + '">' + esc(s.category + (s.unit ? ' · ' + s.unit : '')) + '</option>';
+      }).join('') + '</datalist>';
+    }
+
     // Round 13 — รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค: free-text name + amount,
-    // deliberately not linked to Stock — see the Records.MedicineJSON schema
-    // comment in Code.gs.
+    // not linked to Stock quantities (see the Records.MedicineJSON schema
+    // comment in Code.gs); the name only suggests from ยา-type stock items.
     var medicineRows = d.medicineItems.map(function (m, i) {
-      return moneyRow('<input type="text" placeholder="ชื่อยา/สินค้า" value="' + esc(m.name) + '" data-bind="medicineItems.' + i + '.name" style="' + inputStyle + '">', 'medicineItems.' + i + '.amount', 'จำนวนเงินยา', removeBtn('remove-medicine-row', i));
+      return moneyRow('<input type="text" list="dlMedicineStock" autocomplete="off" placeholder="ชื่อยา/สินค้า" value="' + esc(m.name) + '" data-bind="medicineItems.' + i + '.name" style="' + inputStyle + '">', 'medicineItems.' + i + '.amount', 'จำนวนเงินยา', removeBtn('remove-medicine-row', i));
+    }).join('');
+
+    // รายการเวชภัณฑ์ที่ใช้: name (suggested from เวชภัณฑ์-type stock) + qty +
+    // unit, no money — the qty+unit pair is sized to the amount column's
+    // width so the rows line up with the money rows around them.
+    var supplyRows = d.supplies.map(function (s, i) {
+      return '<div class="supply-row">' +
+        '<div class="g"><input type="text" list="dlSupplyStock" autocomplete="off" placeholder="ชื่อเวชภัณฑ์" value="' + esc(s.name) + '" data-bind="supplies.' + i + '.name" style="' + inputStyle + '"></div>' +
+        '<input type="number" min="0" value="' + esc(s.qty) + '" data-bind="supplies.' + i + '.qty" style="' + inputStyle + ';width:66px;flex:none" placeholder="จำนวน">' +
+        '<input type="text" value="' + esc(s.unit) + '" data-bind="supplies.' + i + '.unit" style="' + inputStyle + ';width:66px;flex:none" placeholder="หน่วย">' +
+        '<div style="width:' + TRAIL_W + ';flex:none;display:flex;justify-content:center">' + removeBtn('remove-supply-row', i) + '</div>' +
+      '</div>';
     }).join('');
 
     // Round 13 — รายการอื่นๆ: itemized version of the old single OtherAmount
@@ -2345,11 +2373,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="display:flex;align-items:center;gap:8px;margin:14px 0 6px">' + bindInput('useCanula', 'checkbox') + '<label style="font-weight:600;font-size:13px">ใช้ Canula (เข็มทู่)</label></div>' +
       (d.useCanula ? moneyRow('<div style="font-size:13px;font-weight:600;color:var(--text-2);display:flex;align-items:center;height:100%">จำนวนเงิน Canula</div>', 'canulaAmount', '', '', 'recCanulaAmount') : '') +
 
-      // Round 14 item 1.2: อุปกรณ์/เวชภัณฑ์ที่ใช้ section (and its automatic
-      // stock-deduction logic) removed entirely from the modal — see
-      // saveRecord/deleteRecord in Code.gs. The standalone Stock page
-      // (manual CRUD) is unaffected; historical supplies data on older
-      // records still shows in the record detail side panel.
+      // รายการเวชภัณฑ์ที่ใช้ — brought back as a checkbox group (Round 14
+      // item 1.2 had removed the old picker); still no automatic stock
+      // deduction, see saveRecord in Code.gs.
+      lineGroupToggle('useSupplies', 'รายการเวชภัณฑ์ที่ใช้') +
+      (d.useSupplies ? supplyRows + '<button class="btn" data-action="add-supply-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการเวชภัณฑ์</button>' : '') +
 
       lineGroupToggle('useMedicine', 'รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค') +
       (d.useMedicine ? medicineRows + '<button class="btn" data-action="add-medicine-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการยา</button>' : '') +
@@ -2358,6 +2386,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       (d.useOther ? otherRows + '<button class="btn" data-action="add-other-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการ</button>' : '') +
 
       opdPhotoBlock +
+      stockDatalist('dlSupplyStock', 'supply') + stockDatalist('dlMedicineStock', 'medicine') +
 
       // Round 14 item 1.4: หมายเหตุ field removed entirely.
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px;margin-top:10px">' +
@@ -2405,9 +2434,19 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* STOCK — จัดการสต๊อกสินค้า/อุปกรณ์                                     */
   /* ================================================================== */
   function loadStock() {
-    call('listStock', session.token, { page: state.stock.page, filters: { q: state.stock.q, category: state.stock.category } }).then(function (res) {
+    var type = state.stock.type;
+    call('listStock', session.token, { page: state.stock.page, filters: { q: state.stock.q, category: state.stock.category, type: type } }).then(function (res) {
+      if (type !== state.stock.type) return; // tab switched while loading
       state.stock.list = res.data; state.stock.reloading = false; render();
     });
+  }
+  var STOCK_TABS = [{ id: 'supply', label: 'รายการเวชภัณฑ์' }, { id: 'medicine', label: 'รายการยา' }];
+  function stockTypeLabel(type) { return type === 'medicine' ? 'ยา' : 'เวชภัณฑ์'; }
+  function stockTab(type) {
+    if (type === state.stock.type) return;
+    state.stock.type = type;
+    state.stock.list = null; state.stock.page = 1; state.stock.q = ''; state.stock.category = ''; state.stock.searchSuggest = [];
+    render(); loadStock();
   }
   /**
    * Round 25 item 1: restructured from a flat one-row-per-item table into a
@@ -2424,15 +2463,17 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function stockTemplate() {
     var catOpts = [{ value: '', label: 'หมวดหมู่ทั้งหมด' }].concat((state.master.stockCategories || []).map(function (c) { return { value: c.name, label: c.name }; }));
     var L = state.stock.list;
+    var typeLabel = stockTypeLabel(state.stock.type);
     var rows = !L ? '<tr><td colspan="4" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
-      (!L.items.length ? '<tr><td colspan="4" class="empty-state">ไม่พบสินค้า</td></tr>' :
+      (!L.items.length ? '<tr><td colspan="4" class="empty-state">ไม่พบรายการ' + typeLabel + '</td></tr>' :
       L.items.map(stockItemRowsHtml).join(''));
     return '' +
+      tabBar(STOCK_TABS, state.stock.type, 'stock-tab') +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">' +
         searchScopeBoxHtml('stock', '240px') +
         '<button id="ddStockCat" class="btn" data-action="dd-stockcat">' + esc((catOpts.filter(function (o) { return o.value === state.stock.category; })[0] || {}).label || 'หมวดหมู่ทั้งหมด') + ' <span class="ms">expand_more</span></button>' +
-        '<button class="btn" style="margin-left:auto" data-action="new-stock"><span class="ms">add</span> เพิ่มสินค้า</button>' +
-        '<button class="btn btn-primary" data-action="new-stock-update"><span class="ms">inventory</span> อัพเดตสต๊อก</button>' +
+        '<button class="btn" style="margin-left:auto" data-action="new-stock"><span class="ms">add</span> เพิ่ม' + typeLabel + '</button>' +
+        '<button class="btn btn-primary" data-action="new-stock-update"><span class="ms">inventory</span> อัพเดตสต๊อก' + typeLabel + '</button>' +
       '</div>' +
       listCardWrap(
         '<table class="table" style="width:100%;border-collapse:collapse;table-layout:fixed">' +
@@ -2442,7 +2483,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           // not change these percentages without updating the matching set
           // there too.
           '<colgroup><col style="width:35%"><col style="width:20%"><col style="width:30%"><col style="width:15%"></colgroup>' +
-          '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">ชื่อสินค้า</th><th>หมวดหมู่</th><th>จำนวนคงเหลือ (ล่าสุด)</th><th></th></tr></thead>' +
+          '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">ชื่อ' + typeLabel + '</th><th>หมวดหมู่</th><th>จำนวนคงเหลือ (ล่าสุด)</th><th></th></tr></thead>' +
           '<tbody>' + rows + '</tbody></table>', state.stock.reloading) + pagerHtml(L, 'stock-page');
   }
   /** The two <tr>s (summary + collapsible history) for one Stock item. */
@@ -2513,7 +2554,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     });
   }
 
-  function newStockModal() { openModal('stock', { name: '', category: (state.master.stockCategories[0] || {}).name || '', unit: '', qty: 0 }); }
+  function newStockModal() { openModal('stock', { type: state.stock.type, name: '', category: (state.master.stockCategories[0] || {}).name || '', unit: '', qty: 0 }); }
   function editStockModal(id) {
     var s = state.stock.list.items.filter(function (x) { return x.id === id; })[0];
     if (s) openModal('stock', Object.assign({}, s));
@@ -2527,8 +2568,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function stockModalBody() {
     var d = state.draft;
     var catOpts = (state.master.stockCategories || []).map(function (c) { return { value: c.name, label: c.name }; });
-    return modalHeader(d.id ? 'แก้ไขสินค้า' : 'เพิ่มสินค้าใหม่') +
-      field('ชื่อสินค้า', bindInput('name')) +
+    var typeOpts = STOCK_TABS.map(function (t) { return { value: t.id, label: stockTypeLabel(t.id) }; });
+    var typeLabel = stockTypeLabel(d.type);
+    return modalHeader(d.id ? 'แก้ไข' + typeLabel : 'เพิ่ม' + typeLabel + 'ใหม่') +
+      field('ประเภทสต๊อก', bindSelect('type', typeOpts)) +
+      field('ชื่อ' + typeLabel, bindInput('name')) +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
         field('หมวดหมู่', bindSelect('category', catOpts)) + field('หน่วยนับ', bindInput('unit')) +
       '</div>' +
@@ -2548,7 +2592,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function removeStockUpdateLine(idx) { state.draft.items.splice(idx, 1); render(); }
   function stockUpdateModalBody() {
     var d = state.draft;
-    var itemOpts = [{ value: '', label: '— เลือกสินค้า —' }].concat((state.suggestCache.stock || []).map(function (s) { return { value: s.id, label: s.name + (s.category ? ' (' + s.category + ')' : '') }; }));
+    var typeLabel = stockTypeLabel(state.stock.type);
+    var itemOpts = [{ value: '', label: '— เลือก' + typeLabel + ' —' }].concat(stockItemsOfType(state.stock.type).map(function (s) { return { value: s.id, label: s.name + (s.category ? ' (' + s.category + ')' : '') }; }));
     var lines = d.items.map(function (it, i) {
       return '<div class="supply-row">' +
         '<div style="flex:1">' + bindSelect('items.' + i + '.itemId', itemOpts) + '</div>' +
@@ -2557,10 +2602,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<button class="btn" data-action="remove-stock-update-line" data-arg="' + i + '"><span class="ms">close</span></button>' +
       '</div>';
     }).join('');
-    return modalHeader('อัพเดตสต๊อก') +
+    return modalHeader('อัพเดตสต๊อก' + typeLabel) +
       field('วันที่', bindInput('date', 'date')) +
-      '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">รายการสินค้า</label></div>' +
-      '<div style="display:flex;gap:8px;font-size:11px;color:var(--muted);padding:0 0 4px"><span style="flex:1">สินค้า</span><span style="width:110px">จำนวนรับเข้า</span><span style="width:110px">จำนวนคงเหลือ</span><span style="width:38px"></span></div>' +
+      '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">รายการ' + typeLabel + '</label></div>' +
+      '<div style="display:flex;gap:8px;font-size:11px;color:var(--muted);padding:0 0 4px"><span style="flex:1">' + typeLabel + '</span><span style="width:110px">จำนวนรับเข้า</span><span style="width:110px">จำนวนคงเหลือ</span><span style="width:38px"></span></div>' +
       lines + '<button class="btn" data-action="add-stock-update-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการ</button>' +
       field('หมายเหตุ', bindTextarea('note', 2)) + saveBtn();
   }
@@ -3345,6 +3390,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'set-visit-status': state.draft.visitStatus = arg; render(); break;
       case 'add-promo-row': addPromoRow(); break;
       case 'remove-promo-row': removePromoRow(Number(arg)); break;
+      case 'add-supply-row': addSupplyRow(); break;
+      case 'remove-supply-row': removeSupplyRow(Number(arg)); break;
       case 'add-medicine-row': addMedicineRow(); break;
       case 'remove-medicine-row': removeMedicineRow(Number(arg)); break;
       case 'add-other-row': addOtherRow(); break;
@@ -3362,6 +3409,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'edit-stock-log': editStockLogModal(arg); break;
       case 'delete-stock-log': deleteStockLogConfirm(arg); break;
       case 'exp-tab': expTab(arg); break;
+      case 'stock-tab': stockTab(arg); break;
       case 'new-expense': newExpenseModal(); break;
       case 'edit-expense': editExpenseModal(arg); break;
       case 'delete-expense': deleteExpenseConfirm(arg); break;
@@ -3437,6 +3485,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   // whenever the line doesn't already have an amount, without clobbering a
   // value the staff already typed/edited.
   var PROMO_PICK_RE = /^promoItems\.(\d+)\.promoId$/;
+  var STOCK_NAME_PICK_RE = /^(supplies|medicineItems)\.(\d+)\.name$/;
   document.addEventListener('input', function (ev) {
     var el = ev.target;
     var bindPath = el.getAttribute && el.getAttribute('data-bind');
@@ -3444,6 +3493,23 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var moneyField = isMoneyBindPath(bindPath);
     var val = el.type === 'checkbox' ? el.checked : (moneyField ? parseMoneyInput(el.value) : (el.type === 'number' ? Number(el.value) : el.value));
     setPath(state.draft, bindPath, val);
+    // Typing/picking a name that exactly matches a stock item links the line
+    // to it (itemId) and, for a เวชภัณฑ์ line, fills its unit — patched
+    // straight into the unit input, not via render(), so the caret stays put.
+    var stockPick = bindPath.match(STOCK_NAME_PICK_RE);
+    if (stockPick) {
+      var stockLine = getPath(state.draft, stockPick[1] + '.' + stockPick[2]);
+      var stockItem = stockItemsOfType(stockPick[1] === 'supplies' ? 'supply' : 'medicine').filter(function (s) { return s.name === val; })[0];
+      if (stockLine) {
+        stockLine.itemId = stockItem ? stockItem.id : '';
+        if (stockItem && stockPick[1] === 'supplies' && stockItem.unit) {
+          stockLine.unit = stockItem.unit;
+          var unitEl = document.querySelector('[data-bind="supplies.' + stockPick[2] + '.unit"]');
+          if (unitEl) unitEl.value = stockItem.unit;
+        }
+      }
+      return;
+    }
     var promoPick = bindPath.match(PROMO_PICK_RE);
     if (promoPick) {
       var line = state.draft.promoItems[Number(promoPick[1])];
@@ -3461,6 +3527,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       // click "+เพิ่มรายการ" separately.
       if (val === true) {
         if (bindPath === 'usePromo' && !state.draft.promoItems.length) state.draft.promoItems.push({ promoId: '', name: '', price: 0, doctorSharePct: 0, amount: 0 });
+        else if (bindPath === 'useSupplies' && !state.draft.supplies.length) state.draft.supplies.push({ itemId: '', name: '', qty: 1, unit: '' });
         else if (bindPath === 'useMedicine' && !state.draft.medicineItems.length) state.draft.medicineItems.push({ name: '', amount: 0 });
         else if (bindPath === 'useOther' && !state.draft.otherItems.length) state.draft.otherItems.push({ label: '', amount: 0 });
       }
