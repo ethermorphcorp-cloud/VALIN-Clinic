@@ -3685,6 +3685,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // Optional numeric fields (e.g. stock prices) keep '' instead of 0 when cleared.
     if (el.type === 'number' && el.value === '' && el.hasAttribute('data-blank-ok')) val = '';
     setPath(state.draft, bindPath, val);
+    // The stock form shows ราคาทุน/ราคาขาย only for ยา, so switching type redraws it.
+    if (state.modal && state.modal.type === 'stock' && bindPath === 'type') { render(); return; }
     if (state.modal && state.modal.type === 'stockadjust') {
       if (bindPath === 'kind') { render(); return; } // label of the qty field depends on the kind
       var adjustPreview = document.getElementById('stockAdjustPreview');
