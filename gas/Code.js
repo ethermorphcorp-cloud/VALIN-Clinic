@@ -1521,7 +1521,21 @@ function listStock(token, opts) {
     });
     var showCost = session.level === 'admin';
     var page = paginate_(rows, opts.page, opts.pageSize);
-    page.items = page.items.map(function (r) { return mapStockOut_(r, latestByItem[r.ItemID], showCost); });
+    // จำนวนฝาก = ยาฝาก still held for patients (MedDeposits). Dispensing already
+    // took those units out of Stock.Qty, so Qty is what's พร้อมใช้ and the two
+    // together are what's physically at the clinic.
+    var depositByItem = {};
+    if (filters.type !== 'supply') {
+      getRows_(getSheet_(CONFIG.SHEETS.MED_DEPOSITS)).forEach(function (d) {
+        var q = Number(d.QtyRemaining) || 0;
+        if (q > 0) depositByItem[d.ItemID] = round2_((depositByItem[d.ItemID] || 0) + q);
+      });
+    }
+    page.items = page.items.map(function (r) {
+      var o = mapStockOut_(r, latestByItem[r.ItemID], showCost);
+      o.depositQty = depositByItem[r.ItemID] || 0;
+      return o;
+    });
     page.summary = summary;
     return { ok: true, data: page };
   });

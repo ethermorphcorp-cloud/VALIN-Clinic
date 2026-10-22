@@ -2709,14 +2709,16 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var L = state.stock.list;
     var type = state.stock.type, typeLabel = stockTypeLabel(type);
     var isMed = type === 'medicine', showCost = isMed && isAdmin();
-    var colCount = isMed ? (showCost ? 12 : 11) : 5;
+    var colCount = isMed ? (showCost ? 13 : 12) : 5;
     var rows = !L ? '<tr><td colspan="' + colCount + '" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
       (!L.items.length ? '<tr><td colspan="' + colCount + '" class="empty-state">ไม่พบรายการ' + typeLabel + '</td></tr>' :
       L.items.map(function (s) { return stockItemRowHtml(s, isMed, showCost); }).join(''));
     var th = 'padding:10px 12px;white-space:nowrap';
     var head = isMed
       ? '<tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
-          '<th rowspan="2" style="' + th + '">ชื่อยา</th><th rowspan="2" style="' + th + '">หมวดหมู่</th><th rowspan="2" style="' + th + '">จำนวนสต๊อกขั้นต่ำ</th><th rowspan="2" style="' + th + '">จำนวนคงเหลือ</th>' +
+          '<th rowspan="2" style="' + th + '">ชื่อยา</th><th rowspan="2" style="' + th + '">หมวดหมู่</th><th rowspan="2" style="' + th + '">จำนวนสต๊อกขั้นต่ำ</th>' +
+          // จำนวนคงเหลือ split: ยาฝาก held for patients vs. stock that can still be dispensed.
+          '<th rowspan="2" style="' + th + '">จำนวนฝาก</th><th rowspan="2" style="' + th + '">จำนวนพร้อมใช้</th>' +
           (showCost ? '<th rowspan="2" style="' + th + '">ราคาทุน</th>' : '') +
           '<th colspan="6" style="' + th + ';text-align:center;border-bottom:1px solid var(--border)">ราคาขาย</th><th rowspan="2"></th></tr>' +
         '<tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
@@ -2762,6 +2764,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<td style="padding:10px 12px">' + esc(s.name) + '</td>' +
       '<td>' + esc(s.category) + '</td>' +
       '<td>' + stockNumCell(s.minQty) + '</td>' +
+      (isMed ? '<td style="white-space:nowrap">' + (s.depositQty
+        ? '<span class="tag-badge" style="background:var(--green-soft);color:var(--green-dark)">' + esc(s.depositQty) + ' ' + esc(s.unit) + '</span>'
+        : '<span style="color:var(--muted)">-</span>') + '</td>' : '') +
       '<td style="white-space:nowrap">' + esc(qty) + ' ' + esc(s.unit) + qtyBadge + dateNote + '</td>' +
       (isMed ? (showCost ? '<td>' + stockMoneyCell(s.costPrice) + '</td>' : '') + (s.prices || []).map(function (p) { return '<td>' + stockMoneyCell(p) + '</td>'; }).join('') : '') +
       actions + '</tr>';
@@ -2825,7 +2830,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:18px 22px;border-bottom:1px solid var(--border);flex:none">' +
         '<div><div style="font-size:16px;font-weight:700">' + esc(it.name) + '</div>' +
         '<div style="font-size:12px;color:var(--muted);margin-top:2px">ประวัติการเคลื่อนไหว · ' + esc(stockTypeLabel(it.type)) + (it.category ? ' · ' + esc(it.category) : '') + '</div>' +
-        '<div style="font-size:13px;margin-top:6px">คงเหลือ <b>' + esc(qty) + ' ' + esc(it.unit) + '</b></div></div>' +
+        '<div style="font-size:13px;margin-top:6px">' + (it.type === 'medicine' ? 'พร้อมใช้' : 'คงเหลือ') + ' <b>' + esc(qty) + ' ' + esc(it.unit) + '</b>' + (it.depositQty ? ' · ฝาก <b>' + esc(it.depositQty) + ' ' + esc(it.unit) + '</b>' : '') + '</div></div>' +
         '<button data-action="close-stock-panel" style="border:none;background:none;cursor:pointer"><span class="ms">close</span></button>' +
       '</div>' +
       '<div style="flex:1;overflow:auto;padding:12px 16px">' + table + '</div>' +
@@ -2887,7 +2892,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var s = stockItemById(id) || (state.stock.panel && state.stock.panel.item);
     if (!s) return;
     var qty = s.latestQtyRemaining != null ? s.latestQtyRemaining : s.qty;
-    openModal('stockadjust', { itemId: s.id, itemName: s.name, unit: s.unit, current: qty, date: todayStr(), kind: 'in', qty: 0, note: '' });
+    openModal('stockadjust', { itemId: s.id, itemName: s.name, unit: s.unit, type: s.type, current: qty, date: todayStr(), kind: 'in', qty: 0, note: '' });
   }
   function stockAdjustResult(d) {
     var q = Number(d.qty) || 0, cur = Number(d.current) || 0;
@@ -2906,7 +2911,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
         field('วันที่', bindInput('date', 'date')) + field('ประเภทการปรับ', bindSelect('kind', kindOpts)) +
       '</div>' +
-      field(d.kind === 'set' ? 'จำนวนคงเหลือที่นับได้' : 'จำนวน', bindInput('qty', 'number', 'min="0" step="any"')) +
+      field(d.kind === 'set' ? (d.type === 'medicine' ? 'จำนวนพร้อมใช้ที่นับได้ (ไม่รวมยาฝาก)' : 'จำนวนคงเหลือที่นับได้') : 'จำนวน', bindInput('qty', 'number', 'min="0" step="any"')) +
       '<div id="stockAdjustPreview" style="background:var(--hover-bg);border-radius:var(--r-sm);padding:10px 14px;margin-bottom:12px;font-size:13px">' + stockAdjustPreviewHtml(d) + '</div>' +
       field('หมายเหตุ / รายละเอียด', bindTextarea('note', 2)) + saveBtn();
   }
@@ -3050,7 +3055,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return modalHeader('อัพเดตสต๊อก' + typeLabel) +
       field('วันที่', bindInput('date', 'date')) +
       '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">รายการ' + typeLabel + '</label></div>' +
-      '<div style="display:flex;gap:8px;font-size:11px;color:var(--muted);padding:0 0 4px"><span style="flex:1">' + typeLabel + '</span><span style="width:110px">จำนวนรับเข้า</span><span style="width:110px">จำนวนคงเหลือ</span><span style="width:38px"></span></div>' +
+      '<div style="display:flex;gap:8px;font-size:11px;color:var(--muted);padding:0 0 4px"><span style="flex:1">' + typeLabel + '</span><span style="width:110px">จำนวนรับเข้า</span><span style="width:110px">' + (state.stock.type === 'medicine' ? 'จำนวนพร้อมใช้' : 'จำนวนคงเหลือ') + '</span><span style="width:38px"></span></div>' +
       lines + '<button class="btn" data-action="add-stock-update-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการ</button>' +
       field('หมายเหตุ', bindTextarea('note', 2)) + saveBtn();
   }
