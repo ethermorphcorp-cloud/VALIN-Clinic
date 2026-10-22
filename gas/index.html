@@ -497,6 +497,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     { id: 'patients', label: 'ข้อมูลคนไข้', icon: 'groups', sub: 'ฐานข้อมูลลูกค้าและประวัติการติดต่อ' },
     { id: 'records', label: 'บันทึกการรักษา', icon: 'medical_services', sub: 'รายการรักษา นัดหมาย และการออกใบเสร็จ' },
     { id: 'stock', label: 'จัดการสต๊อก', icon: 'inventory_2', sub: 'สต๊อกเวชภัณฑ์และสต๊อกยา' },
+    { id: 'withdraw', label: 'เบิกยาคลีนิค', icon: 'medication', sub: 'รายการเบิกยาจากสต๊อกคลินิกให้คนไข้ (คิดราคาทุน)' },
     { id: 'expense', label: 'ค่าใช้จ่าย & จัดซื้อ', icon: 'receipt_long', sub: 'ค่าใช้จ่ายคลินิกและรายการสั่งซื้อ', adminOnly: true },
     { id: 'promotions', label: 'จัดการโปรโมชันหน้าคลินิก', icon: 'local_offer', sub: 'รายการโปรโมชันและส่วนแบ่งแพทย์/คลินิก' },
     { id: 'settings', label: 'ตั้งค่าคลินิก', icon: 'settings', sub: 'แพทย์ หมวดหมู่ ข้อมูลคลินิก และผู้ใช้งาน', adminOnly: true }
@@ -526,6 +527,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // flight — see the dd-* action handlers and the loadX() functions below.
     expense: { tab: 'expense', list: null, page: 1, q: '', category: '', orders: null, orderPage: 1, orderQ: '', orderCategory: '', searchSuggest: [], orderSearchSuggest: [], reloading: false, orderReloading: false },
     promotions: { list: null, q: '' },
+    withdraw: { list: null, page: 1, q: '', reloading: false },
     settings: { tab: 'doctors', staff: null, loginImageProgress: null, logoProgress: null }
   };
 
@@ -727,6 +729,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'patients': return patientsTemplate();
       case 'records': return recordsTemplate();
       case 'stock': return stockTemplate();
+      case 'withdraw': return withdrawTemplate();
       case 'expense': return expenseTemplate();
       case 'promotions': return promotionsTemplate();
       case 'settings': return settingsTemplate();
@@ -856,6 +859,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (screenId === 'patients' && !state.patients.list) loadPatients();
     if (screenId === 'records' && !state.records.list) loadRecords();
     if (screenId === 'stock' && !state.stock.list) loadStock();
+    if (screenId === 'withdraw' && !state.withdraw.list) loadWithdrawals();
     if (screenId === 'expense' && !state.expense.list) loadExpenses();
     if (screenId === 'promotions' && !state.promotions.list) loadPromotions();
     if (screenId === 'settings') loadSettingsTabData(state.settings.tab);
@@ -1382,6 +1386,17 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
               '<td>' + statusBadge(r.status) + '</td>' +
             '</tr>';
           }).join('') + '</tbody></table>';
+    // ยาฝาก the patient still holds at the clinic (MedDeposits balances > 0).
+    var deposits = st.deposits || [];
+    var depositRows = !deposits.length
+      ? '<div class="empty-state" style="padding:16px">ไม่มียาฝาก</div>'
+      : '<table class="table" style="width:100%;border-collapse:collapse">' +
+          '<thead><tr style="text-align:left;font-size:11px;color:var(--muted);background:var(--hover-bg)"><th style="padding:8px 10px">วันที่</th><th>รายการยาฝาก</th><th style="text-align:right;padding-right:14px">จำนวน</th></tr></thead>' +
+          '<tbody>' + deposits.map(function (x) {
+            var s = stockItemsOfType('medicine').filter(function (it) { return it.id === x.itemId; })[0];
+            return '<tr><td style="padding:8px 10px;font-size:12.5px">' + esc(x.date) + '</td><td style="font-size:12.5px">' + esc(x.name) + '</td>' +
+              '<td style="font-size:12.5px;text-align:right;padding-right:14px;font-weight:600">' + esc(x.qty) + (s && s.unit ? ' ' + esc(s.unit) : '') + '</td></tr>';
+          }).join('') + '</tbody></table>';
     var body = '' +
       '<div style="padding:22px 22px 12px;display:flex;justify-content:space-between;align-items:flex-start;flex:none">' +
         '<div style="display:flex;gap:14px;align-items:center">' + avatar +
@@ -1396,6 +1411,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<span class="tag-badge" style="background:var(--pink-soft)">สะสม ' + money(st.totalSpent) + '</span>' +
       '</div>' +
       '<div style="flex:1;overflow-y:auto;padding:14px 22px 16px;border-top:1px solid var(--border)">' +
+        '<div style="font-size:13px;font-weight:700;margin-bottom:8px">รายการยาฝาก</div>' +
+        '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:18px">' + depositRows + '</div>' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
           '<div style="font-size:13px;font-weight:700">ประวัติการรักษา</div>' +
           '<button class="btn btn-primary" data-action="patient-panel-add-record"><span class="ms">add</span> เพิ่มรายการ</button>' +
@@ -2090,8 +2107,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     state.draft.patientNickname = p.nickname || '';
     state.draft._patientQuery = state.draft.patientName; state.draft._patientSuggest = [];
     // ยาฝาก belong to one patient — choices made for another patient no longer apply.
-    if (state.draft.patientId !== state.draft._origPatientId) state.draft.depositUseItems = state.draft.useDepositUse ? [NEW_LINE.depositUseItems()] : [];
-    loadDraftDeposits();
+    // (Only the treatment-record form has ยาฝาก; เบิกยาคลีนิค shares this picker.)
+    if (state.modal && state.modal.type === 'record') {
+      if (state.draft.patientId !== state.draft._origPatientId) state.draft.depositUseItems = state.draft.useDepositUse ? [NEW_LINE.depositUseItems()] : [];
+      loadDraftDeposits();
+    }
     render();
   }
 
@@ -2660,7 +2680,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   var STOCK_TABS = [{ id: 'supply', label: 'รายการเวชภัณฑ์' }, { id: 'medicine', label: 'รายการยา' }];
   // Must match STOCK_PRICE_TIERS in Code.gs — item.prices[i] is the ราคาขาย for STOCK_PRICE_TIERS[i] ชิ้น.
   var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
-  var STOCK_LOG_KIND_LABELS = { update: 'อัพเดตสต๊อก', in: 'รับเข้า', out: 'เบิกออก', set: 'ปรับยอดคงเหลือ', import: 'นำเข้า CSV', opening: 'ยอดยกมา', record: 'บันทึกการรักษา' };
+  var STOCK_LOG_KIND_LABELS = { update: 'อัพเดตสต๊อก', in: 'รับเข้า', out: 'เบิกออก', set: 'ปรับยอดคงเหลือ', import: 'นำเข้า CSV', opening: 'ยอดยกมา', record: 'บันทึกการรักษา', withdraw: 'เบิกยาคลีนิค' };
   function stockTypeLabel(type) { return type === 'medicine' ? 'ยา' : 'เวชภัณฑ์'; }
   function stockTab(type) {
     if (type === state.stock.type) return;
@@ -2697,8 +2717,15 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           STOCK_PRICE_TIERS.map(function (t) { return '<th style="' + th + '">จำนวน ' + t + ' ชิ้น</th>'; }).join('') + '</tr>'
       : '<tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
           '<th style="' + th + '">ชื่อเวชภัณฑ์</th><th style="' + th + '">หมวดหมู่</th><th style="' + th + '">จำนวนสต๊อกขั้นต่ำ</th><th style="' + th + '">จำนวนคงเหลือ</th><th></th></tr>';
+    var sum = (L && L.summary) || null;
+    var countText = function (n) { return sum ? esc(n) + ' <span style="font-size:15px;font-weight:500;color:var(--muted)">รายการ</span>' : '<span class="spin"></span>'; };
     return '' +
       tabBar(STOCK_TABS, type, 'stock-tab') +
+      '<div class="grid-fit" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">' +
+        statCard('inventory_2', 'จำนวนรายการ' + typeLabel, countText(sum && sum.total)) +
+        statCard('warning', 'ใกล้หมด', countText(sum && sum.low)) +
+        statCard('block', 'หมดแล้ว', countText(sum && sum.out)) +
+      '</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">' +
         searchScopeBoxHtml('stock', '240px') +
         '<button id="ddStockCat" class="btn" data-action="dd-stockcat">' + esc((catOpts.filter(function (o) { return o.value === state.stock.category; })[0] || {}).label || 'หมวดหมู่ทั้งหมด') + ' <span class="ms">expand_more</span></button>' +
@@ -3055,6 +3082,115 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       if (!r.isConfirmed) return;
       call('deleteStockLogEntry', session.token, logId).then(function () {
         toast('success', 'ลบแล้ว'); afterStockLogWrite();
+      });
+    });
+  }
+
+  /* ================================================================== */
+  /* เบิกยาคลีนิค — medicine taken from clinic stock for a patient by a     */
+  /* sales person, valued at ราคาทุน (ราคา/จำนวนเงิน columns: admin only;   */
+  /* the server never sends them to staff).                              */
+  /* ================================================================== */
+  function loadWithdrawals() {
+    var q = state.withdraw.q;
+    call('listMedWithdrawals', session.token, { page: state.withdraw.page, filters: { q: q } }).then(function (res) {
+      if (q !== state.withdraw.q) return; // a newer search is already on its way
+      state.withdraw.list = res.data; state.withdraw.reloading = false; render();
+    });
+  }
+  var onWithdrawSearch = debounce(function (q) {
+    state.withdraw.q = q; state.withdraw.page = 1; state.withdraw.reloading = true; render(); loadWithdrawals();
+  }, 300);
+  function withdrawTemplate() {
+    var L = state.withdraw.list, admin = isAdmin();
+    var cols = admin ? 8 : 6;
+    var rows = !L ? '<tr><td colspan="' + cols + '" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
+      (!L.items.length ? '<tr><td colspan="' + cols + '" class="empty-state">' + (state.withdraw.q ? 'ไม่พบรายการที่ค้นหา' : 'ยังไม่มีรายการเบิกยา') + '</td></tr>' :
+      L.items.map(function (w) {
+        var s = stockItemsOfType('medicine').filter(function (it) { return it.id === w.itemId; })[0];
+        return '<tr>' +
+          '<td style="padding:10px 12px">' + esc(w.date) + '</td>' +
+          '<td>' + esc(w.patientName) + ' <span style="color:var(--muted)">(' + esc(w.phone) + ')</span></td>' +
+          '<td>' + (w.salesName ? esc(w.salesName) : '<span style="color:var(--muted)">-</span>') + '</td>' +
+          '<td>' + esc(w.itemName) + (w.note ? '<div style="font-size:11px;color:var(--muted);white-space:normal">' + esc(w.note) + '</div>' : '') + '</td>' +
+          '<td style="text-align:right">' + esc(w.qty) + (s && s.unit ? ' ' + esc(s.unit) : '') + '</td>' +
+          (admin ? '<td style="text-align:right">' + money(w.unitCost) + '</td><td style="text-align:right;font-weight:600">' + money(w.amount) + '</td>' : '') +
+          '<td style="text-align:right">' + (admin ? '<button class="btn" data-action="delete-withdraw" data-arg="' + esc(w.id) + '" title="ลบ (คืนสต๊อก)"><span class="ms">delete</span></button>' : '') + '</td>' +
+        '</tr>';
+      }).join(''));
+    var th = 'padding:10px 12px;white-space:nowrap';
+    return '' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center">' +
+        searchInputHtml('wdSearch', state.withdraw.q, 'ค้นหาชื่อคนไข้ / เบอร์โทร', 'window.__valin.onWithdrawSearch(this.value)', 'width:280px') +
+        (admin && L && L.totalAmount != null ? '<div style="font-size:13px;color:var(--text-2)">รวมจำนวนเงิน (ราคาทุน) <b style="font-size:15px;color:var(--text)">' + money(L.totalAmount) + '</b></div>' : '') +
+        '<button class="btn btn-primary" style="margin-left:auto" data-action="new-withdraw"><span class="ms">add</span> เบิกยา</button>' +
+      '</div>' +
+      listCardWrap(
+        '<div style="overflow-x:auto"><table class="table stock-table" style="width:100%;border-collapse:collapse">' +
+          '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
+            '<th style="' + th + '">วันที่</th><th style="' + th + '">ชื่อคนไข้ (เบอร์โทร)</th><th style="' + th + '">ชื่อเซลล์</th><th style="' + th + '">รายการยา</th><th style="' + th + ';text-align:right">จำนวน</th>' +
+            (admin ? '<th style="' + th + ';text-align:right">ราคาต่อหน่วย</th><th style="' + th + ';text-align:right">จำนวนเงิน</th>' : '') + '<th></th>' +
+          '</tr></thead><tbody>' + rows + '</tbody></table></div>', state.withdraw.reloading) + pagerHtml(L, 'withdraw-page');
+  }
+
+  /* ---- สร้างรายการเบิกยา: one patient + sales, several medicine lines ---- */
+  function newWithdrawModal() {
+    openModal('medwithdraw', { date: todayStr(), patientId: '', patientName: '', phone: '', salesId: '', note: '',
+      lines: [{ name: '', qty: 1 }], _patientQuery: '', _patientSuggest: [] });
+  }
+  function withdrawModalBody() {
+    var d = state.draft;
+    var salesOpts = [{ value: '', label: '— ไม่ระบุ —' }].concat((state.master.sales || []).map(function (x) { return { value: x.id, label: x.name }; }));
+    var lines = d.lines.map(function (l, i) {
+      var s = medicineStockItem(stockItemIdByName(l.name));
+      return '<div style="display:grid;grid-template-columns:minmax(0,1fr) 100px 40px;gap:8px;align-items:start;margin-bottom:6px">' +
+        '<div><input type="text" list="dlWithdrawMed" autocomplete="off" placeholder="เลือกยาจากสต๊อก" value="' + esc(l.name) + '" data-bind="lines.' + i + '.name" style="' + inputStyle + '"></div>' +
+        '<div><input type="number" min="0" step="any" value="' + esc(l.qty) + '" data-bind="lines.' + i + '.qty" style="' + inputStyle + '" placeholder="จำนวน">' +
+          '<div style="font-size:11px;color:var(--muted);margin-top:3px">' + esc(s && s.unit ? s.unit : '') + '</div></div>' +
+        '<button class="btn" data-action="remove-withdraw-line" data-arg="' + i + '" style="padding:8px 10px"><span class="ms">close</span></button>' +
+      '</div>';
+    }).join('');
+    return modalHeader('เบิกยาคลีนิค') +
+      '<div style="margin-bottom:12px">' + searchInputHtml('wdPatientSearch', d._patientQuery, 'ค้นหาคนไข้ (ชื่อ / เบอร์โทร)', 'window.__valin.onPatientSuggestSearch(this.value)') + patientSuggestBox(d._patientSuggest) + '</div>' +
+      (d.patientId ? '<div style="font-size:12px;color:var(--green-dark);margin:-6px 0 10px">เลือก: ' + esc(d.patientName) + ' (' + esc(d.phone) + ')</div>' : '') +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
+        field('วันที่', bindInput('date', 'date')) + field('ชื่อเซลล์', bindSelect('salesId', salesOpts)) +
+      '</div>' +
+      '<div style="display:grid;grid-template-columns:minmax(0,1fr) 100px 40px;gap:8px;font-size:11px;color:var(--muted);margin-bottom:4px"><span>รายการยา</span><span>จำนวน</span><span></span></div>' +
+      lines +
+      '<button class="btn" data-action="add-withdraw-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการยา</button>' +
+      '<datalist id="dlWithdrawMed">' + stockItemsOfType('medicine').map(function (s) { return '<option value="' + esc(s.name) + '">' + esc(s.category || '') + '</option>'; }).join('') + '</datalist>' +
+      field('หมายเหตุ', bindTextarea('note', 2)) +
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:-4px">ตัดสต๊อกยาตามจำนวนที่เบิก · ราคาคิดจากราคาทุน</div>' +
+      saveBtn();
+  }
+  /** Medicine stock id for an exact name match, or ''. */
+  function stockItemIdByName(name) {
+    var s = stockItemsOfType('medicine').filter(function (x) { return x.name === String(name || '').trim(); })[0];
+    return s ? s.id : '';
+  }
+  function saveWithdrawModal() {
+    var d = state.draft;
+    if (!d.patientId) { toast('error', 'กรุณาเลือกคนไข้'); return; }
+    var lines = d.lines.filter(function (l) { return String(l.name || '').trim(); });
+    if (!lines.length) { toast('error', 'กรุณาเลือกยาอย่างน้อย 1 รายการ'); return; }
+    var bad = lines.filter(function (l) { return !stockItemIdByName(l.name); })[0];
+    if (bad) { toast('error', 'ไม่พบ "' + bad.name + '" ในสต๊อกยา กรุณาเลือกจากรายการ'); return; }
+    call('saveMedWithdrawal', session.token, {
+      date: d.date, patientId: d.patientId, salesId: d.salesId, note: d.note,
+      lines: lines.map(function (l) { return { itemId: stockItemIdByName(l.name), qty: l.qty }; })
+    }).then(function () {
+      toast('success', 'บันทึกการเบิกยาแล้ว'); closeModal();
+      loadWithdrawals();
+      if (state.stock.list) loadStock();
+    });
+  }
+  function deleteWithdrawConfirm(id) {
+    Swal.fire({ icon: 'warning', title: 'ลบรายการเบิกยานี้?', text: 'จำนวนยาจะถูกคืนเข้าสต๊อก', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
+      if (!r.isConfirmed) return;
+      call('deleteMedWithdrawal', session.token, id).then(function () {
+        toast('success', 'ลบแล้ว'); loadWithdrawals();
+        if (state.stock.list) loadStock();
       });
     });
   }
@@ -3652,6 +3788,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'stockupdate': return stockUpdateModalBody();
       case 'stocklogentry': return stockLogEntryModalBody();
       case 'stockadjust': return stockAdjustModalBody();
+      case 'medwithdraw': return withdrawModalBody();
       case 'expense': return expenseModalBody();
       case 'order': return orderModalBody();
       case 'doctor': return doctorModalBody();
@@ -3671,6 +3808,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'stockupdate': return saveStockUpdateModal();
       case 'stocklogentry': return saveStockLogEntryModal();
       case 'stockadjust': return saveStockAdjustModal();
+      case 'medwithdraw': return saveWithdrawModal();
       case 'expense': return saveExpenseModal();
       case 'order': return saveOrderModal();
       case 'doctor': return saveDoctorModal();
@@ -3815,6 +3953,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'delete-stock-log': deleteStockLogConfirm(arg); break;
       case 'exp-tab': expTab(arg); break;
       case 'stock-tab': stockTab(arg); break;
+      case 'new-withdraw': newWithdrawModal(); break;
+      case 'delete-withdraw': deleteWithdrawConfirm(arg); break;
+      case 'withdraw-page': state.withdraw.page = Number(arg); render(); loadWithdrawals(); break;
+      case 'add-withdraw-line': state.draft.lines.push({ name: '', qty: 1 }); render(); break;
+      case 'remove-withdraw-line': state.draft.lines.splice(Number(arg), 1); render(); break;
       case 'new-expense': newExpenseModal(); break;
       case 'edit-expense': editExpenseModal(arg); break;
       case 'delete-expense': deleteExpenseConfirm(arg); break;
@@ -4014,7 +4157,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* Expose the handful of functions used by inline oninput= attributes (search boxes need live typing without full re-render churn on every keystroke going through data-action). */
   window.__valin = {
     onListSearchInput: onListSearchInput,
-    onPatientSuggestSearch: onPatientSuggestSearch, onPromotionSearch: onPromotionSearch
+    onPatientSuggestSearch: onPatientSuggestSearch, onPromotionSearch: onPromotionSearch, onWithdrawSearch: onWithdrawSearch
   };
 
   /* ---------------------------------------------------------------- */

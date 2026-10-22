@@ -154,6 +154,7 @@ var CONFIG = {
     CLINIC_SETTINGS: 'ClinicSettings',
     COUNTERS: 'Counters',
     MED_DEPOSITS: 'MedDeposits',
+    MED_WITHDRAWALS: 'MedWithdrawals',
     AUDIT_LOG: 'AuditLog'
   },
   HEADERS: {
@@ -204,6 +205,10 @@ var CONFIG = {
     // in sync by applyRecordEffects_ (เบิกยาหน้าคลีนิค lines add their จำนวนฝาก,
     // รายการใช้ยาฝาก lines take it back out). Date/CreatedBy are the latest change.
     MedDeposits: ['DepositID', 'Date', 'PatientID', 'PatientName', 'ItemName', 'QtyRemaining', 'CreatedBy', 'ItemID', 'UpdatedAt'],
+    // MedWithdrawals — เมนู "เบิกยาคลีนิค": one row per medicine line. UnitCost
+    // is the item's ราคาทุน snapshotted at save time (Amount = Qty * UnitCost);
+    // both are admin-only on the way out. Qty is taken out of Stock.
+    MedWithdrawals: ['WithdrawID', 'Date', 'PatientID', 'PatientName', 'Phone', 'SalesID', 'SalesName', 'ItemID', 'ItemName', 'Qty', 'UnitCost', 'Amount', 'Note', 'CreatedBy', 'CreatedAt'],
     // StockType: 'supply' (เวชภัณฑ์) | 'medicine' (ยา) — splits the Stock page
     // into two tabs and feeds the record modal's stock-backed name
     // suggestions (รายการเวชภัณฑ์ที่ใช้ / รายการซื้อยาเพิ่ม). Blank on rows
@@ -258,6 +263,7 @@ var CONFIG = {
   TEXT_COLUMNS: {
     Patients: ['Phone'],
     Records: ['Phone', 'ReceiptNo'],
+    MedWithdrawals: ['Phone'],
     Staff: ['Username']
   },
   PROPS: {
@@ -1050,7 +1056,8 @@ function getPatientProfile(token, id) {
         patient: mapPatientOut_(p),
         visitCount: visitCount,
         totalSpent: totalSpent,
-        records: records.slice(0, 40).map(mapRecordOut_)
+        records: records.slice(0, 40).map(mapRecordOut_),
+        deposits: patientDeposits_(id)
       }
     };
   });
@@ -1473,7 +1480,7 @@ function saveClinicSettings(token, settings) {
 // ราคาขาย quantity tiers — one Stock column per tier (Price1, Price3, ...).
 var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
 // StockLog.Kind values. '' (rows written before Kind existed) reads as 'update'.
-var STOCK_LOG_KINDS = { update: 1, in: 1, out: 1, set: 1, import: 1, opening: 1, record: 1 };
+var STOCK_LOG_KINDS = { update: 1, in: 1, out: 1, set: 1, import: 1, opening: 1, record: 1, withdraw: 1 };
 
 function listStock(token, opts) {
   return safeCall_(function () {
@@ -1481,12 +1488,21 @@ function listStock(token, opts) {
     opts = opts || {};
     var filters = compactFilters_(opts.filters);
     var rows = getRows_(getSheet_(CONFIG.SHEETS.STOCK));
+    if (filters.type) rows = rows.filter(function (r) { return stockTypeOf_(r) === filters.type; });
+    // Stat cards count the whole tab (before search/category filters). ใกล้หมด
+    // uses the item's MinQty when set, else the old fixed threshold of 10 —
+    // same rule as the row badge on the client.
+    var summary = { total: rows.length, low: 0, out: 0 };
+    rows.forEach(function (r) {
+      var qty = Number(r.Qty) || 0, min = numOrNull_(r.MinQty);
+      if (qty <= 0) summary.out++;
+      else if (min != null ? qty <= min : qty <= 10) summary.low++;
+    });
     if (filters.q) {
       var q = String(filters.q).trim().toLowerCase();
       rows = rows.filter(function (r) { return String(r.Name).toLowerCase().indexOf(q) > -1; });
     }
     if (filters.category) rows = rows.filter(function (r) { return r.Category === filters.category; });
-    if (filters.type) rows = rows.filter(function (r) { return stockTypeOf_(r) === filters.type; });
 
     // Round 25 item 1: "เรียงตาม update ล่าสุด" — sort by each item's latest
     // StockLog entry's Date (items with no log entries yet sink to the
@@ -1505,6 +1521,7 @@ function listStock(token, opts) {
     var showCost = session.level === 'admin';
     var page = paginate_(rows, opts.page, opts.pageSize);
     page.items = page.items.map(function (r) { return mapStockOut_(r, latestByItem[r.ItemID], showCost); });
+    page.summary = summary;
     return { ok: true, data: page };
   });
 }
@@ -2461,12 +2478,12 @@ function recordEffects_(r) {
  * its lines, an edit applies only what changed, and a delete (newEff empty)
  * puts everything back. Checks every item first and throws before writing
  * anything if a deposit balance would go below zero (stock itself may go
- * negative). Stock moves
- * are StockLog 'record' rows dated today (not the record's date, so they
- * are always the item's latest entry and Stock.Qty follows them).
- * Must run inside the caller's script lock.
+ * negative). Stock moves are StockLog rows of kind `logKind` (default
+ * 'record'; เบิกยาคลีนิค passes 'withdraw') dated today — not the record's
+ * date, so they are always the item's latest entry and Stock.Qty follows
+ * them. Must run inside the caller's script lock.
  */
-function applyRecordEffects_(session, oldEff, newEff, label, patientName) {
+function applyRecordEffects_(session, oldEff, newEff, label, patientName, logKind) {
   var diff = function (a, b) {
     var out = {};
     Object.keys(a).concat(Object.keys(b)).forEach(function (k) { var d = round2_((b[k] || 0) - (a[k] || 0)); if (d) out[k] = d; });
@@ -2498,7 +2515,7 @@ function applyRecordEffects_(session, oldEff, newEff, label, patientName) {
   movedIds.forEach(function (id) {
     var item = stockById[id], d = stockDelta[id], cur = Number(item.Qty) || 0;
     appendRow_(logSheet, CONFIG.HEADERS.StockLog,
-      stockLogRow_(session, 'SL' + nextSeq_('STOCKLOG', 5), todayStr_(), item, 'record', d < 0 ? -d : 0, d > 0 ? d : 0, round2_(cur - d), label));
+      stockLogRow_(session, 'SL' + nextSeq_('STOCKLOG', 5), todayStr_(), item, logKind || 'record', d < 0 ? -d : 0, d > 0 ? d : 0, round2_(cur - d), label));
     resyncStockQtyFromLog_(id);
   });
   if (movedIds.length) invalidateStockLiteCache_();
@@ -2518,14 +2535,16 @@ function applyRecordEffects_(session, oldEff, newEff, label, patientName) {
   });
 }
 
-/** ยาฝาก the patient still has (balance > 0), for the record modal. */
+/** ยาฝาก the patient still has (balance > 0) — record modal and patient panel. */
+function patientDeposits_(patientId) {
+  return getRows_(getSheet_(CONFIG.SHEETS.MED_DEPOSITS)).filter(function (r) { return r.PatientID === patientId && (Number(r.QtyRemaining) || 0) > 0; }).map(function (r) {
+    return { id: r.DepositID, itemId: r.ItemID, name: r.ItemName, qty: Number(r.QtyRemaining) || 0, date: dateStr_(r.Date), createdBy: r.CreatedBy };
+  });
+}
 function listPatientDeposits(token, patientId) {
   return safeCall_(function () {
     requireAuth_(token, 'staff');
-    var rows = getRows_(getSheet_(CONFIG.SHEETS.MED_DEPOSITS)).filter(function (r) { return r.PatientID === patientId && (Number(r.QtyRemaining) || 0) > 0; });
-    return { ok: true, data: rows.map(function (r) {
-      return { id: r.DepositID, itemId: r.ItemID, name: r.ItemName, qty: Number(r.QtyRemaining) || 0, date: dateStr_(r.Date), createdBy: r.CreatedBy };
-    }) };
+    return { ok: true, data: patientDeposits_(patientId) };
   });
 }
 
@@ -2836,6 +2855,113 @@ function buildReceiptData_(rid) {
 /* ======================================================================
    บันทึกค่าใช้จ่ายคลีนิค — Expenses (tab: ค่าใช้จ่าย) + Orders/OrderLines (tab: จัดซื้อ)
    ====================================================================== */
+
+/* ======================================================================
+   เบิกยาคลีนิค — MedWithdrawals. Medicine taken out of clinic stock for a
+   patient by a sales person, valued at ราคาทุน (admins only see the money).
+   ====================================================================== */
+
+/** `showCost` must only be true for admins. */
+function mapWithdrawalOut_(w, showCost) {
+  var out = {
+    id: w.WithdrawID, date: dateStr_(w.Date), patientId: w.PatientID, patientName: w.PatientName, phone: w.Phone,
+    salesId: w.SalesID, salesName: w.SalesName, itemId: w.ItemID, itemName: w.ItemName, qty: Number(w.Qty) || 0,
+    note: w.Note || '', createdBy: w.CreatedBy
+  };
+  if (showCost) { out.unitCost = Number(w.UnitCost) || 0; out.amount = Number(w.Amount) || 0; }
+  return out;
+}
+
+function listMedWithdrawals(token, opts) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'staff');
+    opts = opts || {};
+    var filters = compactFilters_(opts.filters);
+    var rows = getRows_(getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS));
+    if (filters.q) {
+      var q = String(filters.q).trim().toLowerCase(), qDigits = q.replace(/[^\d]/g, '');
+      rows = rows.filter(function (r) {
+        return String(r.PatientName).toLowerCase().indexOf(q) > -1 || (qDigits && String(r.Phone).replace(/[^\d]/g, '').indexOf(qDigits) > -1);
+      });
+    }
+    rows.sort(function (a, b) { return dateStr_(b.Date).localeCompare(dateStr_(a.Date)) || String(b.CreatedAt).localeCompare(String(a.CreatedAt)); });
+    var showCost = session.level === 'admin';
+    var page = paginate_(rows, opts.page, opts.pageSize);
+    page.items = page.items.map(function (r) { return mapWithdrawalOut_(r, showCost); });
+    if (showCost) page.totalAmount = round2_(rows.reduce(function (s, r) { return s + (Number(r.Amount) || 0); }, 0));
+    return { ok: true, data: page };
+  });
+}
+
+/** payload: {date, patientId, salesId, note, lines:[{itemId, qty}]} — one MedWithdrawals row per line, each taken out of Stock. */
+function saveMedWithdrawal(token, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'staff');
+    payload = payload || {};
+    requireFields_(payload, { date: 'วันที่', patientId: 'คนไข้' });
+    requireDateStr_(payload.date, 'วันที่');
+    var lines = (Array.isArray(payload.lines) ? payload.lines : []).filter(function (l) { return l && l.itemId; });
+    if (!lines.length) throw ValidationError_('กรุณาเลือกยาอย่างน้อย 1 รายการ');
+
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var patient = getRows_(getSheet_(CONFIG.SHEETS.PATIENTS)).filter(function (p) { return p.ID === payload.patientId; })[0];
+      if (!patient) throw ValidationError_('ไม่พบข้อมูลคนไข้ที่เลือก');
+      var sales = payload.salesId ? getRows_(getSheet_(CONFIG.SHEETS.SALES)).filter(function (s) { return s.SalesID === payload.salesId; })[0] : null;
+      if (payload.salesId && !sales) throw ValidationError_('ไม่พบข้อมูลเซลล์ที่เลือก');
+      var stockById = {};
+      getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (r) { stockById[r.ItemID] = r; });
+      var patientName = patient.FirstName + ' ' + patient.LastName;
+      var take = {};
+      var rows = lines.map(function (l, i) {
+        var line = ' (บรรทัดที่ ' + (i + 1) + ')';
+        var item = stockById[l.itemId];
+        if (!item || stockTypeOf_(item) !== 'medicine') throw ValidationError_('กรุณาเลือกยาจากรายการสต๊อกยา' + line);
+        var qty = requireNumber_(l.qty, 'จำนวน' + line, { min: 0 });
+        if (!qty) throw ValidationError_('จำนวนต้องมากกว่า 0' + line);
+        var cost = Number(item.CostPrice) || 0;
+        take[item.ItemID] = round2_((take[item.ItemID] || 0) + qty);
+        return {
+          Date: payload.date, PatientID: patient.ID, PatientName: patientName, Phone: patient.Phone,
+          SalesID: sales ? sales.SalesID : '', SalesName: sales ? sales.Name : '', ItemID: item.ItemID, ItemName: item.Name,
+          Qty: qty, UnitCost: cost, Amount: round2_(qty * cost), Note: payload.note || '', CreatedBy: session.username, CreatedAt: nowStr_()
+        };
+      });
+      applyRecordEffects_(session, { stock: {}, deposit: {} }, { stock: take, deposit: {} },
+        'เบิกยาคลีนิค · ' + patientName + (sales ? ' · ' + sales.Name : ''), patientName, 'withdraw');
+      var sheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
+      var ids = nextSeqBlock_('WITHDRAW', rows.length, 5);
+      rows.forEach(function (r, i) { r.WithdrawID = 'WD' + ids[i]; appendRow_(sheet, CONFIG.HEADERS.MedWithdrawals, r); });
+      writeAudit_(session, 'CREATE', 'MedWithdrawal', rows.map(function (r) { return r.WithdrawID; }).join(','), patientName + ' x' + rows.length);
+      return { ok: true, data: { ids: rows.map(function (r) { return r.WithdrawID; }) } };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+/** Admin-only; puts the line's qty back into Stock. */
+function deleteMedWithdrawal(token, id) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'admin');
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var sheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
+      var row = getRows_(sheet).filter(function (r) { return r.WithdrawID === id; })[0];
+      if (!row) throw ValidationError_('ไม่พบรายการ');
+      var give = {};
+      give[row.ItemID] = Number(row.Qty) || 0;
+      applyRecordEffects_(session, { stock: give, deposit: {} }, { stock: {}, deposit: {} }, 'ลบรายการเบิกยาคลีนิค ' + id + ' · ' + row.PatientName, row.PatientName, 'withdraw');
+      deleteRowByIndex_(sheet, row._row);
+      writeAudit_(session, 'DELETE', 'MedWithdrawal', id, row.PatientName + ' ' + row.ItemName);
+      return { ok: true };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
 
 function mapExpenseOut_(e) {
   return { id: e.ExpID, date: dateStr_(e.Date), name: e.Name, category: e.Category, amount: Number(e.Amount) || 0, createdBy: e.CreatedBy, row: e._row };
