@@ -2553,7 +2553,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     '</div>';
 
     return header +
-      '<div style="margin-bottom:12px">' + searchInputHtml('', d._patientQuery, 'ค้นหาลูกค้า (ชื่อ / เบอร์โทร)', 'window.__valin.onPatientSuggestSearch(this.value)') + patientSuggestBox(d._patientSuggest) + '</div>' +
+      '<div style="margin-bottom:12px">' + searchInputHtml('recPatientSearch', d._patientQuery, 'ค้นหาลูกค้า (ชื่อ / เบอร์โทร)', 'window.__valin.onPatientSuggestSearch(this.value)') + patientSuggestBox(d._patientSuggest) + '</div>' +
       (d.patientId ? '<div style="font-size:12px;color:var(--green-dark);margin:-6px 0 10px">เลือก: ' + esc(d.patientName) + ' (' + esc(d.phone) + ')' + (d.patientNickname ? ' · ชื่อเล่น ' + esc(d.patientNickname) : '') + '</div>' + patientDepositsHtml(d) : '') +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
         field('วันที่', bindInput('date', 'date')) +
