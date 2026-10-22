@@ -2091,10 +2091,10 @@ function mapRecordOut_(r) {
     medicineItems: parseLineItems_(r.MedicineJSON), medicineAmount: medicineAmount,
     useOther: String(r.UseOther) === 'TRUE' || r.UseOther === true,
     otherItems: parseLineItems_(r.OtherItemsJSON),
-    useOwnMed: String(r.UseOwnMed) === 'TRUE', ownMedItems: parseLineItems_(r.OwnMedJSON),
-    useDepositUse: String(r.UseDepositUse) === 'TRUE', depositUseItems: parseLineItems_(r.DepositUseJSON),
-    useMessenger: String(r.UseMessenger) === 'TRUE', messengerItems: parseLineItems_(r.MessengerJSON),
-    stockApplied: String(r.StockApplied) === 'TRUE',
+    useOwnMed: isTrue_(r.UseOwnMed), ownMedItems: parseLineItems_(r.OwnMedJSON),
+    useDepositUse: isTrue_(r.UseDepositUse), depositUseItems: parseLineItems_(r.DepositUseJSON),
+    useMessenger: isTrue_(r.UseMessenger), messengerItems: parseLineItems_(r.MessengerJSON),
+    stockApplied: isTrue_(r.StockApplied),
     supplierPayAmount: Number(r.SupplierPayAmount) || round2_(medicineAmount + otherAmount),
     estimatedRevenue: grossBase,
     totalCollected: round2_(grossBase + medicineAmount + otherAmount),
@@ -2130,6 +2130,11 @@ function mapRecordOut_(r) {
    With P=0 this is identical to the pre-round-13 formulas, so historical
    records (PromoAmount blank/0) are unaffected.
    ====================================================================== */
+
+/** Checkbox-style flags are written as 'TRUE'/'FALSE', but Sheets stores them as real booleans — accept both. */
+function isTrue_(v) {
+  return v === true || String(v).toUpperCase() === 'TRUE';
+}
 
 function round2_(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
@@ -2213,7 +2218,7 @@ function recomputeDoctorDayShares_(doctorId, date, allRows) {
     }
     var customerAmount = Number(r.Amount) || 0;
     var promoAmount = Number(r.PromoAmount) || 0;
-    var canula = (String(r.UseCanula) === 'TRUE' || r.UseCanula === true) ? (Number(r.CanulaAmount) || 0) : 0;
+    var canula = isTrue_(r.UseCanula) ? (Number(r.CanulaAmount) || 0) : 0;
     var salesShare = Number(r.SalesShare) || 0;
     // grossBase = A + P + K (see the round-13 formula comment above
     // computeRecordShares_) — with PromoAmount 0/blank this is identical to
@@ -2302,7 +2307,7 @@ function computeDailySummaryDetail_(dateStr) {
   var promoAmountTotal = 0, medicineAmountTotal = 0;
   var doctorMap = {}, salesMap = {}, otherItems = [], medicineItems = [], promoMap = {};
   records.forEach(function (r) {
-    var useCanula = String(r.UseCanula) === 'TRUE' || r.UseCanula === true;
+    var useCanula = isTrue_(r.UseCanula);
     var canula = useCanula ? (Number(r.CanulaAmount) || 0) : 0;
     var other = Number(r.OtherAmount) || 0;
     var promo = Number(r.PromoAmount) || 0;
@@ -2475,18 +2480,18 @@ function qtyLines_(items, use, label, fields, requireItem) {
  */
 function recordEffects_(r) {
   var eff = { stock: {}, deposit: {} };
-  if (String(r.StockApplied) !== 'TRUE') return eff;
+  if (!isTrue_(r.StockApplied)) return eff;
   var add = function (map, key, n) { if (key && n) map[key] = round2_((map[key] || 0) + n); };
-  if (String(r.UseSupplies) === 'TRUE') {
+  if (isTrue_(r.UseSupplies)) {
     parseLineItems_(r.SuppliesJSON).forEach(function (l) { add(eff.stock, l.itemId, Number(l.qty) || 0); });
   }
-  if (String(r.UseMedicine) === 'TRUE') {
+  if (isTrue_(r.UseMedicine)) {
     parseLineItems_(r.MedicineJSON).forEach(function (l) {
       add(eff.stock, l.itemId, Number(l.qtyDispensed) || 0);
       add(eff.deposit, l.itemId && (r.PatientID + '|' + l.itemId), Number(l.qtyDeposit) || 0);
     });
   }
-  if (String(r.UseDepositUse) === 'TRUE') {
+  if (isTrue_(r.UseDepositUse)) {
     parseLineItems_(r.DepositUseJSON).forEach(function (l) { add(eff.deposit, l.itemId && (r.PatientID + '|' + l.itemId), -(Number(l.qty) || 0)); });
   }
   return eff;
@@ -2846,7 +2851,7 @@ function buildReceiptData_(rid) {
   // line on the receipt while still showing correctly everywhere else in the
   // app (record panel, day panel, LINE push, dashboard) — very likely the
   // exact bug behind "เพิ่มยอด canula ด้วย".
-  var useCanula = String(r.UseCanula) === 'TRUE' || r.UseCanula === true;
+  var useCanula = isTrue_(r.UseCanula);
   var canulaAmount = Number(r.CanulaAmount) || 0;
   var otherAmount = Number(r.OtherAmount) || 0;
   var amount = Number(r.Amount) || 0;
@@ -3000,7 +3005,7 @@ function getSalesReport(token, opts) {
     getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { unitById[s.ItemID] = s.Unit || ''; });
     var groups = {}, order = [];
     getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).forEach(function (r) {
-      if (!r.SalesID || r.Status === 'cancelled' || String(r.UseMedicine) !== 'TRUE') return;
+      if (!r.SalesID || r.Status === 'cancelled' || !isTrue_(r.UseMedicine)) return;
       var d = dateStr_(r.Date);
       if (opts.salesId && r.SalesID !== opts.salesId) return;
       if (opts.dateFrom && d < opts.dateFrom) return;
@@ -3116,7 +3121,7 @@ function mapOrderOut_(o, lines) {
     lines: (lines || []).map(function (l) {
       return { id: l.LineID, category: l.Category, itemName: l.ItemName, qty: Number(l.Qty) || 0, unitPrice: Number(l.UnitPrice) || 0, lineTotal: Number(l.LineTotal) || 0, itemId: l.ItemID || '' };
     }),
-    stockApplied: String(o.StockApplied) === 'TRUE'
+    stockApplied: isTrue_(o.StockApplied)
   };
 }
 
@@ -3128,7 +3133,7 @@ function mapOrderOut_(o, lines) {
  */
 function orderEffects_(orderRow, lines, stockIds) {
   var eff = { stock: {}, deposit: {} };
-  if (!orderRow || String(orderRow.StockApplied) !== 'TRUE') return eff;
+  if (!orderRow || !isTrue_(orderRow.StockApplied)) return eff;
   lines.forEach(function (l) {
     var id = l.ItemID || l.itemId, qty = Number(l.Qty != null ? l.Qty : l.qty) || 0;
     if (id && qty && stockIds[id]) eff.stock[id] = round2_((eff.stock[id] || 0) - qty);
