@@ -4071,9 +4071,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<td style="color:var(--text-2)">' + esc(s.username) + '</td>' +
         '<td>' + (s.level === 'admin' ? '<span class="tag-badge" style="background:var(--accent-soft);color:var(--accent-hover)">ADMIN</span>' : '<span class="tag-badge" style="background:var(--hover-bg);color:var(--text-2)">STAFF</span>') + '</td>' +
         '<td style="text-align:right;white-space:nowrap">' +
-          '<button class="btn" data-action="reset-password" data-arg="' + esc(s.id) + '" title="รีเซ็ตรหัสผ่าน"><span class="ms">lock_reset</span></button> ' +
-          '<button class="btn" data-action="edit-staff" data-arg="' + esc(s.id) + '"><span class="ms">edit</span></button> ' +
-          '<button class="btn" data-action="delete-staff" data-arg="' + esc(s.id) + '"><span class="ms">delete</span></button>' +
+          '<button class="btn" data-action="reset-password" data-arg="' + esc(s.row) + '" title="รีเซ็ตรหัสผ่าน"><span class="ms">lock_reset</span></button> ' +
+          '<button class="btn" data-action="edit-staff" data-arg="' + esc(s.row) + '"><span class="ms">edit</span></button> ' +
+          '<button class="btn" data-action="delete-staff" data-arg="' + esc(s.row) + '"><span class="ms">delete</span></button>' +
         '</td></tr>';
     }).join('');
     return '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">' +
@@ -4086,17 +4086,23 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           '<tbody>' + rows + '</tbody></table></div>' + localPagerHtml(staffPg, 'staff');
   }
   function newStaffModal() { openModal('staff', { name: '', role: '', username: '', lineId: '', level: 'staff', active: true }); }
-  function editStaffModal(id) { var s = state.settings.staff.filter(function (x) { return x.id === id; })[0]; if (s) openModal('staff', Object.assign({}, s)); }
-  function deleteStaffConfirm(id) {
-    Swal.fire({ icon: 'warning', title: 'ลบผู้ใช้งานนี้?', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
+  // Staff rows are addressed by sheet row (listStaff's `row`): StaffIDs can repeat in a hand-edited sheet.
+  function staffByRow(row) { return (state.settings.staff || []).filter(function (x) { return String(x.row) === String(row); })[0]; }
+  function editStaffModal(row) { var s = staffByRow(row); if (s) openModal('staff', Object.assign({}, s)); }
+  function deleteStaffConfirm(row) {
+    var s = staffByRow(row);
+    if (!s) return;
+    Swal.fire({ icon: 'warning', title: 'ลบผู้ใช้งาน ' + s.username + '?', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
       if (!r.isConfirmed) return;
-      call('deleteStaff', session.token, id).then(function () { toast('success', 'ลบแล้ว'); loadStaff(); });
+      call('deleteStaff', session.token, s.id, s.row).then(function () { toast('success', 'ลบแล้ว'); loadStaff(); });
     });
   }
-  function resetPasswordConfirm(id) {
-    Swal.fire({ icon: 'question', title: 'รีเซ็ตรหัสผ่านเป็น 12345?', showCancelButton: true, confirmButtonText: 'รีเซ็ต', cancelButtonText: 'ยกเลิก' }).then(function (r) {
+  function resetPasswordConfirm(row) {
+    var s = staffByRow(row);
+    if (!s) return;
+    Swal.fire({ icon: 'question', title: 'รีเซ็ตรหัสผ่านของ ' + s.username + ' เป็น 12345?', showCancelButton: true, confirmButtonText: 'รีเซ็ต', cancelButtonText: 'ยกเลิก' }).then(function (r) {
       if (!r.isConfirmed) return;
-      call('resetStaffPassword', session.token, id).then(function (res) { toast('success', res.message || 'รีเซ็ตรหัสผ่านแล้ว'); });
+      call('resetStaffPassword', session.token, s.id, s.row).then(function (res) { toast('success', res.message || 'รีเซ็ตรหัสผ่านแล้ว'); });
     });
   }
   function staffModalBody() {

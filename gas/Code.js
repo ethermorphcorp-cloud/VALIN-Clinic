@@ -802,13 +802,29 @@ function getCurrentUser(token) {
   return { ok: true, user: session };
 }
 
+/**
+ * The Staff row for a StaffID. IDs aren't guaranteed unique in a live sheet
+ * (a row added by hand can repeat one — S0001 for both admin and staff), so
+ * the caller narrows it with the session's username or the sheet row number
+ * listStaff handed out. Never falls back to "first match": an ambiguous or
+ * stale lookup throws instead of touching someone else's account.
+ */
+function findStaffRow_(rows, staffId, by) {
+  var matches = rows.filter(function (r) { return String(r.StaffID) === String(staffId); });
+  if (by && by.username != null) matches = matches.filter(function (r) { return String(r.Username).toLowerCase() === String(by.username).toLowerCase(); });
+  if (by && by.row != null && by.row !== '') matches = matches.filter(function (r) { return r._row === Number(by.row); });
+  if (!matches.length) throw ValidationError_('ไม่พบผู้ใช้ (ข้อมูลอาจเปลี่ยนไปแล้ว กรุณาโหลดหน้าใหม่)');
+  if (matches.length > 1) throw ValidationError_('รหัสพนักงาน ' + staffId + ' ซ้ำกันหลายแถว กรุณาโหลดหน้าใหม่แล้วลองอีกครั้ง');
+  return matches[0];
+}
+
 function changePassword(token, currentPassword, newPassword) {
+  return safeCall_(function () {
   var session = requireAuth_(token, 'staff');
+  if (!newPassword) throw ValidationError_('กรุณากรอกรหัสผ่านใหม่');
   var sheet = getSheet_(CONFIG.SHEETS.STAFF);
-  var rowIndex = findRowIndexById_(sheet, 'StaffID', session.staffId);
-  if (rowIndex < 0) return { ok: false, message: 'ไม่พบผู้ใช้' };
-  var rows = getRows_(sheet);
-  var user = rows.filter(function (r) { return r._row === rowIndex; })[0];
+  var user = findStaffRow_(getRows_(sheet), session.staffId, { username: session.username });
+  var rowIndex = user._row;
   var currentHash = hashPassword_(currentPassword, user.PasswordSalt);
   if (currentHash !== user.PasswordHash) return { ok: false, message: 'รหัสผ่านเดิมไม่ถูกต้อง' };
   var salt = Utilities.getUuid();
@@ -816,22 +832,23 @@ function changePassword(token, currentPassword, newPassword) {
     PasswordHash: hashPassword_(newPassword, salt), PasswordSalt: salt
   }));
   return { ok: true };
+  });
 }
 
 /** Admin-only: reset a staff member's password back to the default 12345. */
-function resetStaffPassword(token, staffId) {
-  requireAuth_(token, 'admin');
-  var sheet = getSheet_(CONFIG.SHEETS.STAFF);
-  var rowIndex = findRowIndexById_(sheet, 'StaffID', staffId);
-  if (rowIndex < 0) return { ok: false, message: 'ไม่พบผู้ใช้' };
-  var rows = getRows_(sheet);
-  var user = rows.filter(function (r) { return r._row === rowIndex; })[0];
-  var salt = Utilities.getUuid();
-  updateRowByIndex_(sheet, CONFIG.HEADERS.Staff, rowIndex, Object.assign({}, user, {
-    PasswordHash: hashPassword_('12345', salt), PasswordSalt: salt
-  }));
-  invalidateMasterCache_();
-  return { ok: true, message: 'รีเซ็ตรหัสผ่านเป็น 12345 เรียบร้อยแล้ว' };
+function resetStaffPassword(token, staffId, row) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'admin');
+    var sheet = getSheet_(CONFIG.SHEETS.STAFF);
+    var user = findStaffRow_(getRows_(sheet), staffId, { row: row });
+    var salt = Utilities.getUuid();
+    updateRowByIndex_(sheet, CONFIG.HEADERS.Staff, user._row, Object.assign({}, user, {
+      PasswordHash: hashPassword_('12345', salt), PasswordSalt: salt
+    }));
+    invalidateMasterCache_();
+    writeAudit_(session, 'UPDATE', 'Staff', staffId, 'reset password: ' + user.Username);
+    return { ok: true, message: 'รีเซ็ตรหัสผ่านของ ' + user.Username + ' เป็น 12345 เรียบร้อยแล้ว' };
+  });
 }
 
 /* ======================================================================
@@ -888,7 +905,7 @@ function buildMasterData_() {
   return {
     doctors: doctors.map(function (d) { return { id: d.DoctorID, name: d.Name, minAmount: d.MinAmount || 0, commissionPct: d.CommissionPct || 0 }; }),
     sales: salesRows.map(function (s) { return { id: s.SalesID, name: s.Name, commissionRate: s.CommissionRate || 0, minAmount: s.MinAmount || 0 }; }),
-    staff: staff.map(function (s) { return { id: s.StaffID, name: s.Name, username: s.Username, level: s.Level, active: s.Active }; }),
+    staff: staff.map(function (s) { return { id: s.StaffID, name: s.Name, username: s.Username, level: s.Level, active: !isFalse_(s.Active) }; }),
     treatmentCategories: treatmentCats.map(function (c) { return { id: c.CategoryID, name: c.Name }; }),
     stockCategories: stockCats.map(function (c) { return { id: c.CategoryID, name: c.Name }; }),
     expenseCategories: expenseCats.map(function (c) { return { id: c.CategoryID, name: c.Name }; }),
@@ -1423,7 +1440,7 @@ function listStaff(token) {
     requireAuth_(token, 'admin');
     var rows = getRows_(getSheet_(CONFIG.SHEETS.STAFF));
     return { ok: true, data: rows.map(function (s) {
-      return { id: s.StaffID, name: s.Name, role: s.Role, username: s.Username, lineId: s.LineID, level: s.Level, active: s.Active !== 'FALSE', row: s._row };
+      return { id: s.StaffID, name: s.Name, role: s.Role, username: s.Username, lineId: s.LineID, level: s.Level, active: !isFalse_(s.Active), row: s._row };
     }) };
   });
 }
@@ -1443,8 +1460,11 @@ function saveStaff(token, staff) {
     var isNew = !staff.id;
     if (isNew) {
       var salt = Utilities.getUuid();
+      // Skip IDs already in the sheet, in case the STAFF counter is behind hand-added rows.
+      var staffId;
+      do { staffId = 'S' + nextSeq_('STAFF', 4); } while (rows.some(function (s) { return String(s.StaffID) === staffId; }));
       var obj = {
-        StaffID: 'S' + nextSeq_('STAFF', 4), Name: staff.name, Role: staff.role || '', Username: staff.username,
+        StaffID: staffId, Name: staff.name, Role: staff.role || '', Username: staff.username,
         PasswordHash: hashPassword_('12345', salt), PasswordSalt: salt, LineID: staff.lineId || '',
         Level: staff.level, Active: 'TRUE', CreatedAt: nowStr_()
       };
@@ -1453,9 +1473,8 @@ function saveStaff(token, staff) {
       writeAudit_(session, 'CREATE', 'Staff', obj.StaffID, obj.Name);
       return { ok: true, data: obj, message: 'สร้างผู้ใช้ใหม่แล้ว รหัสผ่านเริ่มต้นคือ 12345' };
     } else {
-      var rowIndex = findRowIndexById_(sheet, 'StaffID', staff.id);
-      if (rowIndex < 0) throw ValidationError_('ไม่พบผู้ใช้');
-      var existing = rows.filter(function (r) { return r._row === rowIndex; })[0];
+      var existing = findStaffRow_(rows, staff.id, { row: staff.row });
+      var rowIndex = existing._row;
       var updated = Object.assign({}, existing, {
         Name: staff.name, Role: staff.role || '', Username: staff.username,
         LineID: staff.lineId || '', Level: staff.level, Active: staff.active === false ? 'FALSE' : 'TRUE'
@@ -1468,16 +1487,15 @@ function saveStaff(token, staff) {
   });
 }
 
-function deleteStaff(token, id) {
+function deleteStaff(token, id, row) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'admin');
-    if (id === session.staffId) throw ValidationError_('ไม่สามารถลบบัญชีของตัวเองได้');
     var sheet = getSheet_(CONFIG.SHEETS.STAFF);
-    var rowIndex = findRowIndexById_(sheet, 'StaffID', id);
-    if (rowIndex < 0) throw ValidationError_('ไม่พบผู้ใช้');
-    deleteRowByIndex_(sheet, rowIndex);
+    var user = findStaffRow_(getRows_(sheet), id, { row: row });
+    if (String(user.Username).toLowerCase() === String(session.username).toLowerCase()) throw ValidationError_('ไม่สามารถลบบัญชีของตัวเองได้');
+    deleteRowByIndex_(sheet, user._row);
     invalidateMasterCache_();
-    writeAudit_(session, 'DELETE', 'Staff', id, '');
+    writeAudit_(session, 'DELETE', 'Staff', id, user.Username);
     return { ok: true };
   });
 }
@@ -2184,6 +2202,11 @@ function mapRecordOut_(r) {
 /** Checkbox-style flags are written as 'TRUE'/'FALSE', but Sheets stores them as real booleans — accept both. */
 function isTrue_(v) {
   return v === true || String(v).toUpperCase() === 'TRUE';
+}
+
+/** Explicitly FALSE (a blank cell is not): Staff.Active treats blank as active. */
+function isFalse_(v) {
+  return v === false || String(v).toUpperCase() === 'FALSE';
 }
 
 function round2_(n) {
