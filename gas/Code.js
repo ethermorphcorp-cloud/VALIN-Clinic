@@ -319,7 +319,7 @@ var CONFIG = {
     DASH_VERSION_KEY: 'DASH_VERSION_V1',
     DASH_TTL: 1800 // 30 min — safe because correctness comes from the version bump, not the TTL
   },
-  PAGE_SIZE_DEFAULT: 10
+  PAGE_SIZE_DEFAULT: 15
 };
 
 /* ---------------------------------------------------------------- */
@@ -1096,7 +1096,7 @@ function getPatientProfile(token, id) {
         patient: mapPatientOut_(p),
         visitCount: visitCount,
         totalSpent: totalSpent,
-        records: records.slice(0, 40).map(mapRecordOut_),
+        records: records.map(mapRecordOut_), // the panel pages these 15 at a time
         deposits: patientDeposits_(id)
       }
     };

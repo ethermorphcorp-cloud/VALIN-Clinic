@@ -650,17 +650,47 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* ---------------------------------------------------------------- */
   /* Pagination helper — renders controls for a {page,pages,total} blob   */
   /* ---------------------------------------------------------------- */
-  function pagerHtml(pageInfo, action) {
+  function pagerHtml(pageInfo, action, key) {
     if (!pageInfo || pageInfo.pages <= 1) return '';
     var p = pageInfo.page, n = pageInfo.pages;
+    var arg = function (page) { return key ? key + ':' + page : page; };
     var btns = '';
-    btns += '<button data-action="' + action + '" data-arg="' + (p - 1) + '"' + (p <= 1 ? ' disabled' : '') + '><span class="ms">chevron_left</span></button>';
+    btns += '<button data-action="' + action + '" data-arg="' + arg(p - 1) + '"' + (p <= 1 ? ' disabled' : '') + '><span class="ms">chevron_left</span></button>';
     var startP = Math.max(1, p - 2), endP = Math.min(n, p + 2);
     for (var i = startP; i <= endP; i++) {
-      btns += '<button data-action="' + action + '" data-arg="' + i + '"' + (i === p ? ' class="active"' : '') + '>' + i + '</button>';
+      btns += '<button data-action="' + action + '" data-arg="' + arg(i) + '"' + (i === p ? ' class="active"' : '') + '>' + i + '</button>';
     }
-    btns += '<button data-action="' + action + '" data-arg="' + (p + 1) + '"' + (p >= n ? ' disabled' : '') + '><span class="ms">chevron_right</span></button>';
+    btns += '<button data-action="' + action + '" data-arg="' + arg(p + 1) + '"' + (p >= n ? ' disabled' : '') + '><span class="ms">chevron_right</span></button>';
     return '<div class="pager"><span>ทั้งหมด ' + pageInfo.total + ' รายการ</span>' + btns + '</div>';
+  }
+
+  /* Client-side paging for tables whose rows are already loaded (same 15
+   * rows per page as the server-paged lists, CONFIG.PAGE_SIZE_DEFAULT). */
+  var LOCAL_PAGE_SIZE = 15;
+  function localPage(items, page) {
+    var total = items.length, pages = Math.max(1, Math.ceil(total / LOCAL_PAGE_SIZE));
+    page = Math.min(Math.max(1, Number(page) || 1), pages);
+    var start = (page - 1) * LOCAL_PAGE_SIZE;
+    return { items: items.slice(start, start + LOCAL_PAGE_SIZE), page: page, pages: pages, total: total };
+  }
+  // Where each locally paged table keeps its page number, and how it redraws.
+  var LOCAL_PAGERS = {
+    patientRecords: { holder: function () { return state.patients.panel; }, field: 'recPage', draw: function () { renderPatientPanel(); } },
+    patientDeposits: { holder: function () { return state.patients.panel; }, field: 'depPage', draw: function () { renderPatientPanel(); } },
+    stockLog: { holder: function () { return state.stock.panel; }, field: 'page', draw: function () { renderStockPanel(); } },
+    salesReport: { holder: function () { return state.salesReport; }, field: 'page', draw: function () { render(); } },
+    salesReportPanel: { holder: function () { return state.salesReport; }, field: 'panelPage', draw: function () { renderSalesReportPanel(); } },
+    promotions: { holder: function () { return state.promotions; }, field: 'page', draw: function () { render(); } },
+    staff: { holder: function () { return state.settings; }, field: 'staffPage', draw: function () { render(); } }
+  };
+  function localPagerHtml(info, key) { return pagerHtml(info, 'local-page', key); }
+  function setLocalPage(arg) {
+    var i = String(arg).lastIndexOf(':');
+    var pg = LOCAL_PAGERS[String(arg).slice(0, i)];
+    var h = pg && pg.holder();
+    if (!h) return;
+    h[pg.field] = Number(String(arg).slice(i + 1));
+    pg.draw();
   }
 
   /** Round 19 item 2: wraps a list page's `.card` table in a dim-in-place
@@ -1375,29 +1405,31 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var avatar = st.photoUrl
       ? '<img src="' + esc(st.photoUrl) + '" style="width:64px;height:64px;object-fit:cover;border-radius:14px;flex:none">'
       : '<div class="brand-mark" style="width:64px;height:64px;font-size:22px;background:var(--green);flex:none">' + esc(initials) + '</div>';
+    var recPg = localPage(st.records, st.recPage);
     var rows = !st.records.length
       ? '<div class="empty-state">ยังไม่มีประวัติการรักษา</div>'
       : '<table class="table" style="width:100%;border-collapse:collapse">' +
           '<thead><tr style="text-align:left;font-size:11px;color:var(--muted);background:var(--hover-bg)"><th style="padding:8px 10px">วันที่</th><th>แพทย์</th><th>ยอดเงิน</th><th>สถานะ</th></tr></thead>' +
-          '<tbody>' + st.records.map(function (r) {
+          '<tbody>' + recPg.items.map(function (r) {
             return '<tr style="cursor:pointer" data-action="view-record" data-arg="' + esc(r.id) + '">' +
               '<td style="padding:8px 10px;font-size:12.5px">' + esc(r.date) + '</td>' +
               '<td style="font-size:12.5px">' + esc(r.doctorName) + '</td>' +
               '<td style="font-size:12.5px">' + money(r.totalCollected != null ? r.totalCollected : r.amount) + '</td>' +
               '<td>' + statusBadge(r.status) + '</td>' +
             '</tr>';
-          }).join('') + '</tbody></table>';
+          }).join('') + '</tbody></table>' + localPagerHtml(recPg, 'patientRecords');
     // ยาฝาก the patient still holds at the clinic (MedDeposits balances > 0).
     var deposits = st.deposits || [];
+    var depPg = localPage(deposits, st.depPage);
     var depositRows = !deposits.length
       ? '<div class="empty-state" style="padding:16px">ไม่มียาฝาก</div>'
       : '<table class="table" style="width:100%;border-collapse:collapse">' +
           '<thead><tr style="text-align:left;font-size:11px;color:var(--muted);background:var(--hover-bg)"><th style="padding:8px 10px">วันที่</th><th>รายการยาฝาก</th><th style="text-align:right;padding-right:14px">จำนวน</th></tr></thead>' +
-          '<tbody>' + deposits.map(function (x) {
+          '<tbody>' + depPg.items.map(function (x) {
             var s = stockItemsOfType('medicine').filter(function (it) { return it.id === x.itemId; })[0];
             return '<tr><td style="padding:8px 10px;font-size:12.5px">' + esc(x.date) + '</td><td style="font-size:12.5px">' + esc(x.name) + '</td>' +
               '<td style="font-size:12.5px;text-align:right;padding-right:14px;font-weight:600">' + esc(x.qty) + (s && s.unit ? ' ' + esc(s.unit) : '') + '</td></tr>';
-          }).join('') + '</tbody></table>';
+          }).join('') + '</tbody></table>' + localPagerHtml(depPg, 'patientDeposits');
     var body = '' +
       '<div style="padding:22px 22px 12px;display:flex;justify-content:space-between;align-items:flex-start;flex:none">' +
         '<div style="display:flex;gap:14px;align-items:center">' + avatar +
@@ -2815,13 +2847,14 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var it = p.item;
     var log = p.log;
     var td = 'padding:8px 6px;white-space:nowrap';
+    var logPg = localPage(log || [], p.page);
     var table = !log ? '<div class="empty-state" style="padding:40px 0"><span class="spin"></span> กำลังโหลดประวัติ...</div>' :
       (!log.length ? '<div class="empty-state" style="padding:40px 0">ยังไม่มีประวัติการเคลื่อนไหว</div>' :
       '<table class="table" style="width:100%;border-collapse:collapse;font-size:12.5px">' +
         '<thead><tr style="text-align:left;font-size:11px;color:var(--muted);background:var(--hover-bg)">' +
           '<th style="' + td + ';padding-left:10px">วันที่</th><th style="' + td + '">รายละเอียด</th><th style="' + td + '">user</th>' +
           '<th style="' + td + ';text-align:right">จำนวนเข้า</th><th style="' + td + ';text-align:right">จำนวนออก</th><th style="' + td + ';text-align:right">จำนวนคงเหลือ</th><th></th></tr></thead>' +
-        '<tbody>' + log.map(function (l) {
+        '<tbody>' + logPg.items.map(function (l) {
           var detail = '<div style="font-weight:600">' + esc(STOCK_LOG_KIND_LABELS[l.kind] || l.kind) + '</div>' + (l.note ? '<div style="font-size:11px;color:var(--muted);white-space:normal">' + esc(l.note) + '</div>' : '');
           return '<tr>' +
             '<td style="' + td + ';padding-left:10px">' + esc(l.date) + '</td>' +
@@ -2834,7 +2867,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
               '<button class="btn" data-action="edit-stock-log" data-arg="' + esc(l.id) + '" title="แก้ไข" style="padding:4px 6px"><span class="ms" style="font-size:16px">edit</span></button>' +
               (isAdmin() ? ' <button class="btn" data-action="delete-stock-log" data-arg="' + esc(l.id) + '" title="ลบ" style="padding:4px 6px"><span class="ms" style="font-size:16px">delete</span></button>' : '') +
             '</td></tr>';
-        }).join('') + '</tbody></table>');
+        }).join('') + '</tbody></table>' + localPagerHtml(logPg, 'stockLog'));
     var qty = it.latestQtyRemaining != null ? it.latestQtyRemaining : it.qty;
     var body = '' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:18px 22px;border-bottom:1px solid var(--border);flex:none">' +
@@ -3231,7 +3264,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (sr.from && sr.to && sr.from > sr.to) { toast('error', 'วันที่เริ่มต้นต้องไม่เกินวันที่สิ้นสุด'); return; }
     sr.loading = true; render();
     call('getSalesReport', session.token, { salesId: sr.salesId, dateFrom: sr.from, dateTo: sr.to }).then(function (res) {
-      sr.data = res.data; sr.loading = false; sr.panel = null; renderSalesReportPanel(); render();
+      sr.data = res.data; sr.loading = false; sr.panel = null; sr.page = 1; renderSalesReportPanel(); render();
     }, function () { sr.loading = false; render(); });
   }
   /** "Botox 100u ×3, Filler 1ml ×1" for one customer's lines. */
@@ -3259,8 +3292,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var th = 'padding:10px 12px;white-space:nowrap';
     // One line per customer inside the customer and item cells, so each customer's items sit beside them.
     var stack = function (parts) { return parts.map(function (p) { return '<div style="padding:3px 0;line-height:1.45">' + p + '</div>'; }).join(''); };
+    var srPg = localPage(D.rows, sr.page);
     var rows = !D.rows.length ? '<tr><td colspan="6" class="empty-state">ไม่พบรายการในช่วงที่เลือก</td></tr>' :
-      D.rows.map(function (g) {
+      srPg.items.map(function (g) {
         var active = sr.panel && sr.panel.id === g.id ? ' style="cursor:pointer;background:var(--accent-soft2)"' : ' style="cursor:pointer"';
         return '<tr data-action="sales-report-row" data-arg="' + esc(g.id) + '"' + active + '>' +
           '<td style="padding:10px 12px;vertical-align:top">' + esc(g.date) + '</td>' +
@@ -3279,7 +3313,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
           '<th style="' + th + '">วันที่</th><th style="' + th + '">ชื่อเซลล์</th><th style="' + th + '">ชื่อลูกค้า (เบอร์โทร)</th><th style="' + th + '">ชื่อรายการ</th>' +
           '<th style="' + th + ';text-align:right">จำนวน</th><th style="' + th + ';text-align:right">จำนวนเงินรวม</th>' +
-        '</tr></thead><tbody>' + rows + foot + '</tbody></table></div>', sr.loading) +
+        '</tr></thead><tbody>' + rows + foot + '</tbody></table></div>', sr.loading) + localPagerHtml(srPg, 'salesReport') +
       '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">ข้อมูลจากเมนูเบิกยาคลีนิค (ราคาทุน ณ วันที่เบิก) · คลิกที่รายการเพื่อดูรายละเอียด</div>';
   }
 
@@ -3291,6 +3325,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var g = salesReportRow(id);
     if (!g) return;
     state.salesReport.panel = g;
+    state.salesReport.panelPage = 1;
     renderSalesReportPanel(); render();
   }
   function closeSalesReportPanel() { state.salesReport.panel = null; renderSalesReportPanel(); render(); }
@@ -3300,15 +3335,17 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var g = state.salesReport.panel;
     if (!g) return '';
     var td = 'padding:9px 10px;font-size:12.5px;vertical-align:top';
-    var rows = g.customers.map(function (c) {
-      return c.items.map(function (it, i) {
-        return '<tr' + (i === 0 ? ' style="border-top:1px solid var(--border)"' : '') + '>' +
-          '<td style="' + td + '">' + (i === 0 ? esc(c.patientName) + '<div style="font-size:11px;color:var(--muted)">' + esc(c.phone) + '</div>' : '') + '</td>' +
-          '<td style="' + td + '">' + esc(it.itemName) + '</td>' +
-          '<td style="' + td + ';text-align:right">' + srPriceCell(it) + '</td>' +
-          '<td style="' + td + ';text-align:right">' + srQtyCell(it) + '</td>' +
-          '<td style="' + td + ';text-align:right;font-weight:600">' + money(it.amount) + '</td></tr>';
-      }).join('');
+    var lines = [];
+    g.customers.forEach(function (c) { c.items.forEach(function (it, i) { lines.push({ c: c, it: it, first: i === 0 }); }); });
+    var linePg = localPage(lines, state.salesReport.panelPage);
+    var rows = linePg.items.map(function (l, j) {
+      var showName = l.first || j === 0;
+      return '<tr' + (l.first ? ' style="border-top:1px solid var(--border)"' : '') + '>' +
+        '<td style="' + td + '">' + (showName ? esc(l.c.patientName) + '<div style="font-size:11px;color:var(--muted)">' + esc(l.c.phone) + '</div>' : '') + '</td>' +
+        '<td style="' + td + '">' + esc(l.it.itemName) + '</td>' +
+        '<td style="' + td + ';text-align:right">' + srPriceCell(l.it) + '</td>' +
+        '<td style="' + td + ';text-align:right">' + srQtyCell(l.it) + '</td>' +
+        '<td style="' + td + ';text-align:right;font-weight:600">' + money(l.it.amount) + '</td></tr>';
     }).join('');
     var body = '' +
       '<div style="padding:20px 22px 14px;display:flex;justify-content:space-between;align-items:flex-start;border-bottom:1px solid var(--border);flex:none">' +
@@ -3324,7 +3361,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
             '</tr></thead><tbody>' + rows +
             '<tr style="background:var(--hover-bg);border-top:1px solid var(--border)"><td colspan="3" style="' + td + ';text-align:right;font-weight:700">รวม</td><td style="' + td + ';text-align:right;font-weight:700">' + esc(g.totalQty) + '</td><td style="' + td + ';text-align:right;font-weight:700;font-size:14px">' + money(g.totalAmount) + '</td></tr>' +
           '</tbody></table>' +
-        '</div>' +
+        '</div>' + localPagerHtml(linePg, 'salesReportPanel') +
         '<div style="font-size:11px;color:var(--muted);margin-top:8px">ราคาต่อหน่วย = ราคาทุน ณ วันที่เบิก</div>' +
       '</div>' +
       '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;flex:none">' +
@@ -3681,14 +3718,15 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   // is a full unpaginated array, unlike every other list page), so filtering
   // is a plain instant client-side search — no server round-trip to shield
   // against, unlike item 4's suggest-then-commit redesign.
-  var onPromotionSearch = debounce(function (q) { state.promotions.q = q; render(); }, 150);
+  var onPromotionSearch = debounce(function (q) { state.promotions.q = q; state.promotions.page = 1; render(); }, 150);
   function promotionsTemplate() {
     var L = state.promotions.list;
     var q = (state.promotions.q || '').trim().toLowerCase();
     var filtered = L && q ? L.filter(function (p) { return String(p.name || '').toLowerCase().indexOf(q) > -1; }) : L;
+    var promoPg = localPage(filtered || [], state.promotions.page);
     var rows = !filtered ? '<tr><td colspan="6" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
       (!filtered.length ? '<tr><td colspan="6" class="empty-state">' + (q ? 'ไม่พบโปรโมชันที่ค้นหา' : 'ยังไม่มีโปรโมชัน') + '</td></tr>' :
-      filtered.map(function (p) {
+      promoPg.items.map(function (p) {
         return '<tr>' +
           '<td style="font-weight:600">' + esc(p.name) + '</td>' +
           '<td>' + money(p.price) + '</td>' +
@@ -3710,7 +3748,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
             '<th style="padding:10px 12px">ชื่อโปรโมชัน</th><th>ราคา</th><th>%ส่วนแบ่งแพทย์</th><th>%คลินิก</th><th>สถานะ</th><th></th>' +
           '</tr></thead>' +
-          '<tbody>' + rows + '</tbody></table></div>';
+          '<tbody>' + rows + '</tbody></table></div>' + localPagerHtml(promoPg, 'promotions');
   }
   function newPromotionModal() { openModal('promotion', { name: '', price: 0, doctorSharePct: 0, status: 'active' }); }
   function editPromotionModal(id) {
@@ -4024,7 +4062,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function settingsStaffView() {
     if (!isAdmin()) return '<div class="empty-state">เฉพาะผู้ดูแลระบบเท่านั้น</div>';
     if (!state.settings.staff) return '<div class="empty-state"><span class="spin"></span> กำลังโหลด...</div>';
-    var rows = state.settings.staff.map(function (s) {
+    var staffPg = localPage(state.settings.staff, state.settings.staffPage);
+    var rows = staffPg.items.map(function (s) {
       return '<tr>' +
         '<td style="font-weight:600;color:var(--text-2)">' + esc(s.id) + '</td>' +
         '<td><div style="font-weight:700">' + esc(s.name) + (!s.active ? ' <span class="tag-badge" style="background:var(--red-soft);font-size:10px;vertical-align:middle">ระงับ</span>' : '') + '</div>' +
@@ -4044,7 +4083,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">' +
         '<table class="table" style="width:100%;border-collapse:collapse">' +
           '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">รหัส</th><th>ชื่อพนักงาน</th><th>Username</th><th>สิทธิ์</th><th style="text-align:right;padding-right:14px">จัดการ</th></tr></thead>' +
-          '<tbody>' + rows + '</tbody></table></div>';
+          '<tbody>' + rows + '</tbody></table></div>' + localPagerHtml(staffPg, 'staff');
   }
   function newStaffModal() { openModal('staff', { name: '', role: '', username: '', lineId: '', level: 'staff', active: true }); }
   function editStaffModal(id) { var s = state.settings.staff.filter(function (x) { return x.id === id; })[0]; if (s) openModal('staff', Object.assign({}, s)); }
@@ -4296,6 +4335,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'edit-stock': editStockModal(arg); break;
       case 'delete-stock': deleteStockConfirm(arg); break;
       case 'stock-page': state.stock.page = Number(arg); render(); loadStock(); break;
+      case 'local-page': setLocalPage(arg); break;
       case 'stock-history': openStockPanel(arg); break;
       case 'dd-stock-actions': openStockActions(arg); break;
       case 'close-stock-panel': case 'close-stock-panel-bg': if (ev.target === el || action === 'close-stock-panel') closeStockPanel(); break;
