@@ -1,0 +1,211 @@
+<?
+/* LINE Messaging API message template.
+   Evaluated server-side by sendLineDailySummary() in Code.gs — `data` is
+   the full daily-summary object from computeDailySummaryDetail_ (same
+   shape/numbers the Records-calendar day panel shows, see
+   dayPanelTemplate() in client.js) and `clinicName` is the clinic's
+   display name. Must render to ONE valid JSON message object with NOTHING
+   else in the output (no leading/trailing HTML) — using a raw-print
+   (unescaped) template tag around JSON.stringify(...) near the bottom of
+   this file guarantees correct escaping regardless of what's in the data
+   (Thai text, numbers, etc). Helper functions/variables defined in this
+   leading code block are still in scope down there, since the whole file
+   compiles into one function body — this comment block itself prints
+   nothing.
+
+   IMPORTANT — do not write literal template-tag punctuation (the "less
+   than, question mark" open sequence or the "question mark, greater than"
+   close sequence) anywhere in this file's comments/prose, including this
+   one: HtmlService's template scanner splits on those exact character
+   sequences wherever they appear in the raw file text, even inside a JS
+   comment, since it has no concept of what a comment is. Writing them out
+   literally in a comment — as an earlier version of this file's docs did —
+   silently truncates the real code block at that point and corrupts the
+   output. Describe tags in words instead, as done here.
+
+   Layout mirrors the clinic's confirmed final design: a navy header, then
+   the day panel's flat numbered-row shape (client.js's dayPanelTemplate/
+   daySummaryItem) — Round 18 item 1 reorganized this from a fixed set of
+   always-expanded section boxes into 8 rows: 1.1 ยอดชำระทั้งหมด (+เงินสด/
+   เงินโอน/บัตรเครดิต), 1.2 จำนวนเคส, 1.3 ส่วนแบ่งแพทย์, 1.4 ส่วนแบ่งเซลล์,
+   2 ยอด Canula, 3 ยอดรายการโปรหน้าคลีนิค (itemized "Pro A (x1)"), 4
+   รายการอื่นๆ (the medicine+other itemized list, previously labeled "จ่าย
+   supplier"), and 5 ยอดสุทธิ — Round 19 item 1 reverted this row back to
+   meaning the clinic's own net take (ClinicShare sum), per the client's
+   explicit formula ยอดสุทธิ = จำนวนเงินทั้งหมด - ส่วนแบ่งแพทย์ - ส่วนแบ่งเซลล์
+   - ส่วนแบ่ง Supplier (numerically clinicNet), shown with that subtraction
+   chain as its detail rows, colored green/red by whether the clinic's own
+   share came out positive or negative. A LINE Flex Message has no collapse/
+   expand concept, so every group's detail rows are always printed here
+   (only the web app's day panel actually collapses them by default).
+
+   Round 20 item 2: restyled per a reference LINE-bot script the client had
+   previously written for an older, unrelated sheet layout — that script's
+   OWN data engine was NOT reused (its raw-sheet column mapping doesn't
+   exist in this app's schema; computeDailySummaryDetail_ already computes
+   everything, and more — itemized promos/medicine/other items that the old
+   script never had), only its VISUAL convention: soft filled-color cards
+   (a neutral card for informational groups, a warm amber card specifically
+   for "รายการอื่นๆ") instead of this file's previous plain white/bordered
+   boxes, and folding "จำนวนเคส" into the same card as ยอดชำระทั้งหมด instead
+   of a standalone row. The navy header color is deliberately UNCHANGED —
+   it's kept in sync with the web app's own --accent theme color since round
+   8/12, which is a closer "consistent with this web app" reading than the
+   old script's own unrelated blue. */
+
+function flexRow_(label, value, opts) {
+  opts = opts || {};
+  return {
+    type: 'box', layout: 'horizontal', margin: opts.margin || 'xs',
+    contents: [
+      { type: 'text', text: label, size: opts.size || 'sm', color: opts.labelColor || '#3D4568', flex: 5, weight: opts.weight || 'regular', wrap: true },
+      { type: 'text', text: value, size: opts.size || 'sm', color: opts.valueColor || '#1C2440', align: 'end', flex: 4, weight: opts.weight || 'regular' }
+    ]
+  };
+}
+
+/** Round 18 item 1: one numbered row's card — a bold "label: value" header
+ *  row followed by a separator and its detail rows (or an empty-state line
+ *  when there aren't any). Round 20 item 2: the box itself switched from a
+ *  thin white/bordered card to a soft filled-background card (bg color
+ *  supplied per call site via opts.bg), and gained the separator under the
+ *  header row — both borrowed from the client's reference script's
+ *  sectionCard() convention. */
+function flexGroup_(label, value, rows, emptyLabel, opts) {
+  opts = opts || {};
+  var body = [flexRow_(label, value, { weight: 'bold', size: 'sm' })];
+  if (rows && rows.length) {
+    body.push({ type: 'separator', margin: 'sm', color: opts.sepColor || '#E4E8F1' });
+    rows.forEach(function (r) { body.push(r); });
+  } else if (emptyLabel) {
+    body.push({ type: 'separator', margin: 'sm', color: opts.sepColor || '#E4E8F1' });
+    body.push({ type: 'text', text: emptyLabel, size: 'xs', color: '#8891AC', margin: 'sm' });
+  }
+  return {
+    type: 'box', layout: 'vertical', spacing: 'xs', paddingAll: '12px', margin: 'md',
+    cornerRadius: '10px', backgroundColor: opts.bg || '#F3F5FA',
+    contents: body
+  };
+}
+
+var s = data;
+var netPositive = s.clinicNet >= 0;
+
+// Round 20 item 2: a single neutral card background reused by every plain
+// informational group (ยอดขาย/แพทย์/เซลล์/canula/โปร) — matches the
+// reference script's convention of one shared "cardBg" for everything
+// except the two groups that deserve their own color: รายการอื่นๆ (amber,
+// see otherBg below) and ยอดสุทธิ (green/red by sign, unchanged from before
+// this round).
+var cardBg = '#F3F5FA';
+var otherBg = '#FFF8E5';
+
+// Round 20 item 2: จำนวนเคส folded into the same card as ยอดชำระทั้งหมด
+// (previously its own standalone bold row between cards) — matches the
+// reference script's ยอดขาย card, which groups the client count together
+// with the payment-method breakdown under one "sales" heading.
+var cashRows = [
+  flexRow_('เงินสด', moneyFmt_(s.cashAmount) + ' บาท', { margin: 'xs' }),
+  flexRow_('เงินโอน', moneyFmt_(s.transferAmount) + ' บาท', { margin: 'xs' })
+].concat(s.cardAmount ? [flexRow_('บัตรเครดิต', moneyFmt_(s.cardAmount) + ' บาท', { margin: 'xs' })] : [])
+ .concat([flexRow_('จำนวนเคส', s.patientCount + ' คน', { margin: 'xs', weight: 'bold' })]);
+
+var doctorRows = s.doctorShares.map(function (d) {
+  return flexRow_(d.name + (d.topped ? ' *' : ''), moneyFmt_(d.amount) + ' บาท', { margin: 'xs' });
+});
+var doctorFootnote = s.hasToppedDoctor
+  ? [{ type: 'text', text: '* ได้รับตามยอดขั้นต่ำที่คลินิกรับประกัน', size: 'xxs', color: '#B4791E', margin: 'sm', wrap: true }]
+  : [];
+
+var salesRows = s.salesShares.map(function (d) {
+  return flexRow_(d.name, moneyFmt_(d.amount) + ' บาท', { margin: 'xs' });
+});
+
+// Round 18 item 1: itemized "Pro A (x1)" rows from the new promoItems
+// breakdown (computeDailySummaryDetail_, Code.gs) — same data the day
+// panel's item 3 shows.
+var promoRows = (s.promoItems || []).map(function (p) {
+  return flexRow_(p.name + ' (x' + p.qty + ')', moneyFmt_(p.amount) + ' บาท', { margin: 'xs' });
+});
+
+// Round 18 item 1: item 4 "รายการอื่นๆ" — the same medicine+other itemized
+// list previously always-shown under a separate "จ่าย supplier (ไม่รวมใน
+// ยอดสุทธิ)" box; relabeled and folded into the same numbered-group shape
+// as every other item (still excluded from ส่วนแบ่งคลินิก, but no longer
+// singled out with its own note, since item 5 below now spells out exactly
+// where every baht of ยอดสุทธิ went, supplier pass-through included).
+// Round 20 item 2: rows now get a leading "•" bullet, matching the
+// reference script's รายการอื่นๆ list style (its otherItems were rendered
+// as "• amount - note"); the amber card background (otherBg) is applied at
+// the flexGroup_ call site below.
+var medicineItems = s.medicineItems || [];
+var otherRows = medicineItems.map(function (m) {
+  return flexRow_('•  ' + (m.name || 'ยา') + ' (' + m.patientName + ')', moneyFmt_(m.amount) + ' บาท', { margin: 'xs', labelColor: '#8891AC' });
+}).concat(s.otherItems.map(function (o) {
+  return flexRow_('•  ' + (o.name || 'อื่นๆ') + ' (' + o.patientName + ')', moneyFmt_(o.amount) + ' บาท', { margin: 'xs', labelColor: '#8891AC' });
+}));
+
+var doctorGroup = flexGroup_('ส่วนแบ่งแพทย์ ทั้งหมด', moneyFmt_(s.doctorTotal) + ' บาท', doctorRows, 'ไม่มีรายการ', { bg: cardBg });
+doctorGroup.contents = doctorGroup.contents.concat(doctorFootnote);
+
+// Round 19 item 1: item 5 ยอดสุทธิ reverts to meaning the clinic's own net
+// take (ClinicShare sum), per the client's explicit formula ยอดสุทธิ =
+// จำนวนเงินทั้งหมด - ส่วนแบ่งแพทย์ - ส่วนแบ่งเซลล์ - ส่วนแบ่ง Supplier —
+// numerically s.clinicNet (see the revenue-split engine's identity). The
+// headline is s.clinicNet itself; the detail rows show the subtraction
+// chain that derives it, replacing Round 18's "same total, reframed by
+// recipient" 4-way breakdown (which redundantly repeated ส่วนแบ่งคลีนิค as
+// its own line). Still colored green/red by whether that net came out
+// positive or negative, same visual signal as before.
+var netGroup = {
+  type: 'box', layout: 'vertical', spacing: 'xs', paddingAll: '12px', margin: 'md',
+  cornerRadius: '10px', backgroundColor: netPositive ? '#E7F5EC' : '#FBEBEB',
+  contents: [
+    flexRow_('ยอดสุทธิ', moneyFmt_(s.clinicNet) + ' บาท', { weight: 'bold', size: 'md', labelColor: netPositive ? '#357552' : '#AC4143', valueColor: netPositive ? '#357552' : '#AC4143' }),
+    flexRow_('จำนวนเงินทั้งหมด', moneyFmt_(s.totalCollected) + ' บาท', { margin: 'sm' }),
+    flexRow_('− ส่วนแบ่งแพทย์', moneyFmt_(s.doctorTotal) + ' บาท', { margin: 'xs' }),
+    flexRow_('− ส่วนแบ่งเซลล์', moneyFmt_(s.salesTotal) + ' บาท', { margin: 'xs' }),
+    flexRow_('− ส่วนแบ่ง Supplier', moneyFmt_(s.supplierPayTotal) + ' บาท', { margin: 'xs' })
+  ]
+};
+
+// Round 20 item 2: ยอด canula, previously a standalone bold row, now wraps
+// in its own neutral card (no title row, just the one line) — matches the
+// reference script's canula box, which was likewise its own bare
+// sectionCard(null, ...) with no separate header text.
+var canulaGroup = {
+  type: 'box', layout: 'vertical', paddingAll: '12px', margin: 'md',
+  cornerRadius: '10px', backgroundColor: cardBg,
+  contents: [flexRow_('ยอด canula (เข็มทู่)', moneyFmt_(s.canulaTotal) + ' บาท', { weight: 'bold' })]
+};
+
+var bodyContents = [
+  flexGroup_('ยอดชำระทั้งหมด', moneyFmt_(s.totalCollected) + ' บาท', cashRows, '', { bg: cardBg }),
+  doctorGroup,
+  flexGroup_('ส่วนแบ่งเซลล์ ทั้งหมด', moneyFmt_(s.salesTotal) + ' บาท', salesRows, 'ไม่มีรายการ', { bg: cardBg }),
+  canulaGroup,
+  flexGroup_('ยอดรายการโปรหน้าคลีนิค', moneyFmt_(s.promoAmountTotal) + ' บาท', promoRows, 'ไม่มีรายการ', { bg: cardBg }),
+  flexGroup_('รายการอื่นๆ', moneyFmt_(s.supplierPayTotal) + ' บาท', otherRows, 'ไม่มีรายการ', { bg: otherBg }),
+  netGroup
+];
+?><?!= JSON.stringify({
+  type: 'flex',
+  // Round 19 item 1: ยอดสุทธิ reverted to meaning clinicNet again (see
+  // netGroup above) — the altText preview line follows the same change.
+  altText: (clinicName || 'VALIN CLINIC') + ' สรุปยอดประจำวัน ' + data.date + ' ยอดสุทธิ ' + moneyFmt_(data.clinicNet) + ' บาท',
+  contents: {
+    type: 'bubble',
+    header: {
+      // Header color matches the web app's own accent theme (#1E3A72, navy) —
+      // kept in sync since round 8 so this stays visually identical to the
+      // Records-page day-summary panel; round 12 re-themed the app to navy+gold,
+      // so this header follows.
+      type: 'box', layout: 'vertical', backgroundColor: '#1E3A72', paddingAll: '18px',
+      contents: [
+        { type: 'text', text: 'สรุปยอดประจำวัน', color: '#FFFFFF', weight: 'bold', size: 'lg' },
+        { type: 'text', text: data.date, color: '#E2E6EE', size: 'sm', margin: 'sm' }
+      ]
+    },
+    body: { type: 'box', layout: 'vertical', paddingAll: '16px', contents: bodyContents }
+  }
+}) ?>
