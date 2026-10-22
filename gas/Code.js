@@ -1691,10 +1691,8 @@ function adjustStock(token, payload) {
       var current = Number(item.Qty) || 0;
       var qtyIn = 0, qtyOut = 0, remaining;
       if (payload.kind === 'in') { qtyIn = qty; remaining = current + qty; }
-      else if (payload.kind === 'out') {
-        if (qty > current) throw ValidationError_('จำนวนเบิกออก (' + qty + ') มากกว่าจำนวนคงเหลือ (' + current + ')');
-        qtyOut = qty; remaining = current - qty;
-      } else {
+      else if (payload.kind === 'out') { qtyOut = qty; remaining = current - qty; } // may go negative, same as treatment records
+      else {
         remaining = qty;
         if (qty > current) qtyIn = qty - current; else qtyOut = current - qty;
       }
@@ -1940,7 +1938,7 @@ function editStockLogEntry(token, entry) {
     requireDateStr_(entry.date, 'วันที่');
     requireNumber_(entry.qtyIn || 0, 'จำนวนเข้า', { min: 0 });
     requireNumber_(entry.qtyOut || 0, 'จำนวนออก', { min: 0 });
-    requireNumber_(entry.qtyRemaining, 'จำนวนคงเหลือ', { min: 0 });
+    requireNumber_(entry.qtyRemaining, 'จำนวนคงเหลือ'); // may be negative (stock is allowed below zero)
 
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
@@ -2462,7 +2460,8 @@ function recordEffects_(r) {
  * Moves Stock and MedDeposits by (newEff - oldEff) — so a new record applies
  * its lines, an edit applies only what changed, and a delete (newEff empty)
  * puts everything back. Checks every item first and throws before writing
- * anything if stock or a deposit balance would go below zero. Stock moves
+ * anything if a deposit balance would go below zero (stock itself may go
+ * negative). Stock moves
  * are StockLog 'record' rows dated today (not the record's date, so they
  * are always the item's latest entry and Stock.Qty follows them).
  * Must run inside the caller's script lock.
@@ -2479,11 +2478,9 @@ function applyRecordEffects_(session, oldEff, newEff, label, patientName) {
 
   var stockById = {};
   getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (r) { stockById[r.ItemID] = r; });
+  // Stock may go negative (usage recorded before a stock update) — only a missing item blocks the save.
   Object.keys(stockDelta).forEach(function (id) {
-    var item = stockById[id];
-    if (!item) { if (stockDelta[id] > 0) throw ValidationError_('ไม่พบรายการในสต๊อก (อาจถูกลบไปแล้ว)'); return; }
-    var cur = Number(item.Qty) || 0;
-    if (stockDelta[id] > cur) throw ValidationError_('สต๊อก ' + item.Name + ' ไม่พอ (คงเหลือ ' + cur + ' ' + item.Unit + ')');
+    if (!stockById[id] && stockDelta[id] > 0) throw ValidationError_('ไม่พบรายการในสต๊อก (อาจถูกลบไปแล้ว)');
   });
   var depSheet = getSheet_(CONFIG.SHEETS.MED_DEPOSITS);
   var depByKey = {};
