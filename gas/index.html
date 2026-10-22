@@ -345,6 +345,7 @@ button,input,textarea,select{font-family:inherit}
 <div id="dayPanelRoot"></div>
 <div id="stockPanelRoot"></div>
 <div id="salesReportPanelRoot"></div>
+<div id="pdfPreviewRoot"></div>
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script>
 var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
@@ -524,7 +525,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     promotions: { list: null, q: '' },
     withdraw: { list: null, page: 1, q: '', reloading: false },
     // `data` stays null until "ดูรายงาน" is pressed; `panel` is the open detail row.
-    salesReport: { salesId: '', from: todayStr().slice(0, 8) + '01', to: todayStr(), data: null, loading: false, panel: null },
+    salesReport: { salesId: '', from: todayStr().slice(0, 8) + '01', to: todayStr(), data: null, loading: false, panel: null, preview: null },
     settings: { tab: 'doctors', staff: null, loginImageProgress: null, logoProgress: null }
   };
 
@@ -3440,12 +3441,65 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     }, function () { /* no logo */ });
   }
   /** id = one report row (that day + sales person); no id = every row in the current report. */
-  function downloadSalesReportPdf(id) {
+  /**
+   * "ดาวน์โหลด PDF" first opens a preview of exactly the page the PDF is made
+   * from (salesReportPdfHtml, scaled to fit); the preview's own download
+   * button then saves it. The preview shows the HTML page rather than an
+   * embedded PDF because Chrome often blocks its PDF viewer inside the
+   * sandboxed Apps Script frame.
+   */
+  function openSalesReportPdfPreview(id) {
     var rows = id ? [salesReportRow(id)].filter(Boolean) : ((state.salesReport.data && state.salesReport.data.rows) || []);
     if (!rows.length) return;
     var names = rows.map(function (g) { return g.salesName; }).filter(function (n, i, a) { return a.indexOf(n) === i; });
     var dates = rows.map(function (g) { return g.date; }).sort();
     var filename = 'รายงานเซลล์-' + (names.length === 1 ? names[0] : 'ทุกเซลล์') + '-' + dates[0] + (dates[dates.length - 1] !== dates[0] ? '_' + dates[dates.length - 1] : '') + '.pdf';
+    setLoading(true);
+    loadHtml2Pdf().catch(function () { /* retried on download */ }); // warm up while the user looks at the preview
+    ensureClinicLogo().then(function () {
+      setLoading(false);
+      state.salesReport.preview = { rows: rows, filename: filename };
+      renderPdfPreview();
+    });
+  }
+  var pdfPreviewEl = document.getElementById('pdfPreviewRoot');
+  function closePdfPreview() { state.salesReport.preview = null; renderPdfPreview(); }
+  function renderPdfPreview() {
+    var p = state.salesReport.preview;
+    if (!p) { pdfPreviewEl.innerHTML = ''; return; }
+    pdfPreviewEl.innerHTML =
+      '<div data-action="close-pdf-preview-bg" style="position:fixed;inset:0;z-index:3000;background:rgba(15,27,61,.55);display:flex;flex-direction:column">' +
+        '<div style="flex:none;display:flex;align-items:center;gap:10px;padding:12px 18px;background:var(--surface);box-shadow:0 2px 12px rgba(15,27,61,.15)">' +
+          '<span class="ms" style="color:var(--muted)">picture_as_pdf</span>' +
+          '<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:700">ตัวอย่างก่อนดาวน์โหลด</div>' +
+          '<div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(p.filename) + ' · A4</div></div>' +
+          '<button class="btn" data-action="close-pdf-preview">ปิด</button>' +
+          '<button class="btn btn-primary" data-action="sr-pdf-download"><span class="ms">download</span> ดาวน์โหลด PDF</button>' +
+        '</div>' +
+        '<div id="pdfPreviewScroll" data-action="close-pdf-preview-bg" style="flex:1;overflow:auto;padding:24px 16px">' +
+          '<div id="pdfPreviewFrame" style="margin:0 auto;box-shadow:0 10px 40px rgba(0,0,0,.35);background:#fff;overflow:hidden">' +
+            '<div id="pdfPreviewPage" style="transform-origin:top left">' + salesReportPdfHtml(p.rows) + '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    fitPdfPreview();
+  }
+  /** Scales the 794px-wide page down to the available width (never up). */
+  function fitPdfPreview() {
+    var scroll = document.getElementById('pdfPreviewScroll'), frame = document.getElementById('pdfPreviewFrame'), page = document.getElementById('pdfPreviewPage');
+    if (!scroll || !page) return;
+    if (scroll.clientWidth <= 32) { setTimeout(fitPdfPreview, 100); return; } // not laid out yet — try again shortly
+    var scale = Math.min(1, (scroll.clientWidth - 32) / 794);
+    page.style.transform = 'scale(' + scale + ')';
+    frame.style.width = Math.round(794 * scale) + 'px';
+    frame.style.height = Math.round(page.firstChild.offsetHeight * scale) + 'px';
+  }
+  window.addEventListener('resize', fitPdfPreview);
+  document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && state.salesReport.preview) closePdfPreview(); });
+  function downloadSalesReportPdf() {
+    var p = state.salesReport.preview;
+    if (!p) return;
+    var rows = p.rows, filename = p.filename;
     setLoading(true);
     Promise.all([loadHtml2Pdf(), ensureClinicLogo()]).then(function () {
       // Off-screen but laid out (html2canvas can't capture display:none).
@@ -3453,7 +3507,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       holder.style.cssText = 'position:fixed;left:-10000px;top:0;z-index:-1';
       holder.innerHTML = salesReportPdfHtml(rows);
       document.body.appendChild(holder);
-      var done = function () { holder.remove(); setLoading(false); };
+      var done = function () { holder.remove(); setLoading(false); closePdfPreview(); };
       return window.html2pdf().set({
         // A4 portrait in mm; the 794px-wide page is scaled to the 210mm width.
         margin: [0, 0, 8, 0], filename: filename,
@@ -3462,7 +3516,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
         // Each sales person starts a new page; rows and date headings are never split across pages.
         pagebreak: { mode: ['css', 'legacy'], before: '.pdf-new-sales', avoid: ['tr', '.pdf-date-head'] }
-      }).from(holder.firstChild).save().then(done, function (e) { done(); throw e; });
+      }).from(holder.firstChild).save().then(done, function (e) { holder.remove(); setLoading(false); throw e; });
     }).catch(function (e) { setLoading(false); toast('error', (e && e.message) || 'สร้าง PDF ไม่สำเร็จ'); });
   }
 
@@ -4259,8 +4313,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'run-sales-report': runSalesReport(); break;
       case 'sales-report-row': openSalesReportPanel(arg); break;
       case 'close-sr-panel': case 'close-sr-panel-bg': if (ev.target === el || action === 'close-sr-panel') closeSalesReportPanel(); break;
-      case 'sales-report-pdf': downloadSalesReportPdf(arg); break;
-      case 'sales-report-pdf-all': downloadSalesReportPdf(null); break;
+      case 'sales-report-pdf': openSalesReportPdfPreview(arg); break;
+      case 'sales-report-pdf-all': openSalesReportPdfPreview(null); break;
+      case 'sr-pdf-download': downloadSalesReportPdf(); break;
+      case 'close-pdf-preview': case 'close-pdf-preview-bg': if (ev.target === el || action === 'close-pdf-preview') closePdfPreview(); break;
       case 'delete-withdraw': deleteWithdrawConfirm(arg); break;
       case 'withdraw-page': state.withdraw.page = Number(arg); render(); loadWithdrawals(); break;
       case 'add-withdraw-line': state.draft.lines.push({ name: '', qty: 1 }); render(); break;
