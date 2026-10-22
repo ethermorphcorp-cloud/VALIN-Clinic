@@ -208,7 +208,7 @@ var CONFIG = {
     // MedWithdrawals — เมนู "เบิกยาคลีนิค": one row per medicine line. UnitCost
     // is the item's ราคาทุน snapshotted at save time (Amount = Qty * UnitCost);
     // both are admin-only on the way out. Qty is taken out of Stock.
-    // BatchID groups the lines saved together (one รายงานเซลล์ row / PDF).
+    // BatchID groups the lines saved together in one เบิกยาคลีนิค save.
     MedWithdrawals: ['WithdrawID', 'Date', 'PatientID', 'PatientName', 'Phone', 'SalesID', 'SalesName', 'ItemID', 'ItemName', 'Qty', 'UnitCost', 'Amount', 'Note', 'CreatedBy', 'CreatedAt', 'BatchID'],
     // StockType: 'supply' (เวชภัณฑ์) | 'medicine' (ยา) — splits the Stock page
     // into two tabs and feeds the record modal's stock-backed name
@@ -2949,7 +2949,7 @@ function saveMedWithdrawal(token, payload) {
         'เบิกยาคลีนิค · ' + patientName + ' · ' + sales.Name, patientName, 'withdraw');
       var sheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
       var ids = nextSeqBlock_('WITHDRAW', rows.length, 5);
-      var batchId = 'WB' + nextSeq_('WITHDRAW_BATCH', 5); // groups this save's lines in รายงานเซลล์
+      var batchId = 'WB' + nextSeq_('WITHDRAW_BATCH', 5); // groups this save's lines
       rows.forEach(function (r, i) { r.WithdrawID = 'WD' + ids[i]; r.BatchID = batchId; appendRow_(sheet, CONFIG.HEADERS.MedWithdrawals, r); });
       writeAudit_(session, 'CREATE', 'MedWithdrawal', rows.map(function (r) { return r.WithdrawID; }).join(','), patientName + ' x' + rows.length);
       return { ok: true, data: { ids: rows.map(function (r) { return r.WithdrawID; }) } };
@@ -2982,10 +2982,12 @@ function deleteMedWithdrawal(token, id) {
 }
 
 /**
- * รายงานเซลล์ (admin only — amounts are at ราคาทุน). opts: {salesId, dateFrom,
- * dateTo}; blank salesId = every sales person. One row per เบิกยาคลีนิค save
- * (BatchID), carrying its lines so the client can show the detail panel and
- * build the PDF without another round trip.
+ * รายงานเซลล์ (admin only). Source: บันทึกการรักษา — every รายการเบิกยาหน้าคลีนิค
+ * line (MedicineJSON, at its ราคาขาย) on a non-cancelled record that has a
+ * sales person. opts: {salesId, dateFrom, dateTo}; blank salesId = everyone.
+ * Rows are one per date + sales person, with that day's customers (each with
+ * their own lines) so the client can stack customers inside one cell, show
+ * the detail panel and build the PDF without another round trip.
  */
 function getSalesReport(token, opts) {
   return safeCall_(function () {
@@ -2996,26 +2998,36 @@ function getSalesReport(token, opts) {
     var unitById = {};
     getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { unitById[s.ItemID] = s.Unit || ''; });
     var groups = {}, order = [];
-    getRows_(getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS)).forEach(function (w) {
-      var d = dateStr_(w.Date);
-      if (opts.salesId && w.SalesID !== opts.salesId) return;
+    getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).forEach(function (r) {
+      if (!r.SalesID || r.Status === 'cancelled' || String(r.UseMedicine) !== 'TRUE') return;
+      var d = dateStr_(r.Date);
+      if (opts.salesId && r.SalesID !== opts.salesId) return;
       if (opts.dateFrom && d < opts.dateFrom) return;
       if (opts.dateTo && d > opts.dateTo) return;
-      var key = w.BatchID || w.WithdrawID;
+      var lines = parseLineItems_(r.MedicineJSON).filter(function (l) { return l && (l.name || l.amount); });
+      if (!lines.length) return;
+      var key = d + '|' + r.SalesID;
       var g = groups[key];
       if (!g) {
-        g = groups[key] = {
-          id: key, date: d, salesId: w.SalesID, salesName: w.SalesName, patientId: w.PatientID, patientName: w.PatientName,
-          phone: w.Phone, note: w.Note || '', createdBy: w.CreatedBy, createdAt: String(w.CreatedAt), items: [], totalQty: 0, totalAmount: 0
-        };
+        g = groups[key] = { id: key, date: d, salesId: r.SalesID, salesName: r.SalesName, customers: [], totalQty: 0, totalAmount: 0 };
         order.push(g);
       }
-      var qty = Number(w.Qty) || 0, amount = Number(w.Amount) || 0;
-      g.items.push({ itemName: w.ItemName, qty: qty, unit: unitById[w.ItemID] || '', unitCost: Number(w.UnitCost) || 0, amount: amount });
-      g.totalQty = round2_(g.totalQty + qty);
-      g.totalAmount = round2_(g.totalAmount + amount);
+      // A patient seen twice the same day stays one customer line.
+      var c = g.customers.filter(function (x) { return x.patientId === r.PatientID; })[0];
+      if (!c) { c = { patientId: r.PatientID, patientName: r.PatientName, phone: r.Phone, items: [], totalQty: 0, totalAmount: 0 }; g.customers.push(c); }
+      lines.forEach(function (l) {
+        // Lines saved before the dispense table existed are {name, amount} only.
+        var qty = 'qtyDispensed' in l ? (Number(l.qtyDispensed) || 0) : null;
+        var unitPrice = 'unitPrice' in l ? (Number(l.unitPrice) || 0) : null;
+        var amount = Number(l.amount) || 0;
+        c.items.push({ recordId: r.RID, itemName: l.name || 'ยา', qty: qty, unit: unitById[l.itemId] || '', unitPrice: unitPrice, amount: amount });
+        c.totalQty = round2_(c.totalQty + (qty || 0));
+        c.totalAmount = round2_(c.totalAmount + amount);
+        g.totalQty = round2_(g.totalQty + (qty || 0));
+        g.totalAmount = round2_(g.totalAmount + amount);
+      });
     });
-    order.sort(function (a, b) { return b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt); });
+    order.sort(function (a, b) { return b.date.localeCompare(a.date) || String(a.salesName).localeCompare(String(b.salesName), 'th'); });
     return { ok: true, data: {
       rows: order,
       totalQty: round2_(order.reduce(function (s, g) { return s + g.totalQty; }, 0)),
