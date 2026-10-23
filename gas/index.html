@@ -2405,6 +2405,37 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       return { value: id, label: byItem[id].name + ' (ฝาก ' + avail + (s && s.unit ? ' ' + s.unit : '') + ')' };
     });
   }
+  /** What each ยาฝาก item can still give this record: the patient's balance plus what this record already took (when editing). */
+  function depositAvailable(d) {
+    var oldUse = d.patientId === d._origPatientId ? (d._oldDepositUse || {}) : {};
+    var avail = {};
+    (d._deposits || []).forEach(function (x) { avail[x.itemId] = { qty: Number(x.qty) || 0, name: x.name }; });
+    Object.keys(oldUse).forEach(function (id) { if (!avail[id]) avail[id] = { qty: 0, name: id }; });
+    Object.keys(avail).forEach(function (id) { avail[id].qty = Math.round((avail[id].qty + (oldUse[id] || 0)) * 100) / 100; });
+    return avail;
+  }
+  /** Warning text for a รายการใช้ยาฝาก line whose qty (together with other lines of the same item) exceeds what is deposited. */
+  function depositUseWarning(d, i) {
+    var line = (d.depositUseItems || [])[i];
+    if (!line || !line.itemId) return '';
+    var info = depositAvailable(d)[line.itemId];
+    var avail = info ? info.qty : 0;
+    var total = (d.depositUseItems || []).reduce(function (sum, l) { return l.itemId === line.itemId ? sum + (Number(l.qty) || 0) : sum; }, 0);
+    if (total <= avail + 1e-9) return '';
+    return avail > 0 ? 'เกินจำนวนที่ฝาก (ฝากไว้ ' + avail + ')' : 'ไม่มียาฝากรายการนี้';
+  }
+  /** Re-checks every รายการใช้ยาฝาก row in place (red qty box + message), without a render() so the caret stays put. */
+  function refreshDepositWarnings() {
+    var d = state.draft;
+    if (!d) return;
+    (d.depositUseItems || []).forEach(function (l, i) {
+      var msg = depositUseWarning(d, i);
+      var warn = document.getElementById('depWarn' + i);
+      if (warn) { warn.textContent = msg; warn.style.display = msg ? 'block' : 'none'; }
+      var input = document.querySelector('[data-bind="depositUseItems.' + i + '.qty"]');
+      if (input) input.style.borderColor = msg ? 'var(--red-dark)' : '';
+    });
+  }
   /** "ยาฝากของลูกค้า" summary shown under the picked patient. */
   function patientDepositsHtml(d) {
     var box = function (inner) { return '<div style="font-size:12px;background:var(--hover-bg);border-radius:var(--r-sm);padding:8px 12px;margin:-4px 0 12px"><span class="ms" style="font-size:15px;vertical-align:middle;color:var(--muted)">medication</span> <b>ยาฝากของลูกค้า:</b> ' + inner + '</div>'; };
@@ -2546,10 +2577,12 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       (d._deposits === null ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px"><span class="spin"></span> กำลังโหลดยาฝาก...</div>' :
       (!depositOpts.length ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">ลูกค้าไม่มียาฝาก</div>' :
       d.depositUseItems.map(function (m, i) {
-        return gridRow('minmax(0,1fr) 80px 40px', [
+        var warn = depositUseWarning(d, i);
+        return '<div style="margin-bottom:6px">' + gridRow('minmax(0,1fr) 80px 40px', [
           bindSelect('depositUseItems.' + i + '.itemId', [{ value: '', label: '— เลือกยาฝาก —' }].concat(depositOpts)),
-          numInput('depositUseItems.' + i + '.qty', m.qty, 'จำนวน'), removeBtn('remove-line-row', 'depositUseItems:' + i)
-        ]);
+          numInput('depositUseItems.' + i + '.qty', m.qty, 'จำนวน').replace('style="', 'style="' + (warn ? 'border-color:var(--red-dark);' : '')), removeBtn('remove-line-row', 'depositUseItems:' + i)
+        ]).replace('margin-bottom:6px', 'margin-bottom:2px') +
+        '<div id="depWarn' + i + '" style="font-size:11.5px;color:var(--red-dark);text-align:right;padding-right:46px;' + (warn ? '' : 'display:none') + '">' + esc(warn) + '</div></div>';
       }).join('')));
 
     // รายการ Messenger/พัสดุ — medicine sent out; recorded only, not charged, no stock.
@@ -4522,8 +4555,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       var dep = (state.draft._deposits || []).filter(function (x) { return x.itemId === val; })[0];
       var useLine = state.draft.depositUseItems[Number(depositPick[1])];
       if (useLine) useLine.name = dep ? dep.name : (useLine.itemId ? useLine.name : '');
+      refreshDepositWarnings();
       return;
     }
+    if (/^depositUseItems\.\d+\.qty$/.test(bindPath)) { refreshDepositWarnings(); return; }
     var promoPick = bindPath.match(PROMO_PICK_RE);
     if (promoPick) {
       var line = state.draft.promoItems[Number(promoPick[1])];
