@@ -3696,14 +3696,20 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // Item names suggest from both stock types; a line whose name matches a
     // stock item is linked to it (itemId, set in the input listener) and its
     // qty is added to that item's stock when the PO is saved.
+    // Column widths shared by the header row and every line so the labels sit over their boxes.
+    var OQ_W = '64px', OP_W = '84px', OA_W = '96px', OX_W = '40px';
+    var colHead = function (t, w, align) { return '<div style="width:' + w + ';flex:none;text-align:' + (align || 'left') + '">' + t + '</div>'; };
+    var lineHeader = '<div class="supply-row" style="margin-bottom:2px;font-size:11.5px;color:var(--muted)">' +
+      colHead('หมวดหมู่', '120px') + '<div class="g">ชื่อสินค้า</div>' + colHead('จำนวน', OQ_W) + colHead('ราคา/หน่วย', OP_W) + colHead('จำนวนเงิน', OA_W, 'right') + colHead('', OX_W) + '</div>';
     var lines = d.lines.map(function (l, i) {
       return '<div style="margin-bottom:8px">' +
         '<div class="supply-row" style="margin-bottom:2px">' +
-          '<div style="width:120px">' + bindSelect('lines.' + i + '.category', catOpts) + '</div>' +
+          '<div style="width:120px;flex:none">' + bindSelect('lines.' + i + '.category', catOpts) + '</div>' +
           '<input type="text" list="dlOrderStock" autocomplete="off" placeholder="ชื่อสินค้า (เลือกจากสต๊อก)" value="' + esc(l.itemName) + '" data-bind="lines.' + i + '.itemName" style="' + inputStyle + '" class="g">' +
-          '<input type="number" min="0" value="' + esc(l.qty) + '" data-bind="lines.' + i + '.qty" style="' + inputStyle + ';width:64px" placeholder="จำนวน">' +
-          '<input type="number" min="0" value="' + esc(l.unitPrice) + '" data-bind="lines.' + i + '.unitPrice" style="' + inputStyle + ';width:84px" placeholder="ราคา/หน่วย">' +
-          '<button class="btn" data-action="remove-order-line" data-arg="' + i + '"><span class="ms">close</span></button>' +
+          '<input type="number" min="0" value="' + esc(l.qty) + '" data-bind="lines.' + i + '.qty" style="' + inputStyle + ';width:' + OQ_W + ';flex:none" placeholder="จำนวน">' +
+          '<input type="number" min="0" value="' + esc(l.unitPrice) + '" data-bind="lines.' + i + '.unitPrice" style="' + inputStyle + ';width:' + OP_W + ';flex:none" placeholder="ราคา/หน่วย">' +
+          '<div id="orderLineAmt' + i + '" style="width:' + OA_W + ';flex:none;text-align:right;font-weight:600;font-size:13px">' + money(orderLineAmount(l)) + '</div>' +
+          '<button class="btn" data-action="remove-order-line" data-arg="' + i + '" style="width:' + OX_W + ';flex:none"><span class="ms">close</span></button>' +
         '</div>' +
         '<div id="orderLineCap' + i + '" style="font-size:11px;margin-left:128px">' + orderLineCaption(l) + '</div>' +
       '</div>';
@@ -3714,11 +3720,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return modalHeader(d.id ? 'แก้ไขใบสั่งซื้อ' : 'เพิ่มใบสั่งซื้อ') +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + field('วันที่', bindInput('date', 'date')) + field('ผู้จำหน่าย', bindInput('supplier')) + '</div>' +
       '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">รายการสินค้า</label></div>' +
-      lines + '<datalist id="dlOrderStock">' + stockOpts + '</datalist>' +
+      lineHeader + lines + '<datalist id="dlOrderStock">' + stockOpts + '</datalist>' +
       '<button class="btn" data-action="add-order-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการ</button>' +
       (d.id && !d.stockApplied ? '<div style="font-size:11.5px;color:var(--amber-dark);margin-bottom:8px">ใบสั่งซื้อนี้สร้างก่อนระบบเชื่อมสต๊อก — การแก้ไขจะไม่เปลี่ยนจำนวนสต๊อก</div>' : '') +
-      '<div style="text-align:right;font-weight:700;margin-bottom:10px">รวมทั้งสิ้น ' + money(total) + '</div>' + saveBtn();
+      '<div id="orderTotal" style="text-align:right;font-weight:700;margin-bottom:10px">รวมทั้งสิ้น ' + money(total) + '</div>' + saveBtn();
   }
+  /** จำนวนเงิน of one PO line = qty × ราคา/หน่วย. */
+  function orderLineAmount(l) { return Math.round((Number(l.qty) || 0) * (Number(l.unitPrice) || 0) * 100) / 100; }
   /** Under each PO line: which stock item it will add to, or that it isn't linked to stock. */
   function orderLineCaption(l) {
     var s = l.itemId ? (state.suggestCache.stock || []).filter(function (x) { return x.id === l.itemId; })[0] : null;
@@ -4491,6 +4499,14 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (el.type === 'number' && el.value === '' && el.hasAttribute('data-blank-ok')) val = '';
     setPath(state.draft, bindPath, val);
     // จัดซื้อ: a line name matching a stock item links it (itemId) and takes that item's หมวดหมู่ — patched in place, no render.
+    var orderAmt = state.modal && state.modal.type === 'order' && bindPath.match(/^lines\.(\d+)\.(qty|unitPrice)$/);
+    if (orderAmt) {
+      var amtEl = document.getElementById('orderLineAmt' + orderAmt[1]);
+      if (amtEl) amtEl.textContent = money(orderLineAmount(state.draft.lines[Number(orderAmt[1])]));
+      var totEl = document.getElementById('orderTotal');
+      if (totEl) totEl.textContent = 'รวมทั้งสิ้น ' + money(state.draft.lines.reduce(function (sum, l) { return sum + orderLineAmount(l); }, 0));
+      return;
+    }
     var orderPick = state.modal && state.modal.type === 'order' && bindPath.match(/^lines\.(\d+)\.itemName$/);
     if (orderPick) {
       var oLine = state.draft.lines[Number(orderPick[1])];
