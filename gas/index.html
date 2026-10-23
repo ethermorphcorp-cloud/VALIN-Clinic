@@ -1753,6 +1753,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       ['ownMedItems', 'depositUseItems', 'messengerItems'].forEach(function (k) { d[k] = d[k] || []; });
       // What this record already took from ยาฝาก is still available to it while editing (see depositUseOptions).
       d._origPatientId = d.patientId; d._oldDepositUse = {};
+      d._origSalesId = d.salesId; // same sales person keeps the saved salesCommissionPct (see previewShares)
       if (d.stockApplied && d.useDepositUse) d.depositUseItems.forEach(function (l) { d._oldDepositUse[l.itemId] = (d._oldDepositUse[l.itemId] || 0) + (Number(l.qty) || 0); });
       openModal('record', d);
       loadDraftDeposits();
@@ -2237,6 +2238,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var doctor = (state.master.doctors || []).filter(function (x) { return x.id === d.doctorId; })[0];
     var sales = d.salesId ? (state.master.sales || []).filter(function (x) { return x.id === d.salesId; })[0] : null;
     var salesPct = sales ? (Number(sales.commissionRate) || 0) : 0;
+    // An edited record keeps the % it was saved with unless the sales person changed (mirrors saveRecord).
+    if (sales && d.id && d.salesId === d._origSalesId && d.salesCommissionPct != null) salesPct = Number(d.salesCommissionPct) || 0;
     var doctorPct = doctor ? (Number(doctor.commissionPct) || 0) : 0;
     var promoAmount = 0, promoDoctorShare = 0;
     (d.usePromo ? (d.promoItems || []) : []).forEach(function (line) {
@@ -3841,7 +3844,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '</div>' +
         '<div style="display:flex;gap:20px;border-top:1px solid var(--border-lighter);padding-top:10px">' +
           '<div><div style="font-size:11px;color:var(--muted)">' + esc(pctLabel) + '</div><div style="font-size:16px;font-weight:700;color:var(--accent)">' + pct + '%</div></div>' +
-          '<div><div style="font-size:11px;color:var(--muted)">' + esc(extraLabel) + '</div><div style="font-size:16px;font-weight:700">' + extraVal + '</div></div>' +
+          (extraLabel ? '<div><div style="font-size:11px;color:var(--muted)">' + esc(extraLabel) + '</div><div style="font-size:16px;font-weight:700">' + extraVal + '</div></div>' : '') +
         '</div>' +
       '</div>';
     }
@@ -3849,7 +3852,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       return personCard(d, 'edit-doctor', 'delete-doctor', '% Commission', Number(d.commissionPct) || 0, 'ยอดขั้นต่ำ/วัน', money(d.minAmount || 0));
     }).join('');
     var salesCards = settingsData.sales.map(function (s) {
-      return personCard(s, 'edit-sales', 'delete-sales', 'อัตราคอมมิชชั่น', Number(s.commissionRate) || 0, 'ยอดขั้นต่ำ', money(s.minAmount || 0));
+      // No ยอดขั้นต่ำ for sales: only the doctor's daily minimum is applied (recomputeDoctorDayShares_).
+      return personCard(s, 'edit-sales', 'delete-sales', 'อัตราคอมมิชชั่น', Number(s.commissionRate) || 0);
     }).join('');
     return '' +
       '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><div style="font-weight:700;font-size:14.5px">แพทย์</div>' +
@@ -3890,7 +3894,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var d = state.draft;
     return modalHeader(d.id ? 'แก้ไขข้อมูลเซลล์' : 'เพิ่มเซลล์') + field('ชื่อเซลล์', bindInput('name')) +
       field('สถานะ', bindSelect('status', [{ value: 'active', label: 'ทำงาน' }, { value: 'inactive', label: 'พักงาน' }])) +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + field('อัตราค่าคอมมิชชั่น (%)', bindInput('commissionRate', 'number')) + field('ยอดขั้นต่ำ', bindInput('minAmount', 'number')) + '</div>' + saveBtn();
+      field('อัตราค่าคอมมิชชั่น (%)', bindInput('commissionRate', 'number')) + saveBtn();
   }
   function saveSalesModal() {
     call('saveSales', session.token, state.draft).then(function () { toast('success', 'บันทึกแล้ว'); closeModal(); settingsData.sales = null; loadDoctorsSales(); refreshMaster(); });

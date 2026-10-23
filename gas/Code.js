@@ -2144,7 +2144,7 @@ function mapRecordOut_(r) {
     // are the topped-up, actually-paid-out amounts) since the guarantee only
     // makes sense aggregated across a whole day; see computeDailySummaryDetail_.
     otherAmount: otherAmount,
-    salesCommissionPct: Number(r.SalesCommissionPct) || 0,
+    salesCommissionPct: r.SalesCommissionPct === '' || r.SalesCommissionPct == null ? null : Number(r.SalesCommissionPct) || 0,
     salesShare: salesShare,
     doctorCommissionPct: Number(r.DoctorCommissionPct) || 0,
     doctorShare: Number(r.DoctorShare) || 0,
@@ -2732,6 +2732,11 @@ function saveRecord(token, record) {
         if (!existing) throw ValidationError_('ไม่พบข้อมูลการรักษาที่จะแก้ไข');
         oldDoctorId = existing.DoctorID;
         oldDate = dateStr_(existing.Date);
+        // Editing a record keeps the sales % it was saved with; only picking a
+        // different sales person takes that person's current rate.
+        if (sales && existing.SalesID === sales.SalesID && existing.SalesCommissionPct !== '' && existing.SalesCommissionPct != null) {
+          sales = Object.assign({}, sales, { CommissionRate: Number(existing.SalesCommissionPct) || 0 });
+        }
       }
 
       var shares = computeRecordShares_(amount, promoAmount, promoDoctorShare, record.useCanula ? canulaAmount : 0, doctor, sales);
