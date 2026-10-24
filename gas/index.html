@@ -1456,7 +1456,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           '<tbody>' + recPg.items.map(function (r) {
             return '<tr style="cursor:pointer" data-action="view-record" data-arg="' + esc(r.id) + '">' +
               '<td style="padding:8px 10px;font-size:12.5px">' + esc(r.date) + '</td>' +
-              '<td style="font-size:12.5px">' + esc(r.doctorName) + '</td>' +
+              '<td style="font-size:12.5px">' + (r.doctorName ? esc(r.doctorName) : '<span style="color:var(--muted)">-</span>') + '</td>' +
               '<td style="font-size:12.5px">' + money(r.totalCollected != null ? r.totalCollected : r.amount) + '</td>' +
               '<td>' + statusBadge(r.status) + '</td>' +
             '</tr>';
@@ -1725,7 +1725,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       L.items.map(function (r) {
         return '<tr>' +
           '<td>' + esc(r.date) + '</td><td><a href="javascript:void(0)" data-action="view-record" data-arg="' + esc(r.id) + '" style="color:var(--accent);font-weight:600;text-decoration:none">' + esc(r.patientName) + '</a>' + patientNicknameSuffix(r.patientId) + '</td>' +
-          '<td>' + esc(r.doctorName) + '</td><td>' + money(r.totalCollected != null ? r.totalCollected : r.amount) + '</td><td>' + statusBadge(r.status) + '</td><td>' + visitStatusBadge(r.visitStatus) + '</td>' +
+          '<td>' + (r.doctorName ? esc(r.doctorName) : '<span style="color:var(--muted)">-</span>') + '</td><td>' + money(r.totalCollected != null ? r.totalCollected : r.amount) + '</td><td>' + statusBadge(r.status) + '</td><td>' + visitStatusBadge(r.visitStatus) + '</td>' +
           '<td style="text-align:right;white-space:nowrap">' +
             (r.status === 'unpaid' ? '<button class="btn btn-primary" data-action="pay-record" data-arg="' + esc(r.id) + '" title="ชำระเงิน"><span class="ms">payments</span></button> ' : '') +
             '<button class="btn" data-action="issue-receipt" data-arg="' + esc(r.id) + '"><span class="ms">print</span></button> ' +
@@ -1933,7 +1933,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var infoFields = '' +
       (r.serviceCategory ? recordInfoField('sell', 'หมวดหมู่การรักษา', esc(r.serviceCategory)) : '') +
       recordInfoField('payments', 'วิธีชำระเงิน', r.paymentMethod ? esc(r.paymentMethod) : '<span style="color:var(--muted);font-weight:400">ยังไม่ชำระ</span>') +
-      recordInfoField('stethoscope', 'แพทย์', esc(r.doctorName)) +
+      (r.doctorName ? recordInfoField('stethoscope', 'แพทย์', esc(r.doctorName)) : '') +
       (r.salesName ? recordInfoField('badge', 'เซลล์', esc(r.salesName)) : '') +
       (r.receiptNo ? recordInfoField('receipt_long', 'เลขที่ใบเสร็จ', esc(r.receiptNo)) : '') +
       (r.detail ? recordInfoField('notes', 'รายละเอียดการรักษา', esc(r.detail), { wide: true, pre: true }) : '') +
@@ -3521,14 +3521,18 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       L.items.map(function (g) {
         // One group per save: วันที่ / คนไข้ / เซลล์ / สถานะ / ปุ่มบันทึกการรักษา once
         // (rowspan), and a row per ยา for the item, qty and price columns.
-        var n = g.lines.length, waiting = g.lines.filter(function (w) { return !w.recordId; }).length;
+        var n = g.lines.length;
         var recordIds = g.lines.map(function (w) { return w.recordId; }).filter(function (id, i, a) { return id && a.indexOf(id) === i; });
-        // Step 3 of the flow: a line waits until the patient's บันทึกการรักษา takes it in.
+        // The status is the same one the บันทึกการรักษา page shows: จัดยาแล้ว until
+        // the record is saved as เสร็จสิ้น. Saving a withdrawal opens that record.
+        var done = g.lines.every(function (w) { return w.recordStatus === 'completed'; });
         var recLinks = recordIds.map(function (id) {
-          return '<a href="javascript:void(0)" data-action="view-record" data-arg="' + esc(id) + '" class="tag-badge" style="background:var(--green-soft);color:var(--green-dark);text-decoration:none;margin:1px 2px 1px 0">บันทึกแล้ว · ' + esc(id) + '</a>';
+          return '<a href="javascript:void(0)" data-action="view-record" data-arg="' + esc(id) + '" style="color:var(--accent);font-size:11.5px;text-decoration:none;margin-right:6px">' + esc(id) + '</a>';
         }).join('');
-        var status = !recordIds.length ? '<span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark)">รอบันทึกการรักษา</span>'
-          : (waiting ? '<span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark)" title="บันทึกแล้ว ' + (n - waiting) + ' จาก ' + n + ' รายการ">รอบันทึก ' + waiting + '/' + n + ' รายการ</span><div style="margin-top:3px">' + recLinks + '</div>' : recLinks);
+        var status = visitStatusBadge(done ? 'completed' : 'dispensed') + (recLinks ? '<div style="margin-top:3px">' + recLinks + '</div>' : '');
+        // Open the record still to be finished (or, for a line with no record, start one for the patient).
+        var openLine = g.lines.filter(function (w) { return w.recordId && w.recordStatus !== 'completed'; })[0];
+        var needsRecord = g.lines.some(function (w) { return !w.recordId; });
         var rs = ' rowspan="' + n + '" style="vertical-align:top;';
         return g.lines.map(function (w, i) {
           var s = stockItemsOfType('medicine').filter(function (it) { return it.id === w.itemId; })[0];
@@ -3543,10 +3547,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
             (admin ? '<td style="text-align:right">' + money(w.unitCost) + '</td><td style="text-align:right;font-weight:600">' + money(w.amount) + '</td>' : '') +
             (i ? '' :
               '<td' + rs + '">' + status + '</td>' +
-              '<td' + rs + 'text-align:right;white-space:nowrap">' + (waiting ?
-                '<button class="btn" data-action="withdraw-to-record" data-arg="' + esc(g.patientId) + '" title="บันทึกการรักษาของคนไข้รายนี้"><span class="ms">medical_services</span></button>' : '') + '</td>') +
-            // Delete stays per ยา (puts that line's qty back in stock); a taken-in line must be removed from its record first.
-            '<td style="text-align:right;white-space:nowrap">' + (admin && !w.recordId ? '<button class="btn" data-action="delete-withdraw" data-arg="' + esc(w.id) + '" title="ลบรายการนี้ (คืนสต๊อก)" style="padding:6px 8px"><span class="ms" style="font-size:18px">delete</span></button>' : '') + '</td>' +
+              '<td' + rs + 'text-align:right;white-space:nowrap">' + (openLine
+                ? '<button class="btn" data-action="edit-record" data-arg="' + esc(openLine.recordId) + '" title="ไปที่บันทึกการรักษา (เพิ่มหัตถการ / รายการอื่นๆ)"><span class="ms">medical_services</span></button>'
+                : (needsRecord ? '<button class="btn" data-action="withdraw-to-record" data-arg="' + esc(g.patientId) + '" title="บันทึกการรักษาของคนไข้รายนี้"><span class="ms">medical_services</span></button>' : '')) + '</td>') +
+            // Delete stays per ยา (puts that line's qty back in stock and off its record); not once the record is เสร็จสิ้น.
+            '<td style="text-align:right;white-space:nowrap">' + (admin && w.recordStatus !== 'completed' ? '<button class="btn" data-action="delete-withdraw" data-arg="' + esc(w.id) + '" title="ลบรายการนี้ (คืนสต๊อก)" style="padding:6px 8px"><span class="ms" style="font-size:18px">delete</span></button>' : '') + '</td>' +
           '</tr>';
         }).join('');
       }).join(''));
@@ -3563,7 +3568,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
             '<th style="' + th + ';text-align:right">ราคาขาย/หน่วย</th>' +
             (admin ? '<th style="' + th + ';text-align:right">ราคาทุน/หน่วย</th><th style="' + th + ';text-align:right">จำนวนเงิน (ทุน)</th>' : '') + '<th style="' + th + '">สถานะ</th><th></th><th></th>' +
           '</tr></thead><tbody>' + rows + '</tbody></table></div>', state.withdraw.reloading) + pagerHtml(L, 'withdraw-page') +
-      '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">ยาที่เบิกจะถูกดึงไปคิดเงินในบันทึกการรักษาของคนไข้ (ระบุจำนวนที่ใช้/ฝาก และราคาขายได้ที่นั่น)</div>';
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">บันทึกการเบิกแล้ว ระบบสร้างบันทึกการรักษา (สถานะ จัดยาแล้ว) ให้ — ไปเพิ่มหัตถการ / รายการอื่นๆ และระบุจำนวนที่ใช้/ฝาก ที่หน้าบันทึกการรักษา แล้วกดเสร็จสิ้น</div>';
   }
   /** "บันทึกการรักษา" from a waiting withdrawal row: a new record for that patient, which pulls in their waiting lines. */
   function withdrawToRecord(patientId) {
@@ -3598,7 +3603,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       lines +
       '<button class="btn" data-action="add-withdraw-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการยา</button>' +
       field('หมายเหตุ', bindTextarea('note', 2)) +
-      '<div style="font-size:11.5px;color:var(--muted);margin-top:-4px">ตัดสต๊อกยาตามจำนวนที่เบิก · คิดเงินลูกค้าตอนบันทึกการรักษา (ราคาขายตามขั้นราคา แก้ได้ที่นั่น)</div>' +
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:-4px">ตัดสต๊อกยาตามจำนวนที่เบิก · ระบบสร้างบันทึกการรักษา (สถานะ จัดยาแล้ว) ให้ไปเพิ่มหัตถการ / รายการอื่นๆ ต่อ</div>' +
       saveBtn();
   }
   /** Under a withdraw line: unit · ราคาขาย per unit for its qty tier — patched in place while typing (see the input listener). */
@@ -3624,15 +3629,17 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     call('saveMedWithdrawal', session.token, {
       date: d.date, patientId: d.patientId, salesId: d.salesId, note: d.note,
       lines: lines.map(function (l) { return { itemId: stockItemIdByName(l.name), qty: l.qty }; })
-    }).then(function () {
-      var patientId = d.patientId;
+    }).then(function (res) {
+      var recordId = res.data && res.data.recordId;
       closeModal();
       refreshStockSuggestCache();
       loadWithdrawals();
       if (state.stock.list) loadStock();
-      // Next step of the flow: บันทึกการรักษา, which pulls in these lines.
-      Swal.fire({ icon: 'success', title: 'บันทึกการเบิกยาแล้ว', text: 'บันทึกการรักษาของคนไข้รายนี้ต่อเลยไหม?', showCancelButton: true, confirmButtonText: 'บันทึกการรักษา', cancelButtonText: 'ภายหลัง' }).then(function (r) {
-        if (r.isConfirmed) withdrawToRecord(patientId);
+      if (state.records.list) loadRecords();
+      if (state.records.calData) loadCalendar();
+      // Next step of the flow: the บันทึกการรักษา this opened (สถานะ จัดยาแล้ว).
+      Swal.fire({ icon: 'success', title: 'บันทึกการเบิกยาแล้ว', text: 'สถานะ จัดยาแล้ว — ไปเพิ่มหัตถการ / รายการอื่นๆ ที่บันทึกการรักษาต่อเลยไหม?', showCancelButton: true, confirmButtonText: 'บันทึกการรักษา', cancelButtonText: 'ภายหลัง' }).then(function (r) {
+        if (r.isConfirmed && recordId) editRecordModal(recordId);
       });
     });
   }

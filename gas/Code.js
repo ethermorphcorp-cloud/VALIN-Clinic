@@ -3446,6 +3446,8 @@ function listMedWithdrawals(token, opts) {
     // sales): the list shows the patient/sales/status once with a row per ยา,
     // and pages by these groups so a save never splits across pages.
     var groups = {}, order = [];
+    var recStatus = {};
+    getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).forEach(function (rr) { recStatus[rr.RID] = rr.VisitStatus === 'completed' ? 'completed' : 'dispensed'; });
     rows.sort(function (a, b) { return String(a.CreatedAt).localeCompare(String(b.CreatedAt)) || String(a.WithdrawID).localeCompare(String(b.WithdrawID)); });
     rows.forEach(function (r) {
       var key = r.BatchID || (dateStr_(r.Date) + '|' + r.PatientID + '|' + r.SalesID);
@@ -3454,7 +3456,9 @@ function listMedWithdrawals(token, opts) {
         g = groups[key] = { id: key, date: dateStr_(r.Date), patientId: r.PatientID, patientName: r.PatientName, phone: r.Phone, salesId: r.SalesID, salesName: r.SalesName, note: r.Note || '', createdAt: String(r.CreatedAt), lines: [] };
         order.push(g);
       }
-      g.lines.push(mapWithdrawalOut_(r, showCost, stockById));
+      var out = mapWithdrawalOut_(r, showCost, stockById);
+      out.recordStatus = recStatus[r.RecordID] || 'dispensed'; // same words as the record's สถานะการรักษา; no record yet = จัดยาแล้ว
+      g.lines.push(out);
       g.createdAt = String(r.CreatedAt);
       if (!g.note && r.Note) g.note = r.Note;
     });
@@ -3463,7 +3467,7 @@ function listMedWithdrawals(token, opts) {
   });
 }
 
-/** payload: {date, patientId, salesId, note, lines:[{itemId, qty}]} — one MedWithdrawals row per line (all sharing a BatchID), each taken out of Stock. */
+/** payload: {date, patientId, salesId, note, lines:[{itemId, qty}]} — one MedWithdrawals row per line (all sharing a BatchID), each taken out of Stock, plus the บันทึกการรักษา (จัดยาแล้ว) they belong to. Returns {ids, recordId}. */
 function saveMedWithdrawal(token, payload) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'staff');
@@ -3503,16 +3507,43 @@ function saveMedWithdrawal(token, payload) {
       var sheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
       var ids = nextSeqBlock_('WITHDRAW', rows.length, 5);
       var batchId = 'WB' + nextSeq_('WITHDRAW_BATCH', 5); // groups this save's lines
-      rows.forEach(function (r, i) { r.WithdrawID = 'WD' + ids[i]; r.BatchID = batchId; appendRow_(sheet, CONFIG.HEADERS.MedWithdrawals, r); });
-      writeAudit_(session, 'CREATE', 'MedWithdrawal', rows.map(function (r) { return r.WithdrawID; }).join(','), patientName + ' x' + rows.length);
-      return { ok: true, data: { ids: rows.map(function (r) { return r.WithdrawID; }) } };
+      // Every save also opens its บันทึกการรักษา (สถานะ จัดยาแล้ว), which the
+      // lines belong to; staff add หัตถการ / รายการอื่นๆ there and finish it.
+      var rid = 'R' + nextSeq_('RECORD', 6);
+      rows.forEach(function (r, i) { r.WithdrawID = 'WD' + ids[i]; r.BatchID = batchId; r.RecordID = rid; appendRow_(sheet, CONFIG.HEADERS.MedWithdrawals, r); });
+      var rec = {
+        RID: rid, Date: payload.date, PatientID: patient.ID, PatientName: patientName, Phone: patient.Phone,
+        SalesID: sales.SalesID, SalesName: sales.Name, Status: 'unpaid', PaymentMethod: '', ReceiptNo: '', Note: '',
+        CreatedBy: session.username, CreatedAt: nowStr_(), UpdatedAt: nowStr_(),
+        SalesCommissionPct: Number(sales.CommissionRate) || 0, SalesShare: 0, VisitStatus: 'dispensed', StockApplied: 'TRUE',
+        WithdrawJSON: JSON.stringify(rows.map(function (r) {
+          return { withdrawId: r.WithdrawID, itemId: r.ItemID, name: r.ItemName, qtyDispensed: r.Qty, qtyUsed: r.Qty, qtyDeposit: 0, expiry: '' };
+        }))
+      };
+      applyDoctorShares_(rec, []); // no doctor yet: หัตถการ lines name theirs
+      appendRow_(getSheet_(CONFIG.SHEETS.RECORDS), CONFIG.HEADERS.Records, rec);
+      writeAudit_(session, 'CREATE', 'MedWithdrawal', rows.map(function (r) { return r.WithdrawID; }).join(','), patientName + ' x' + rows.length + ' → ' + rid);
+      bumpDashboardCacheVersion_();
+      return { ok: true, data: { ids: rows.map(function (r) { return r.WithdrawID; }), recordId: rid } };
     } finally {
       lock.releaseLock();
     }
   });
 }
 
-/** Admin-only; puts the line's qty back into Stock. */
+/** True when a Records row has anything on it besides its จัดยา-เบิกยา lines (so it must be kept). */
+function recordHasContent_(r) {
+  var some = function (json) { return parseLineItems_(json).length > 0; };
+  return some(r.SuppliesJSON) || some(r.ProcedureJSON) || some(r.PromoJSON) || some(r.MedicineJSON) || some(r.OwnMedJSON) ||
+    some(r.DepositUseJSON) || some(r.MessengerJSON) || some(r.OtherItemsJSON) || (isTrue_(r.UseCanula) && Number(r.CanulaAmount) > 0) ||
+    !!r.OpdImageFileId || !!String(r.Detail || '').trim() || !!String(r.Note || '').trim() || (r.Status && r.Status !== 'unpaid');
+}
+
+/**
+ * Admin-only; puts the line's qty back into Stock and takes it off its
+ * บันทึกการรักษา (which goes too if that was all it held). Refused once the
+ * record is เสร็จสิ้น, or if part of the line was put into ยาฝาก.
+ */
 function deleteMedWithdrawal(token, id) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'admin');
@@ -3522,11 +3553,25 @@ function deleteMedWithdrawal(token, id) {
       var sheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
       var row = getRows_(sheet).filter(function (r) { return r.WithdrawID === id; })[0];
       if (!row) throw ValidationError_('ไม่พบรายการ');
-      if (row.RecordID) throw ValidationError_('รายการนี้ถูกบันทึกในการรักษา ' + row.RecordID + ' แล้ว — ลบออกจากบันทึกการรักษานั้นก่อน');
+      var recSheet = getSheet_(CONFIG.SHEETS.RECORDS);
+      var rec = row.RecordID ? getRows_(recSheet).filter(function (r) { return r.RID === row.RecordID; })[0] : null;
+      var recUpdate = null;
+      if (rec) {
+        if (rec.VisitStatus === 'completed') throw ValidationError_('บันทึกการรักษา ' + rec.RID + ' เสร็จสิ้นแล้ว — ลบรายการยานี้ออกจากบันทึกการรักษานั้นก่อน');
+        var items = parseLineItems_(rec.WithdrawJSON);
+        var mine = items.filter(function (l) { return l.withdrawId === id; })[0];
+        if (mine && Number(mine.qtyDeposit) > 0) throw ValidationError_('รายการนี้มียาฝากในบันทึกการรักษา ' + rec.RID + ' — แก้ที่บันทึกการรักษาก่อน');
+        recUpdate = Object.assign({}, rec, { WithdrawJSON: JSON.stringify(items.filter(function (l) { return l.withdrawId !== id; })), UpdatedAt: nowStr_() });
+      }
       var give = {};
       give[row.ItemID] = Number(row.Qty) || 0;
       applyStockEffects_(session, give, {}, 'ลบรายการจัดยา-เบิกยา ' + id + ' · ' + row.PatientName, 'withdraw');
       deleteRowByIndex_(sheet, row._row);
+      if (recUpdate) {
+        if (recordHasContent_(recUpdate) || parseLineItems_(recUpdate.WithdrawJSON).length) updateRowByIndex_(recSheet, CONFIG.HEADERS.Records, recUpdate._row, recUpdate);
+        else deleteRowByIndex_(recSheet, recUpdate._row);
+        bumpDashboardCacheVersion_();
+      }
       writeAudit_(session, 'DELETE', 'MedWithdrawal', id, row.PatientName + ' ' + row.ItemName);
       return { ok: true };
     } finally {
