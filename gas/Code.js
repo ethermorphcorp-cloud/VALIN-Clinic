@@ -343,7 +343,7 @@ var CONFIG = {
     // Lightweight full-list caches used to power client-side autocomplete
     // (patient/stock suggest boxes) without a server round-trip per keystroke.
     PATIENTS_LITE_KEY: 'PATIENTS_LITE_V2', // V2: entries carry `hn`
-    STOCK_LITE_KEY: 'STOCK_LITE_V3', // V3: entries carry `type` and sale `prices` (never cost)
+    STOCK_LITE_KEY: 'STOCK_LITE_V4', // V4: entries also carry `qty` (พร้อมใช้, for the pickers); never cost
     LITE_TTL: 21600,
     // Round 19 item 4: getDashboardData's per-date-range result cache. Keyed
     // by a version tag (DASH_VERSION_KEY, bumped by any write that could
@@ -992,7 +992,7 @@ function listAllStockLite(token) {
     if (raw) return { ok: true, data: JSON.parse(raw) };
     var rows = getRows_(getSheet_(CONFIG.SHEETS.STOCK));
     var data = rows.map(function (s) {
-      return { id: s.ItemID, name: s.Name, category: s.Category, unit: s.Unit, type: stockTypeOf_(s), prices: STOCK_PRICE_TIERS.map(function (t) { return numOrNull_(s['Price' + t]); }) };
+      return { id: s.ItemID, name: s.Name, category: s.Category, unit: s.Unit, qty: Number(s.Qty) || 0, type: stockTypeOf_(s), prices: STOCK_PRICE_TIERS.map(function (t) { return numOrNull_(s['Price' + t]); }) };
     });
     try { cache.put(CONFIG.CACHE.STOCK_LITE_KEY, JSON.stringify(data), CONFIG.CACHE.LITE_TTL); } catch (e) { /* too large for cache — still return live data */ }
     return { ok: true, data: data };

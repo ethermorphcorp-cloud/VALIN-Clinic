@@ -625,6 +625,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         return '<div class="opt' + active + '" data-portal-pick="' + esc(o.value) + '" style="justify-content:flex-start;align-items:center' + (o.danger ? ';color:var(--red-dark)' : '') + '">' +
           '<span class="ms" style="font-size:18px;margin-right:10px' + (o.danger ? '' : ';color:var(--muted-2)') + '">' + esc(o.icon) + '</span>' + esc(o.label) + '</div>';
       }
+      // Optional `sub`: muted right-hand text (e.g. stock left), `subWarn` colours it red.
+      if (o.sub != null) {
+        return '<div class="opt' + active + '" data-portal-pick="' + esc(o.value) + '"><span>' + esc(o.label) + '</span>' +
+          '<span style="flex:none;font-size:11.5px;color:' + (o.subWarn ? 'var(--red-dark)' : 'var(--muted)') + '">' + esc(o.sub) + '</span></div>';
+      }
       return '<div class="opt' + active + '" data-portal-pick="' + esc(o.value) + '">' + esc(o.label) + '</div>';
     }).join('') || '<div class="opt" style="color:var(--muted)">ไม่มีตัวเลือก</div>';
     portalEl.classList.add('open');
@@ -991,6 +996,35 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return state.suggestCache.patients.filter(function (p) { return patientMatches(p, q); }).slice(0, 8).map(function (p) {
       return { id: p.id, primary: p.firstName + ' ' + p.lastName + (p.nickname ? ' (' + p.nickname + ')' : ''), secondary: (p.hn ? 'HN ' + p.hn + ' · ' : '') + p.phone, commitText: p.firstName + ' ' + p.lastName };
     });
+  }
+  /**
+   * Stock picker for the free-typed name inputs marked data-med-pick="supply|medicine"
+   * (withdraw lines, ยาเบิกเพิ่ม, เวชภัณฑ์). Replaces the native <datalist>, which only
+   * listed names matching what was already typed — so after picking one item the
+   * rest could not be browsed. This shows every item of that type when the box
+   * is focused/clicked (or holds an exact name), narrows while typing, and shows
+   * each item's stock left. Picking sets the input and fires its own input
+   * handler, so the line's existing linking (itemId, unit, ราคาขาย tier,
+   * captions) runs unchanged; the input stays free text for names not in stock.
+   */
+  function medPickOptions(type, q) {
+    var items = stockItemsOfType(type), ql = String(q || '').trim().toLowerCase();
+    var exact = items.some(function (s) { return s.name.toLowerCase() === ql; });
+    return items.filter(function (s) { return !ql || exact || (s.name + ' ' + (s.category || '')).toLowerCase().indexOf(ql) > -1; }).map(function (s) {
+      var left = Number(s.qty) || 0;
+      return { value: s.id, label: s.name, sub: left > 0 ? 'คงเหลือ ' + left + (s.unit ? ' ' + s.unit : '') : 'หมด', subWarn: left <= 0 };
+    });
+  }
+  function openMedPicker(el) {
+    if (!el || !el.id) return;
+    var type = el.getAttribute('data-med-pick');
+    openPortal(el.id, medPickOptions(type, el.value), function (id) {
+      var item = stockItemsOfType(type).filter(function (s) { return s.id === id; })[0];
+      var input = document.getElementById(el.id);
+      if (!item || !input) return;
+      input.value = item.name;
+      input.dispatchEvent(new Event('input', { bubbles: true })); // untrusted: the handler links the line, no re-open
+    }, null);
   }
   /** Stock suggest-cache entries of one type ('supply' | 'medicine'). */
   function stockItemsOfType(type) {
@@ -1795,7 +1829,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function deleteRecordConfirm(id) {
     Swal.fire({ icon: 'warning', title: 'ลบบันทึกการรักษา?', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
       if (!r.isConfirmed) return;
-      call('deleteRecord', session.token, id).then(function () { toast('success', 'ลบแล้ว'); loadRecords(); });
+      call('deleteRecord', session.token, id).then(function () { toast('success', 'ลบแล้ว'); loadRecords(); refreshStockSuggestCache(); });
     });
   }
   function issueReceiptAction(id) {
@@ -2684,7 +2718,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           }
           var dyn = dispenseDynamicHtml(m, i);
           return dispRow([
-            dispCell('<input type="text" list="dlMedicineStock" autocomplete="off" placeholder="เลือกยาจากสต๊อก" value="' + esc(m.name) + '" data-bind="' + p + 'name" style="' + inputStyle + '">' + dispCap('dispNameCap' + i, dyn.dispNameCap)),
+            dispCell('<input type="text" id="medPick' + i + '" data-med-pick="medicine" autocomplete="off" placeholder="เลือกยาจากสต๊อก" value="' + esc(m.name) + '" data-bind="' + p + 'name" style="' + inputStyle + '">' + dispCap('dispNameCap' + i, dyn.dispNameCap)),
             dispCell(numInput(p + 'qtyDispensed', m.qtyDispensed) + dispCap('dispQdCap' + i, dyn.dispQdCap)),
             dispCell(numInput(p + 'qtyUsed', m.qtyUsed) + dispCap('dispQuCap' + i, dyn.dispQuCap)),
             dispCell('<div id="dispDep' + i + '" style="padding-top:8px">' + dyn.dispDep + '</div>' + dispCap('dispDepCap' + i, dyn.dispDepCap), 'center'),
@@ -2762,7 +2796,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // width so the rows line up with the money rows around them.
     var supplyRows = d.supplies.map(function (s, i) {
       return '<div class="supply-row">' +
-        '<div class="g"><input type="text" list="dlSupplyStock" autocomplete="off" placeholder="ชื่อเวชภัณฑ์" value="' + esc(s.name) + '" data-bind="supplies.' + i + '.name" style="' + inputStyle + '"></div>' +
+        '<div class="g"><input type="text" id="supPick' + i + '" data-med-pick="supply" autocomplete="off" placeholder="ชื่อเวชภัณฑ์" value="' + esc(s.name) + '" data-bind="supplies.' + i + '.name" style="' + inputStyle + '"></div>' +
         '<input type="number" min="0" value="' + esc(s.qty) + '" data-bind="supplies.' + i + '.qty" style="' + inputStyle + ';width:66px;flex:none" placeholder="จำนวน">' +
         '<input type="text" value="' + esc(s.unit) + '" data-bind="supplies.' + i + '.unit" style="' + inputStyle + ';width:66px;flex:none" placeholder="หน่วย">' +
         '<div style="width:' + TRAIL_W + ';flex:none;display:flex;justify-content:center">' + removeBtn('remove-supply-row', i) + '</div>' +
@@ -2892,7 +2926,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var payload = Object.assign({}, state.draft, { complete: !!complete });
     Object.keys(payload).forEach(function (k) { if (k.charAt(0) === '_') delete payload[k]; }); // client-only (_patientQuery, _deposits, ...)
     call('saveRecord', session.token, payload).then(function (res) {
-      toast('success', 'บันทึกข้อมูลการรักษาแล้ว'); closeModal();
+      toast('success', 'บันทึกข้อมูลการรักษาแล้ว'); closeModal(); refreshStockSuggestCache();
       // Round 12 item 1.3: refresh whichever Records view is on screen — the
       // table load above alone left a stale calendar (state.records.calData)
       // when the modal was opened from calendar view, since loadRecords()
@@ -3536,7 +3570,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var salesOpts = [{ value: '', label: '— เลือกเซลล์ —' }].concat((state.master.sales || []).map(function (x) { return { value: x.id, label: x.name }; }));
     var lines = d.lines.map(function (l, i) {
       return '<div style="display:grid;grid-template-columns:minmax(0,1fr) 100px 40px;gap:8px;align-items:start;margin-bottom:6px">' +
-        '<div><input type="text" list="dlWithdrawMed" autocomplete="off" placeholder="เลือกยาจากสต๊อก" value="' + esc(l.name) + '" data-bind="lines.' + i + '.name" style="' + inputStyle + '">' +
+        '<div><input type="text" id="wdMed' + i + '" data-med-pick="medicine" autocomplete="off" placeholder="เลือกยาจากสต๊อก" value="' + esc(l.name) + '" data-bind="lines.' + i + '.name" style="' + inputStyle + '">' +
           '<div id="wdCap' + i + '" style="font-size:11px;color:var(--muted);margin-top:3px;min-height:14px">' + withdrawLineCaption(l) + '</div></div>' +
         '<div><input type="number" min="0" step="any" value="' + esc(l.qty) + '" data-bind="lines.' + i + '.qty" style="' + inputStyle + '" placeholder="จำนวน"></div>' +
         '<button class="btn" data-action="remove-withdraw-line" data-arg="' + i + '" style="padding:8px 10px"><span class="ms">close</span></button>' +
@@ -3551,7 +3585,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="display:grid;grid-template-columns:minmax(0,1fr) 100px 40px;gap:8px;font-size:11px;color:var(--muted);margin-bottom:4px"><span>รายการยา</span><span>จำนวน</span><span></span></div>' +
       lines +
       '<button class="btn" data-action="add-withdraw-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการยา</button>' +
-      '<datalist id="dlWithdrawMed">' + stockItemsOfType('medicine').map(function (s) { return '<option value="' + esc(s.name) + '">' + esc(s.category || '') + '</option>'; }).join('') + '</datalist>' +
       field('หมายเหตุ', bindTextarea('note', 2)) +
       '<div style="font-size:11.5px;color:var(--muted);margin-top:-4px">ตัดสต๊อกยาตามจำนวนที่เบิก · คิดเงินลูกค้าตอนบันทึกการรักษา (ราคาขายตามขั้นราคา แก้ได้ที่นั่น)</div>' +
       saveBtn();
@@ -3582,6 +3615,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     }).then(function () {
       var patientId = d.patientId;
       closeModal();
+      refreshStockSuggestCache();
       loadWithdrawals();
       if (state.stock.list) loadStock();
       // Next step of the flow: บันทึกการรักษา, which pulls in these lines.
@@ -3594,7 +3628,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     Swal.fire({ icon: 'warning', title: 'ลบรายการเบิกยานี้?', text: 'จำนวนยาจะถูกคืนเข้าสต๊อก', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
       if (!r.isConfirmed) return;
       call('deleteMedWithdrawal', session.token, id).then(function () {
-        toast('success', 'ลบแล้ว'); loadWithdrawals();
+        toast('success', 'ลบแล้ว'); loadWithdrawals(); refreshStockSuggestCache();
         if (state.stock.list) loadStock();
       });
     });
@@ -4647,6 +4681,12 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       if (p && p.onPick) p.onPick(val);
       return;
     }
+    // Clicking a stock-name input (re)opens its picker; the portal-closing rule below must not eat that click.
+    var medInput = ev.target.closest('[data-med-pick]');
+    if (medInput) {
+      if (!state.portal || state.portal.triggerId !== medInput.id) openMedPicker(medInput);
+      return;
+    }
     if (ev.target === portalEl || (state.portal && !ev.target.closest('.portal-dd') && !ev.target.closest('[data-action^="dd-"]'))) {
       if (state.portal) closePortal();
     }
@@ -4870,6 +4910,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var el = ev.target;
     var bindPath = el.getAttribute && el.getAttribute('data-bind');
     if (!bindPath || !state.draft) return;
+    if (ev.isTrusted && el.hasAttribute('data-med-pick')) openMedPicker(el); // typing narrows the list
     var moneyField = isMoneyBindPath(bindPath);
     var val = el.type === 'checkbox' ? el.checked : (moneyField ? parseMoneyInput(el.value) : (el.type === 'number' ? Number(el.value) : el.value));
     // Optional numeric fields (e.g. stock prices) keep '' instead of 0 when cleared.
@@ -5017,6 +5058,20 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   // "#,###.##" once the user leaves it — done on blur (via 'focusout',
   // which bubbles, unlike 'blur') rather than on every keystroke, so
   // reformatting never fights the caret position while typing.
+  document.addEventListener('focusin', function (ev) {
+    if (ev.target.hasAttribute && ev.target.hasAttribute('data-med-pick')) openMedPicker(ev.target);
+  });
+  // Stock-name pickers: Escape/Tab close the list, Enter takes the first match (like picking it).
+  document.addEventListener('keydown', function (ev) {
+    var el = ev.target;
+    if (!el.hasAttribute || !el.hasAttribute('data-med-pick')) return;
+    if (ev.key === 'Escape' || ev.key === 'Tab') { if (state.portal) closePortal(); return; }
+    if (ev.key === 'Enter') {
+      ev.preventDefault();
+      var first = state.portal && state.portal.triggerId === el.id ? state.portal.options[0] : null;
+      if (first && state.portal.onPick) { var pick = state.portal.onPick; closePortal(); pick(first.value); }
+    }
+  });
   document.addEventListener('focusout', function (ev) {
     var el = ev.target;
     var bindPath = el.getAttribute && el.getAttribute('data-bind');
