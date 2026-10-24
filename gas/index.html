@@ -910,11 +910,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (screenId !== 'stock' && state.stock.panel) closeStockPanel();
     if (screenId !== 'deposits' && state.deposits.panel) { state.deposits.panel = null; renderDepositPanel(); }
     render();
-    if (screenId === 'dash' && !state.dash.data) loadDash();
+    // Screens fed by other screens' writes (dashboard, records, stock, withdrawals) reload on every visit;
+    // the previous data stays on screen until the new one lands.
+    if (screenId === 'dash') loadDash();
     if (screenId === 'patients' && !state.patients.list) loadPatients();
-    if (screenId === 'records' && !state.records.list) loadRecords();
-    if (screenId === 'stock') { if (state.stock.type === 'procedure') { if (!state.stock.procedures) loadProcedures(); } else if (!state.stock.list) loadStock(); }
-    if (screenId === 'withdraw' && !state.withdraw.list) loadWithdrawals();
+    if (screenId === 'records') { loadRecords(); if (state.records.view === 'calendar') loadCalendar(); }
+    if (screenId === 'stock') { if (state.stock.type === 'procedure') { if (!state.stock.procedures) loadProcedures(); } else loadStock(); }
+    if (screenId === 'withdraw') loadWithdrawals();
     if (screenId === 'deposits') loadDeposits(); // always fresh: records/withdrawals elsewhere change it
     if (screenId === 'expense' && !state.expense.list) loadExpenses();
     if (screenId === 'promotions' && !state.promotions.list) loadPromotions();
