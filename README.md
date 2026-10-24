@@ -2,7 +2,7 @@
 
 เว็บแอประบบบริหารคลินิกความงาม สร้างบน Google Apps Script ใช้ Google Sheets เป็นฐานข้อมูลและ Google Drive เก็บไฟล์
 
-- Apps Script ID: `1vj1ELR84U-9pDrc4psyooYzwVYDp1JI41K025VvaC0xKD_SlC7oXGhGi`
+- Apps Script ID: `15piIuNOXwoSzoIrlmmezvNJpR5vI54KIPCY4nRxPiPt_jma4n6dPyJWo`
 - ซอร์สโค้ดอยู่ใน [`gas/`](gas) (ดึงมาด้วย `clasp pull`)
 
 ## โครงสร้างไฟล์
