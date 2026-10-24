@@ -178,6 +178,8 @@ button,input,textarea,select{font-family:inherit}
 .bar-fill{height:100%;border-radius:6px}
 .chart-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,1fr);gap:16px;align-items:stretch}
 .chart-row{border-top:1px solid var(--border);padding-top:22px}
+.chart-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.chart-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 
 /* ===================== Calendar ===================== */
 .cal-wrap{flex:1 1 620px;min-width:0;padding:20px;height:calc(100vh - 208px);min-height:480px;display:flex;flex-direction:column}
@@ -224,8 +226,11 @@ button,input,textarea,select{font-family:inherit}
   .nav-item,.preview-item{justify-content:center}
   .user-card{justify-content:center}
 }
+@media (max-width:1100px){
+  .chart-3{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 @media (max-width:720px){
-  .chart-grid{grid-template-columns:1fr}
+  .chart-grid,.chart-2,.chart-3{grid-template-columns:1fr}
   .header{padding:14px 14px}
   .content{padding:16px 14px 40px}
   .page-title,.page-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -330,6 +335,7 @@ button,input,textarea,select{font-family:inherit}
 #stockPanelRoot .side-panel-backdrop{z-index:1900}
 /* Stock table: cells never wrap; the wrapper scrolls sideways instead (รายการยา has 11-12 columns). */
 .stock-table th,.stock-table td{white-space:nowrap;padding-left:12px;padding-right:12px}
+.vmid th,.vmid td{vertical-align:middle}
 </style>
 </head>
 <body>
@@ -344,7 +350,10 @@ button,input,textarea,select{font-family:inherit}
 <div id="recordPanelRoot"></div>
 <div id="dayPanelRoot"></div>
 <div id="stockPanelRoot"></div>
+<div id="depositPanelRoot"></div>
 <div id="pdfPreviewRoot"></div>
+<div id="orderPanelRoot"></div>
+<div id="receiptPreviewRoot"></div>
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script>
 var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
@@ -514,19 +523,19 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // below) — typing only populates these; the table itself only reloads
     // once a suggestion is picked.
     patients: { list: null, page: 1, q: '', panel: null, photoProgress: null, searchSuggest: [] },
-    records: { list: null, page: 1, q: '', doctorId: '', visitStatus: '', view: 'list', calYear: new Date().getFullYear(), calMonth: new Date().getMonth() + 1, calData: null, panel: null, dayPanel: null, opdPhotoUrl: null, opdPhotoProgress: null, searchSuggest: [], reloading: false },
+    records: { list: null, page: 1, q: '', doctorId: '', visitStatus: 'dispensed', view: 'list', calYear: new Date().getFullYear(), calMonth: new Date().getMonth() + 1, calData: null, panel: null, dayPanel: null, opdPhotoUrl: null, opdPhotoProgress: null, searchSuggest: [], reloading: false },
     // `type` is the active tab: 'supply' (รายการเวชภัณฑ์) | 'medicine' (รายการยา) | 'procedure' (รายการหัตถการ).
     // `panel` is the open history side panel: {item, log} (log null while loading).
     // `procedures` is the รายการหัตถการ tab's full list (filtered/paged client-side).
     stock: { type: 'supply', list: null, page: 1, q: '', category: '', searchSuggest: [], reloading: false, panel: null, procedures: null, procQ: '', procPage: 1 },
-    deposits: { list: null, q: '', filter: '', page: 1 },
+    deposits: { list: null, q: '', filter: '', page: 1, panel: null },
     // Round 19 item 2: `reloading`/`orderReloading` drive a dim-in-place
     // transition on the table (instead of a hard content-swap with zero
     // feedback in between) while a dropdown-filter-triggered reload is in
     // flight — see the dd-* action handlers and the loadX() functions below.
-    expense: { tab: 'expense', list: null, page: 1, q: '', category: '', orders: null, orderPage: 1, orderQ: '', orderCategory: '', searchSuggest: [], orderSearchSuggest: [], reloading: false, orderReloading: false },
+    expense: { tab: 'expense', list: null, page: 1, q: '', category: '', orders: null, orderPanel: null, orderPage: 1, orderQ: '', orderCategory: '', searchSuggest: [], orderSearchSuggest: [], reloading: false, orderReloading: false },
     promotions: { list: null, q: '' },
-    withdraw: { list: null, page: 1, q: '', reloading: false },
+    withdraw: { list: null, page: 1, q: '', visitStatus: 'dispensed', reloading: false, photoUrls: {}, photoProgress: null },
     // รายงาน: `tab` 'daily' | 'sales'; `data` stays null until "ดูรายงาน" is pressed
     // (and is cleared when the tab changes); `preview` is the open PDF preview.
     report: { tab: 'daily', salesId: '', from: todayStr().slice(0, 8) + '01', to: todayStr(), data: null, dataTab: null, loading: false, page: 1, preview: null },
@@ -899,6 +908,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (target && target.adminOnly && !isAdmin()) return;
     state.screen = screenId;
     if (screenId !== 'stock' && state.stock.panel) closeStockPanel();
+    if (screenId !== 'deposits' && state.deposits.panel) { state.deposits.panel = null; renderDepositPanel(); }
     render();
     if (screenId === 'dash' && !state.dash.data) loadDash();
     if (screenId === 'patients' && !state.patients.list) loadPatients();
@@ -1048,7 +1058,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
   var SEARCH_SCOPES = {
     patients: { qPath: 'patients.q', suggestPath: 'patients.searchSuggest', placeholder: 'ค้นหาชื่อ เบอร์โทร หรือ HN...', suggestFn: patientLikeSuggestions, commit: function () { state.patients.page = 1; loadPatients(); } },
-    records: { qPath: 'records.q', suggestPath: 'records.searchSuggest', placeholder: 'ค้นหาชื่อคนไข้/เบอร์โทร...', suggestFn: patientLikeSuggestions, commit: function () { state.records.page = 1; loadRecords(); } },
+    records: { qPath: 'records.q', suggestPath: 'records.searchSuggest', placeholder: 'ค้นหาชื่อคนไข้/เบอร์โทร/HN...', suggestFn: patientLikeSuggestions, commit: function () { state.records.page = 1; loadRecords(); } },
     stock: { qPath: 'stock.q', suggestPath: 'stock.searchSuggest', placeholder: 'ค้นหาสินค้า...', suggestFn: stockSuggestions, commit: function () { state.stock.page = 1; loadStock(); } },
     expense: { qPath: 'expense.q', suggestPath: 'expense.searchSuggest', placeholder: 'ค้นหารายการ...', suggestFnAsync: expenseSuggestionsAsync, commit: function () { state.expense.page = 1; loadExpenses(); } },
     order: { qPath: 'expense.orderQ', suggestPath: 'expense.orderSearchSuggest', placeholder: 'ค้นหาผู้จำหน่าย/รายการสินค้า...', suggestFnAsync: orderSuggestionsAsync, commit: function () { state.expense.orderPage = 1; loadOrders(); } }
@@ -1228,7 +1238,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
    * to fill the card.
    */
   function monthlyTrendChart(rows) {
-    var title = 'รายได้ VS ค่าใช้จ่าย VS กำไร รายเดือน';
+    var title = 'รายได้ VS รายจ่าย VS กำไร รายเดือน';
     if (!rows || !rows.length) return chartCard(title, '<div class="empty-state">ไม่มีข้อมูล</div>');
     var n = rows.length;
     var allVals = [0];
@@ -1237,7 +1247,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var minVal = Math.min.apply(null, allVals);
     if (maxVal === minVal) maxVal += 1;
     var totalRange = maxVal - minVal;
-    var CH = 120, LABEL_H = 38, PAD_TOP = 10, BAR_W = 8, BAR_GAP = 2;
+    var CH = 120, LABEL_H = 38, PAD_TOP = 10, BAR_GAP = 2;
+    // Bar width follows the number of months shown: each month gets an equal
+    // slot and its two bars fill ~60% of it (capped, so a single month isn't a slab).
+    var BAR_W = 'min(44px,' + (60 / n / 2).toFixed(3) + '%)';
     var plotH = CH - PAD_TOP;
     var yPos = function (v) { return PAD_TOP + ((maxVal - v) / totalRange) * plotH; };
     var yZero = yPos(0);
@@ -1245,8 +1258,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       var leftPct = n > 1 ? ((i + 0.5) / n) * 100 : 50;
       var revTop = yPos(Number(r.revenue) || 0), expTop = yPos(Number(r.expense) || 0);
       return '' +
-        '<div title="รายได้ ' + esc(monthLabelFull(r.month)) + ': ' + money(r.revenue) + '" style="position:absolute;left:calc(' + leftPct + '% - ' + (BAR_W + BAR_GAP / 2) + 'px);top:' + revTop + 'px;width:' + BAR_W + 'px;height:' + Math.max(0, yZero - revTop) + 'px;background:var(--green);border-radius:2px 2px 0 0"></div>' +
-        '<div title="ค่าใช้จ่าย ' + esc(monthLabelFull(r.month)) + ': ' + money(r.expense) + '" style="position:absolute;left:calc(' + leftPct + '% + ' + (BAR_GAP / 2) + 'px);top:' + expTop + 'px;width:' + BAR_W + 'px;height:' + Math.max(0, yZero - expTop) + 'px;background:var(--pink);border-radius:2px 2px 0 0"></div>';
+        '<div title="รายได้ ' + esc(monthLabelFull(r.month)) + ': ' + money(r.revenue) + '" style="position:absolute;left:calc(' + leftPct + '% - ' + BAR_W + ' - ' + (BAR_GAP / 2) + 'px);top:' + revTop + 'px;width:' + BAR_W + ';height:' + Math.max(0, yZero - revTop) + 'px;background:var(--green);border-radius:2px 2px 0 0"></div>' +
+        '<div title="รายจ่าย ' + esc(monthLabelFull(r.month)) + ': ' + money(r.expense) + '" style="position:absolute;left:calc(' + leftPct + '% + ' + (BAR_GAP / 2) + 'px);top:' + expTop + 'px;width:' + BAR_W + ';height:' + Math.max(0, yZero - expTop) + 'px;background:var(--pink);border-radius:2px 2px 0 0"></div>';
     }).join('');
     var points = rows.map(function (r, i) {
       var x = n > 1 ? ((i + 0.5) / n) * 1000 : 500;
@@ -1272,7 +1285,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     '</div>';
     var legend = '<div style="display:flex;gap:12px;font-size:11px;color:var(--muted);flex-wrap:wrap;justify-content:flex-end">' +
       '<span><span style="display:inline-block;width:8px;height:8px;background:var(--green);border-radius:2px;margin-right:4px;vertical-align:middle"></span>รายได้</span>' +
-      '<span><span style="display:inline-block;width:8px;height:8px;background:var(--pink);border-radius:2px;margin-right:4px;vertical-align:middle"></span>ค่าใช้จ่าย</span>' +
+      '<span><span style="display:inline-block;width:8px;height:8px;background:var(--pink);border-radius:2px;margin-right:4px;vertical-align:middle"></span>รายจ่าย</span>' +
       '<span><span style="display:inline-block;width:14px;height:2px;background:var(--navy,#2D4A6B);border-radius:1px;margin-right:4px;vertical-align:middle"></span>กำไร</span>' +
     '</div>';
     return '<div class="card" style="padding:16px;border:1px solid var(--border);border-radius:var(--r)">' +
@@ -1299,17 +1312,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (!d) return '<div class="empty-state"><span class="spin"></span> กำลังโหลดข้อมูล...</div>';
     var s = d.stats;
     var cards = '' +
+      // รายได้ = จากลูกค้า + จากเซลล์ · รายจ่าย = ค่าใช้จ่าย + จัดซื้อ + ส่วนแบ่งแพทย์ + ส่วนแบ่งเซลล์
       statCard('payments', 'รายได้รวม', money(s.totalRevenue)) +
-      statCard('receipt_long', 'ค่าใช้จ่าย', money(s.totalExpense)) +
-      statCard('trending_up', 'กำไร', money(s.profit)) +
-      statCard('percent', '%กำไร', Math.round(s.profitPct) + '%') +
-      statCard('groups', 'จำนวนลูกค้า', num(s.customerCount) + ' ราย') +
-      statCard('storefront', 'ยอดรายได้คลินิก', money(s.clinicRevenue)) +
-      statCard('sell', 'ยอดรายได้เซลล์', money(s.salesRevenue)) +
-      // Round 16 item 4: replaces the old "รายได้อื่นๆ" (otherRevenue) card —
-      // stats.otherRevenue is still computed server-side (Code.gs), just no
-      // longer shown here.
-      statCard('stethoscope', 'ยอดรายได้ส่วนแบ่งแพทย์', money(s.doctorRevenue));
+      statCard('receipt_long', 'รายจ่ายรวม', money(s.totalExpense)) +
+      statCard('trending_up', 'กำไร', money(s.profit) + '<div style="font-size:13px;font-weight:600;color:var(--muted);margin-top:2px">%กำไร ' + pctLabel(s.profitPct) + '</div>') +
+      statCard('groups', 'จำนวนคนไข้', num(s.customerCount) + ' ราย');
     return '' +
       '<div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">' +
         '<input type="date" id="dashFrom" value="' + esc(state.dash.from) + '" style="' + inputStyle + ';width:auto" data-action-change="dash-range">' +
@@ -1317,18 +1324,18 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<input type="date" id="dashTo" value="' + esc(state.dash.to) + '" style="' + inputStyle + ';width:auto" data-action-change="dash-range">' +
       '</div>' +
       '<div class="grid-fit" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">' + cards + '</div>' +
-      '<div class="chart-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:14px">' +
-        monthlyTrendChart(d.monthlyTrend) +
-        donutChart('สัดส่วนรายได้รายประเภท', d.revenueByType.map(function (r) { return { label: r.label, v: r.value }; })) +
-        barChart('รายได้แพทย์', d.doctorRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
-        donutChart('สัดส่วนรายได้แพทย์', d.doctorRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
-        barChart('รายได้เซลล์', d.salesRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
-        donutChart('สัดส่วนรายได้เซลล์', d.salesRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
-        barChart('ค่าใช้จ่ายรายหมวดหมู่', d.expenseByCategory.map(function (r) { return { label: r.label, v: r.value }; })) +
-        donutChart('สัดส่วนค่าใช้จ่ายรายหมวดหมู่', d.expenseByCategory.map(function (r) { return { label: r.label, v: r.value }; })) +
-        // Round 16 item 5.
-        barChart('รายได้รายโปรโมชัน', d.promoRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
-        donutChart('สัดส่วนรายได้รายโปรโมชัน', d.promoRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
+      // Charts: รายเดือน (only months that have data) / รายได้ + รายจ่ายรายหมวดหมู่ / สัดส่วนส่วนแบ่งแพทย์ + ส่วนแบ่งเซลล์ + รายได้รายโปรโมชัน
+      '<div style="display:flex;flex-direction:column;gap:14px">' +
+        monthlyTrendChart((d.monthlyTrend || []).filter(function (m) { return (Number(m.revenue) || 0) || (Number(m.expense) || 0); })) +
+        '<div class="chart-2">' +
+          barChart('รายได้รายหมวดหมู่', d.revenueByType.map(function (r) { return { label: r.label, v: r.value }; })) +
+          barChart('รายจ่ายรายหมวดหมู่', d.expenseByCategory.map(function (r) { return { label: r.label, v: r.value }; })) +
+        '</div>' +
+        '<div class="chart-3">' +
+          donutChart('สัดส่วนส่วนแบ่งแพทย์', d.doctorRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
+          donutChart('สัดส่วนส่วนแบ่งเซลล์', d.salesRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
+          donutChart('สัดส่วนรายได้รายโปรโมชัน', d.promoRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
+        '</div>' +
       '</div>';
   }
   function onDashRangeChange() {
@@ -1718,24 +1725,41 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return toolbar + (state.records.view === 'list' ? recordsListView() : recordsCalendarView());
   }
 
+  /** The จัดการ menu of a record row: pay (while unpaid), print, edit and (admin) delete. */
+  function openRecordActions(id) {
+    var r = ((state.records.list && state.records.list.items) || []).filter(function (x) { return x.id === id; })[0];
+    if (!r) return;
+    var triggerId = 'recAct_' + id;
+    if (state.portal && state.portal.triggerId === triggerId) { closePortal(); return; } // second click closes
+    var opts = [];
+    if (r.status === 'unpaid') opts.push({ value: 'pay', label: 'ชำระเงิน', icon: 'payments' });
+    opts.push({ value: 'receipt', label: 'พิมพ์ใบเสร็จ', icon: 'print' }, { value: 'edit', label: 'แก้ไข', icon: 'edit' });
+    if (isAdmin()) opts.push({ value: 'delete', label: 'ลบ', icon: 'delete', danger: true });
+    openPortal(triggerId, opts, function (v) {
+      if (v === 'pay') payRecordAction(id);
+      else if (v === 'receipt') issueReceiptAction(id);
+      else if (v === 'edit') editRecordModal(id);
+      else if (v === 'delete') deleteRecordConfirm(id);
+    }, null);
+  }
   function recordsListView() {
-    var L = state.records.list;
+    var L = state.records.list, openId = state.records.panel && state.records.panel.id;
     var rows = !L ? '<tr><td colspan="7" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
       (!L.items.length ? '<tr><td colspan="7" class="empty-state">ไม่พบรายการ</td></tr>' :
       L.items.map(function (r) {
-        return '<tr>' +
-          '<td>' + esc(r.date) + '</td><td><a href="javascript:void(0)" data-action="view-record" data-arg="' + esc(r.id) + '" style="color:var(--accent);font-weight:600;text-decoration:none">' + esc(r.patientName) + '</a>' + patientNicknameSuffix(r.patientId) + '</td>' +
-          '<td>' + (r.doctorName ? esc(r.doctorName) : '<span style="color:var(--muted)">-</span>') + '</td><td>' + money(r.totalCollected != null ? r.totalCollected : r.amount) + '</td><td>' + statusBadge(r.status) + '</td><td>' + visitStatusBadge(r.visitStatus) + '</td>' +
-          '<td style="text-align:right;white-space:nowrap">' +
-            (r.status === 'unpaid' ? '<button class="btn btn-primary" data-action="pay-record" data-arg="' + esc(r.id) + '" title="ชำระเงิน"><span class="ms">payments</span></button> ' : '') +
-            '<button class="btn" data-action="issue-receipt" data-arg="' + esc(r.id) + '"><span class="ms">print</span></button> ' +
-            '<button class="btn" data-action="edit-record" data-arg="' + esc(r.id) + '"><span class="ms">edit</span></button> ' +
-            (isAdmin() ? '<button class="btn" data-action="delete-record" data-arg="' + esc(r.id) + '"><span class="ms">delete</span></button>' : '') +
-          '</td></tr>';
+        // The whole row opens the record's details in the right-hand panel; the จัดการ button has its own action.
+        return '<tr data-action="view-record" data-arg="' + esc(r.id) + '" style="cursor:pointer' + (openId === r.id ? ';background:var(--hover-bg)' : '') + '">' +
+          '<td style="padding:10px 12px;white-space:nowrap">' + esc(r.date) + '</td>' +
+          '<td style="white-space:nowrap">' + (r.hn ? esc(r.hn) : '<span style="color:var(--muted)">-</span>') + '</td>' +
+          '<td><span style="color:var(--accent);font-weight:600">' + esc(r.patientName) + '</span>' + patientNicknameSuffix(r.patientId) + '</td>' +
+          '<td>' + (r.doctorName ? esc(r.doctorName) : '<span style="color:var(--muted)">-</span>') + '</td>' +
+          '<td style="white-space:nowrap">' + money(r.totalCollected != null ? r.totalCollected : r.amount) + '</td>' +
+          '<td>' + visitStatusBadge(r.visitStatus) + '</td>' +
+          '<td style="text-align:right;white-space:nowrap"><button id="recAct_' + esc(r.id) + '" class="btn" data-action="dd-record-actions" data-arg="' + esc(r.id) + '">จัดการ <span class="ms">expand_more</span></button></td></tr>';
       }).join(''));
     return listCardWrap(
-      '<table class="table" style="width:100%;border-collapse:collapse">' +
-        '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">วันที่</th><th>คนไข้</th><th>แพทย์</th><th>ยอดเงิน</th><th>การชำระ</th><th>สถานะการรักษา</th><th></th></tr></thead>' +
+      '<table class="table vmid" style="width:100%;border-collapse:collapse">' +
+        '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">วันที่</th><th>HN</th><th>คนไข้</th><th>แพทย์</th><th>ยอดเงิน</th><th>สถานะการรักษา</th><th></th></tr></thead>' +
         '<tbody>' + rows + '</tbody></table>', state.records.reloading) + pagerHtml(L, 'records-page');
   }
 
@@ -1757,7 +1781,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       // labels — clicking anywhere in the day cell (including on one of these)
       // only opens the day-summary panel via the cell's own "view-day" action.
       var evHtml = events.slice(0, 3).map(function (e) {
-        return '<div style="font-size:10px;padding:2px 4px;border-radius:4px;background:' + (STATUS_COLOR[e.status] || 'var(--accent-soft)') + ';margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(e.patientName) + '</div>';
+        return '<div style="font-size:10px;padding:2px 4px;border-radius:4px;background:' + VISIT_STATUS_COLOR[e.visitStatus === 'completed' ? 'completed' : 'dispensed'] + ';margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(e.patientName) + '</div>';
       }).join('');
       cells += '<div class="cal-cell" data-action="view-day" data-arg="' + dateStr + '" style="min-height:80px;border:1px solid var(--border-lighter);padding:5px;font-size:11px;cursor:pointer" title="ดูสรุปยอดวันที่ ' + dateStr + '">' +
         '<div style="color:var(--muted);margin-bottom:3px">' + d + '</div>' + evHtml +
@@ -1774,7 +1798,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<button class="btn" data-action="cal-next"><span class="ms">chevron_right</span></button>' +
       '</div>' +
       '<div style="display:flex;gap:12px;margin-bottom:10px;font-size:11px;color:var(--muted)">' +
-        Object.keys(STATUS_LABEL).map(function (s) { return '<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + STATUS_COLOR[s] + ';margin-right:4px;vertical-align:middle"></span>' + STATUS_LABEL[s] + '</span>'; }).join('') +
+        Object.keys(VISIT_STATUS_LABEL).map(function (s) { return '<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + VISIT_STATUS_COLOR[s] + ';margin-right:4px;vertical-align:middle"></span>' + VISIT_STATUS_LABEL[s] + '</span>'; }).join('') +
       '</div>' +
       '<div style="display:grid;grid-template-columns:repeat(7,1fr)">' + dow + '</div>' +
       '<div class="cal-grid" style="display:grid;grid-template-columns:repeat(7,1fr)">' + cells + '</div>' +
@@ -1832,17 +1856,47 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       call('deleteRecord', session.token, id).then(function () { toast('success', 'ลบแล้ว'); loadRecords(); refreshStockSuggestCache(); });
     });
   }
+  /** พิมพ์ใบเสร็จ: opens the receipt in a preview (see renderReceiptPreview) with พิมพ์ / บันทึกเป็น PDF. */
   function issueReceiptAction(id) {
-    call('issueReceipt', session.token, id).then(function (res) {
-      window.open(res.data.url, '_blank');
+    call('getReceiptHtml', session.token, id).then(function (res) {
+      if (!res.ok) return;
+      state.receiptPreview = { id: id, receiptNo: res.data.receiptNo, html: res.data.html };
+      renderReceiptPreview();
       if (state.records.list) loadRecords();
     });
   }
+  var receiptPreviewEl = document.getElementById('receiptPreviewRoot');
+  function renderReceiptPreview() {
+    var p = state.receiptPreview;
+    if (!p) { receiptPreviewEl.innerHTML = ''; return; }
+    receiptPreviewEl.innerHTML =
+      '<div data-action="close-receipt-preview-bg" style="position:fixed;inset:0;z-index:3000;background:rgba(15,27,61,.55);display:flex;flex-direction:column">' +
+        '<div style="flex:none;display:flex;align-items:center;gap:10px;padding:12px 18px;background:var(--surface);box-shadow:0 2px 12px rgba(15,27,61,.15);flex-wrap:wrap">' +
+          '<span class="ms" style="color:var(--muted)">receipt_long</span>' +
+          '<div style="flex:1;min-width:140px"><div style="font-size:14px;font-weight:700">ตัวอย่างใบเสร็จ</div>' +
+          '<div style="font-size:11.5px;color:var(--muted)">' + esc(p.receiptNo) + '</div></div>' +
+          '<button class="btn" data-action="close-receipt-preview">ปิด</button>' +
+          '<button class="btn" data-action="receipt-preview-pdf"><span class="ms">download</span> บันทึกเป็น PDF</button>' +
+          '<button class="btn btn-primary" data-action="receipt-preview-print"><span class="ms">print</span> พิมพ์</button>' +
+        '</div>' +
+        '<div data-action="close-receipt-preview-bg" style="flex:1;min-height:0;display:flex;justify-content:center;padding:16px">' +
+          '<iframe id="receiptPreviewFrame" title="ใบเสร็จ" style="width:min(880px,100%);height:100%;border:none;border-radius:var(--r-sm);background:#fff;box-shadow:0 10px 40px rgba(0,0,0,.35)"></iframe>' +
+        '</div>' +
+      '</div>';
+    document.getElementById('receiptPreviewFrame').srcdoc = p.html;
+  }
+  function closeReceiptPreview() { state.receiptPreview = null; renderReceiptPreview(); }
+  function receiptFrameCall(fn) {
+    var f = document.getElementById('receiptPreviewFrame');
+    if (f && f.contentWindow && typeof f.contentWindow[fn] === 'function') f.contentWindow[fn]();
+  }
+  document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && state.receiptPreview) closeReceiptPreview(); });
 
   /* ---- Record detail slide-out panel (from the Records table/calendar) ---- */
   function openRecordPanel(id) {
     state.records.panel = { loading: true, id: id, record: null, opdPhotoUrl: null };
     renderRecordPanel();
+    if (state.screen === 'records') render(); // highlight the selected row
     call('getRecord', session.token, id, gsOpts({ quiet: true })).then(function (res) {
       if (!res.ok) { state.records.panel = null; renderRecordPanel(); return; }
       state.records.panel = { loading: false, id: id, record: res.data, opdPhotoUrl: null };
@@ -1855,7 +1909,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       }
     }, function () { state.records.panel = null; renderRecordPanel(); });
   }
-  function closeRecordPanel() { state.records.panel = null; renderRecordPanel(); }
+  function closeRecordPanel() { state.records.panel = null; renderRecordPanel(); if (state.screen === 'records') render(); }
 
   /** Small "label above / value below" cell used inside the record panel's
    *  info-grid card. Icon is a Material Symbols ligature name, optional.
@@ -1916,8 +1970,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       chipGroup('medication', 'รายการยาจากใบเบิก (ไม่คิดเงิน)', r.withdrawItems, function (m) {
         return esc(m.name) + ' ×' + esc(m.qtyDispensed) + ' (ใช้ ' + esc(m.qtyUsed) + ' · ฝาก ' + esc(m.qtyDeposit) + (m.expiry ? ' หมดอายุ ' + esc(m.expiry) : '') + ')';
       }) +
-      chipGroup('medication', 'รายการยาเบิกเพิ่ม', r.medicineItems, function (m) {
-        return esc(m.name) + ('qtyDispensed' in m ? ' ×' + esc(m.qtyDispensed) + ' (ใช้ ' + esc(m.qtyUsed) + ' · ฝาก ' + esc(m.qtyDeposit) + (m.expiry ? ' หมดอายุ ' + esc(m.expiry) : '') + ')' : '') + ' · ' + money(m.amount);
+      chipGroup('medication', 'รายการยาเบิกเพิ่ม' + (r.medicineAmount ? '' : ' (ไม่คิดเงิน)'), r.medicineItems, function (m) {
+        return esc(m.name) + ('qtyDispensed' in m ? ' ×' + esc(m.qtyDispensed) + ' (ใช้ ' + esc(m.qtyUsed) + ' · ฝาก ' + esc(m.qtyDeposit) + (m.expiry ? ' หมดอายุ ' + esc(m.expiry) : '') + ')' : '') + (Number(m.amount) > 0 ? ' · ' + money(m.amount) : '');
       }) +
       chipGroup('medication', 'รายการถือยาเข้า', r.ownMedItems, function (m) { return esc(m.name) + ' ×' + esc(m.qty); }) +
       chipGroup('medication', 'รายการใช้ยาฝาก', r.depositUseItems, function (m) { return esc(m.name) + ' ×' + esc(m.qty); }) +
@@ -1947,7 +2001,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var body = '' +
       '<div class="day-summary-header" style="display:flex;justify-content:space-between;align-items:flex-start;flex:none">' +
         '<div><div style="font-size:16px;font-weight:700">' + esc(r.patientName) + '</div>' +
-        '<div style="font-size:12px;opacity:.85;margin-top:2px">' + esc(r.phone) + ' · ' + esc(r.date) + '</div></div>' +
+        '<div style="font-size:12px;opacity:.85;margin-top:2px">' + (r.hn ? 'HN ' + esc(r.hn) + ' · ' : '') + esc(r.phone) + ' · ' + esc(r.date) + '</div></div>' +
         '<button data-action="close-record-panel" style="border:none;background:none;cursor:pointer;color:#fff"><span class="ms">close</span></button>' +
       '</div>' +
       '<div style="padding:14px 22px 0;display:flex;gap:6px;flex-wrap:wrap;flex:none">' +
@@ -2336,17 +2390,16 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var r2 = function (n) { return Math.round(n * 100) / 100; };
     var doctors = order.map(function (id) { return { id: id, doctor: byDoctor[id].doctor, raw: r2(byDoctor[id].raw) }; });
     var doctorShareRaw = r2(doctors.reduce(function (s, x) { return s + x.raw; }, 0));
-    var medicineAmount = (d.useMedicine ? (d.medicineItems || []) : []).reduce(function (s, l) { return s + (Number(l.amount) || 0); }, 0); // ยาเบิกเพิ่ม only
     var otherAmount = (d.useOther ? (d.otherItems || []) : []).reduce(function (s, l) { return s + (Number(l.amount) || 0); }, 0);
     var salesShare = r2(amount * salesPct / 100);
-    var totalNet = r2(amount + promoAmount + canula + medicineAmount + otherAmount);
+    var totalNet = r2(amount + promoAmount + canula + otherAmount); // ยาเบิกเพิ่ม is not charged
     return { salesShare: salesShare, doctors: doctors, doctorShareRaw: doctorShareRaw, totalNet: totalNet, clinicShare: r2(totalNet - salesShare - doctorShareRaw) };
   }
   /**
    * "รายละเอียดยอดรับชำระ" under the ยอดรับชำระ headline: ส่วนแบ่งแพทย์ (one row
    * per doctor) and ส่วนแบ่งเซลล์ — rows that come to 0 are left out — then
-   * ยอดส่วนแบ่งคลีนิค, which is everything else (ค่ายาเบิกเพิ่มและรายการอื่นๆ
-   * included; there is no supplier share any more).
+   * ยอดส่วนแบ่งคลีนิค, which is everything else (รายการอื่นๆ included; ยาเบิกเพิ่ม
+   * is not charged and there is no supplier share any more).
    */
   function sharePreviewInnerHtml(d) {
     var pv = previewShares(d);
@@ -2400,34 +2453,14 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
 
   /* ---- Record modal: ยา zone helpers ---- */
-  var DISPENSE_COLS = 'minmax(170px,1fr) 84px 84px 138px 112px 106px 40px';
+  var DISPENSE_COLS = 'minmax(170px,1fr) 84px 84px 138px 40px';
   function medicineStockItem(itemId) { return stockItemsOfType('medicine').filter(function (x) { return x.id === itemId; })[0]; }
-  /**
-   * ราคาขาย tier for `qty` units: {tier, price} of the largest tier <= qty
-   * that has a price, else the smallest priced tier; {tier:null, price:null}
-   * when the item has no sale prices at all.
-   */
-  function medicineTierFor(itemId, qty) {
-    var s = medicineStockItem(itemId);
-    var prices = (s && s.prices) || [];
-    var pick = null, first = null;
-    STOCK_PRICE_TIERS.forEach(function (t, i) {
-      if (prices[i] == null) return;
-      if (!first) first = { tier: t, price: prices[i] };
-      if (t <= (Number(qty) || 0)) pick = { tier: t, price: prices[i] };
-    });
-    return pick || first || { tier: null, price: null };
-  }
-  function medicineUnitPrice(itemId, qty) { return medicineTierFor(itemId, qty).price; }
   /** The parts of dispense row `i` that change while typing, keyed by element-id prefix (see patchDispenseRow). */
   function dispenseDynamicHtml(line, i) {
     var s = line.itemId ? medicineStockItem(line.itemId) : null;
     var unit = s && s.unit ? s.unit : '';
     var qd = Number(line.qtyDispensed) || 0, qu = Number(line.qtyUsed) || 0;
     var warn = function (t) { return '<span style="color:var(--red-dark)">' + esc(t) + '</span>'; };
-    var tier = line.itemId ? medicineTierFor(line.itemId, qd) : null;
-    var priceCap = !tier ? '' : (tier.price == null ? warn('ยังไม่ได้ตั้งราคาขาย') :
-      (Number(line.unitPrice) === tier.price ? '@ ราคา ' + tier.tier + ' ชิ้น' : 'กำหนดเอง (@ ราคา ' + tier.tier + ' ชิ้น = ' + num(tier.price) + ')'));
     var nameCap = (line.itemId ? esc(s ? (s.category || '') : '') : (String(line.name || '').trim() ? warn('เลือกยาจากรายการสต๊อก') : 'พิมพ์เพื่อค้นหายา'));
     return {
       dispNameCap: nameCap,
@@ -2438,33 +2471,21 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         ? '<span class="tag-badge" style="background:var(--green-soft);color:var(--green-dark);font-size:12.5px">' + esc(line.qtyDeposit) + (unit ? ' ' + esc(unit) : '') + '</span>' +
           '<input type="date" value="' + esc(line.expiry || '') + '" data-bind="medicineItems.' + i + '.expiry" title="วันหมดอายุยาฝาก" style="' + inputStyle + ';padding:6px;margin-top:6px;font-size:12px">'
         : '<span style="color:var(--muted)">—</span>',
-      dispDepCap: line.qtyDeposit > 0 ? 'วันหมดอายุยาฝาก' : '',
-      dispPriceCap: priceCap,
-      dispNet: num(line.amount),
-      dispNetCap: qd ? esc(qd) + ' × ' + num(line.unitPrice) : ''
+      dispDepCap: line.qtyDeposit > 0 ? 'วันหมดอายุยาฝาก' : ''
     };
-  }
-  function dispenseTotalHtml(d) {
-    return num((d.medicineItems || []).reduce(function (s, l) { return s + (Number(l.amount) || 0); }, 0));
   }
   function recalcDispenseLine(line) {
     if (!('qtyDispensed' in line)) return;
     var qd = Number(line.qtyDispensed) || 0, qu = Number(line.qtyUsed) || 0;
     line.qtyDeposit = Math.max(0, Math.round((qd - qu) * 100) / 100);
-    line.amount = Math.round(qd * (Number(line.unitPrice) || 0) * 100) / 100;
+    line.unitPrice = 0; // ยาเบิกเพิ่ม is not charged
+    line.amount = 0;
   }
-  /** Updates one dispense row's computed cells (and its ราคาต่อหน่วย input when auto-set) without a render, so the caret stays put. */
-  function patchDispenseRow(i, priceChanged) {
+  /** Updates one dispense row's computed cells without a render, so the caret stays put. */
+  function patchDispenseRow(i) {
     var line = state.draft.medicineItems[i];
     var parts = dispenseDynamicHtml(line, i);
     Object.keys(parts).forEach(function (k) { var el = document.getElementById(k + i); if (el) el.innerHTML = parts[k]; });
-    var totalEl = document.getElementById('dispTotal');
-    if (totalEl) totalEl.innerHTML = dispenseTotalHtml(state.draft);
-    if (priceChanged) {
-      var priceEl = document.querySelector('[data-bind="medicineItems.' + i + '.unitPrice"]');
-      if (priceEl) priceEl.value = line.unitPrice == null ? '' : line.unitPrice;
-    }
-    updateRecordPreview();
   }
   /**
    * What each ยาฝาก item can still give this record: {itemId: {qty, name}} —
@@ -2689,10 +2710,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     };
     var gridRow = function (cols, cells) { return '<div style="display:grid;grid-template-columns:' + cols + ';gap:6px;align-items:center;margin-bottom:6px">' + cells.join('') + '</div>'; };
 
-    // รายการเบิกยาหน้าคลีนิค as a bordered table: ยาจากสต๊อกยา | จำนวนที่เบิก
-    // (ตัดสต๊อก) | จำนวนที่ใช้ | จำนวนฝาก (= เบิก - ใช้, เข้ายาฝากของลูกค้า) |
-    // ราคาต่อหน่วย (from the ราคาขาย tier for the dispensed qty, editable; its
-    // caption says which tier) | ราคาสุทธิ (= เบิก × ราคาต่อหน่วย, charged).
+    // รายการยาเบิกเพิ่ม as a bordered table: ยาจากสต๊อกยา | จำนวนที่เบิก
+    // (ตัดสต๊อก) | จำนวนที่ใช้ | จำนวนฝาก (= เบิก - ใช้, เข้ายาฝากของลูกค้า).
+    // Not charged — the customer pays the sales person for ยา directly.
     // Every computed cell/caption has an id so patchDispenseRow can update
     // it while typing without a render. Lines saved before this table
     // existed ({name, amount}) show read-only.
@@ -2708,13 +2728,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;margin-bottom:8px">' +
         '<div style="display:grid;grid-template-columns:' + DISPENSE_COLS + ';gap:8px;padding:8px 12px;background:var(--hover-bg)">' +
           headCell('รายการยา', 'จากสต๊อกยา') + headCell('จำนวนที่เบิก', 'ตัดสต๊อก') + headCell('จำนวนที่ใช้', 'ใช้วันนี้') +
-          headCell('จำนวนฝาก', 'เบิก − ใช้ · วันหมดอายุ', 'center') + headCell('ราคาต่อหน่วย', 'ตามขั้นราคาขาย') + headCell('ราคาสุทธิ', 'เบิก × ราคา', 'right') + '<div></div>' +
+          headCell('จำนวนฝาก', 'เบิก − ใช้ · วันหมดอายุ', 'center') + '<div></div>' +
         '</div>' +
         d.medicineItems.map(function (m, i) {
           var p = 'medicineItems.' + i + '.';
           if (!('qtyDispensed' in m)) {
-            return dispRow(['<div style="grid-column:1/6;font-size:13px;padding-top:9px">' + esc(m.name || 'ยา') + ' <span style="color:var(--muted);font-size:11px">(รายการเดิม)</span></div>',
-              dispCell('<div style="font-weight:700;padding-top:9px" id="dispNet' + i + '">' + num(m.amount) + '</div>', 'right'), removeBtn('remove-medicine-row', i)]);
+            return dispRow(['<div style="grid-column:1/5;font-size:13px;padding-top:9px">' + esc(m.name || 'ยา') + ' <span style="color:var(--muted);font-size:11px">(รายการเดิม)</span></div>',
+              removeBtn('remove-medicine-row', i)]);
           }
           var dyn = dispenseDynamicHtml(m, i);
           return dispRow([
@@ -2722,14 +2742,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
             dispCell(numInput(p + 'qtyDispensed', m.qtyDispensed) + dispCap('dispQdCap' + i, dyn.dispQdCap)),
             dispCell(numInput(p + 'qtyUsed', m.qtyUsed) + dispCap('dispQuCap' + i, dyn.dispQuCap)),
             dispCell('<div id="dispDep' + i + '" style="padding-top:8px">' + dyn.dispDep + '</div>' + dispCap('dispDepCap' + i, dyn.dispDepCap), 'center'),
-            dispCell(numInput(p + 'unitPrice', m.unitPrice, 'บาท') + dispCap('dispPriceCap' + i, dyn.dispPriceCap)),
-            dispCell('<div id="dispNet' + i + '" style="font-size:14px;font-weight:700;padding-top:9px">' + dyn.dispNet + '</div>' + dispCap('dispNetCap' + i, dyn.dispNetCap), 'right'),
             removeBtn('remove-medicine-row', i)
           ]);
         }).join('') +
-        '<div style="display:flex;justify-content:flex-end;gap:12px;align-items:baseline;padding:10px 64px 10px 12px;border-top:1px solid var(--border);background:var(--hover-bg)">' +
-          '<span style="font-size:12.5px;color:var(--text-2)">รวมค่ายา</span><span id="dispTotal" style="font-size:15px;font-weight:700">' + dispenseTotalHtml(d) + '</span><span style="font-size:12px;color:var(--muted)">บาท</span>' +
-        '</div>' +
       '</div>';
 
     // รายการยาจากใบเบิก — the patient's จัดยา-เบิกยา lines. Item and จำนวนที่เบิก
@@ -2852,9 +2867,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       // จำนวนเงินหัตถการ is now the total of zone 2's รายการหัตถการ lines.
 
       // Four zones. Stock is deducted on save for zone 1 and for ยาเบิกเพิ่ม
-      // (ยาจากใบเบิก already left stock at จัดยา-เบิกยา and is never charged
-      // here — see applyStockEffects_ in Code.gs); the other three zone-3
-      // groups are never charged either.
+      // (ยาจากใบเบิก already left stock at จัดยา-เบิกยา); no zone-3 group is
+      // charged — see applyStockEffects_ in Code.gs.
       zoneBox('1 · เวชภัณฑ์',
         lineGroupToggle('useSupplies', 'รายการเวชภัณฑ์ที่ใช้', 'ตัดสต๊อก') +
         (d.useSupplies ? supplyRows + '<button class="btn" data-action="add-supply-row" style="margin-bottom:6px"><span class="ms">add</span> เพิ่มรายการเวชภัณฑ์</button>' : '')) +
@@ -2867,7 +2881,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         pendingWdBox +
         lineGroupToggle('useWithdraw', 'รายการยาจากใบเบิก', 'ไม่คิดเงินในยอดรับชำระ') +
         (d.useWithdraw ? (withdrawRows || '<div style="font-size:12px;color:var(--muted);margin-bottom:6px">' + (d.patientId ? 'ไม่มีรายการจากใบเบิก' : 'เลือกคนไข้ก่อน เพื่อดึงรายการจากใบเบิก') + '</div>') : '') +
-        lineGroupToggle('useMedicine', 'รายการยาเบิกเพิ่ม', 'ตัดสต๊อก · คิดค่ายา') +
+        lineGroupToggle('useMedicine', 'รายการยาเบิกเพิ่ม', 'ตัดสต๊อก · ไม่คิดค่ายา') +
         (d.useMedicine ? medicineRows + '<button class="btn" data-action="add-medicine-row" style="margin-bottom:6px"><span class="ms">add</span> เบิกยาเพิ่ม</button>' : '') +
         lineGroupToggle('useOwnMed', 'รายการถือยาเข้า', 'ไม่คิดค่ายา') +
         (d.useOwnMed ? ownMedRows + addRowBtn('ownMedItems', 'เพิ่มรายการ') : '') +
@@ -3505,7 +3519,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* ================================================================== */
   function loadWithdrawals() {
     var q = state.withdraw.q;
-    call('listMedWithdrawals', session.token, { page: state.withdraw.page, filters: { q: q } }).then(function (res) {
+    call('listMedWithdrawals', session.token, { page: state.withdraw.page, filters: { q: q, visitStatus: state.withdraw.visitStatus } }).then(function (res) {
       if (q !== state.withdraw.q) return; // a newer search is already on its way
       state.withdraw.list = res.data; state.withdraw.reloading = false; render();
     });
@@ -3513,60 +3527,83 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   var onWithdrawSearch = debounce(function (q) {
     state.withdraw.q = q; state.withdraw.page = 1; state.withdraw.reloading = true; render(); loadWithdrawals();
   }, 300);
+  /** The จัดการ menu of a withdrawal group: go to its record (or start one), and (admin) delete a line. */
+  function wdGroupActions(g) {
+    var acts = [];
+    var openLine = g.lines.filter(function (w) { return w.recordId && w.recordStatus !== 'completed'; })[0];
+    if (openLine) acts.push({ value: 'edit:' + openLine.recordId, label: 'ไปที่บันทึกการรักษา', icon: 'medical_services' });
+    else if (g.lines.some(function (w) { return !w.recordId; })) acts.push({ value: 'new', label: 'บันทึกการรักษา', icon: 'medical_services' });
+    else if (g.lines[0] && g.lines[0].recordId) acts.push({ value: 'view:' + g.lines[0].recordId, label: 'ดูบันทึกการรักษา', icon: 'visibility' });
+    acts.push({ value: 'photos', label: 'รูปยาที่เบิก' + ((g.photoIds || []).length ? ' (' + g.photoIds.length + ')' : ''), icon: 'photo_camera' });
+    if (isAdmin()) g.lines.filter(function (w) { return w.recordStatus !== 'completed'; }).forEach(function (w) {
+      acts.push({ value: 'del:' + w.id, label: 'ลบ ' + w.itemName + ' ×' + w.qty, icon: 'delete', danger: true });
+    });
+    return acts;
+  }
+  function openWithdrawActions(id) {
+    var g = ((state.withdraw.list && state.withdraw.list.items) || []).filter(function (x) { return x.id === id; })[0];
+    if (!g) return;
+    var triggerId = 'wdAct_' + id;
+    if (state.portal && state.portal.triggerId === triggerId) { closePortal(); return; } // second click closes
+    openPortal(triggerId, wdGroupActions(g), function (v) {
+      if (v === 'photos') openWdPhotos(g);
+      else if (v === 'new') withdrawToRecord(g.patientId);
+      else if (v.indexOf('edit:') === 0) editRecordModal(v.slice(5));
+      else if (v.indexOf('view:') === 0) openRecordPanel(v.slice(5));
+      else if (v.indexOf('del:') === 0) deleteWithdrawConfirm(v.slice(4));
+    }, null);
+  }
   function withdrawTemplate() {
     var L = state.withdraw.list, admin = isAdmin();
-    var cols = admin ? 11 : 9;
+    var cols = admin ? 10 : 8;
+    var statusOpts = statusFilterOptions();
     var rows = !L ? '<tr><td colspan="' + cols + '" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
-      (!L.items.length ? '<tr><td colspan="' + cols + '" class="empty-state">' + (state.withdraw.q ? 'ไม่พบรายการที่ค้นหา' : 'ยังไม่มีรายการเบิกยา') + '</td></tr>' :
+      (!L.items.length ? '<tr><td colspan="' + cols + '" class="empty-state">' + (state.withdraw.q || state.withdraw.visitStatus ? 'ไม่พบรายการที่ค้นหา' : 'ยังไม่มีรายการเบิกยา') + '</td></tr>' :
       L.items.map(function (g) {
-        // One group per save: วันที่ / คนไข้ / เซลล์ / สถานะ / ปุ่มบันทึกการรักษา once
+        // One group per save: วันที่ / HN / คนไข้ / เซลล์ / สถานะ / จัดการ once
         // (rowspan), and a row per ยา for the item, qty and price columns.
         var n = g.lines.length;
         var recordIds = g.lines.map(function (w) { return w.recordId; }).filter(function (id, i, a) { return id && a.indexOf(id) === i; });
         // The status is the same one the บันทึกการรักษา page shows: จัดยาแล้ว until
         // the record is saved as เสร็จสิ้น. Saving a withdrawal opens that record.
-        var done = g.lines.every(function (w) { return w.recordStatus === 'completed'; });
         var recLinks = recordIds.map(function (id) {
           return '<a href="javascript:void(0)" data-action="view-record" data-arg="' + esc(id) + '" style="color:var(--accent);font-size:11.5px;text-decoration:none;margin-right:6px">' + esc(id) + '</a>';
         }).join('');
-        var status = visitStatusBadge(done ? 'completed' : 'dispensed') + (recLinks ? '<div style="margin-top:3px">' + recLinks + '</div>' : '');
-        // Open the record still to be finished (or, for a line with no record, start one for the patient).
-        var openLine = g.lines.filter(function (w) { return w.recordId && w.recordStatus !== 'completed'; })[0];
-        var needsRecord = g.lines.some(function (w) { return !w.recordId; });
-        var rs = ' rowspan="' + n + '" style="vertical-align:top;';
+        var photoLink = (g.photoIds || []).length
+          ? '<div style="margin-top:3px"><a href="javascript:void(0)" data-action="wd-photos-open" data-arg="' + esc(g.id) + '" style="color:var(--accent);font-size:11.5px;text-decoration:none"><span class="ms" style="font-size:14px;vertical-align:middle">photo_camera</span> รูปยา ' + g.photoIds.length + '</a></div>' : '';
+        var status = visitStatusBadge(g.visitStatus) + (recLinks ? '<div style="margin-top:3px">' + recLinks + '</div>' : '') + photoLink;
+        var hasActions = wdGroupActions(g).length > 0;
+        var rs = ' rowspan="' + n + '"';
         return g.lines.map(function (w, i) {
           var s = stockItemsOfType('medicine').filter(function (it) { return it.id === w.itemId; })[0];
           return '<tr' + (i ? ' style="border-top:1px dashed var(--border-lighter)"' : '') + '>' +
             (i ? '' :
-              '<td' + rs + 'padding:10px 12px">' + esc(g.date) + '</td>' +
-              '<td' + rs + '">' + esc(g.patientName) + ' <span style="color:var(--muted)">(' + esc(g.phone) + ')</span>' + (g.note ? '<div style="font-size:11px;color:var(--muted);white-space:normal;max-width:220px">' + esc(g.note) + '</div>' : '') + '</td>' +
-              '<td' + rs + '">' + (g.salesName ? esc(g.salesName) : '<span style="color:var(--muted)">-</span>') + '</td>') +
+              '<td' + rs + ' style="padding:10px 12px">' + esc(g.date) + '</td>' +
+              '<td' + rs + '>' + (g.hn ? esc(g.hn) : '<span style="color:var(--muted)">-</span>') + '</td>' +
+              '<td' + rs + '>' + esc(g.patientName) + ' <span style="color:var(--muted)">(' + esc(g.phone) + ')</span>' + (g.note ? '<div style="font-size:11px;color:var(--muted);white-space:normal;max-width:220px">' + esc(g.note) + '</div>' : '') + '</td>' +
+              '<td' + rs + '>' + (g.salesName ? esc(g.salesName) : '<span style="color:var(--muted)">-</span>') + '</td>') +
             '<td>' + esc(w.itemName) + '</td>' +
             '<td style="text-align:right">' + esc(w.qty) + (s && s.unit ? ' ' + esc(s.unit) : '') + '</td>' +
-            '<td style="text-align:right">' + money(w.unitPrice) + '</td>' +
             (admin ? '<td style="text-align:right">' + money(w.unitCost) + '</td><td style="text-align:right;font-weight:600">' + money(w.amount) + '</td>' : '') +
             (i ? '' :
-              '<td' + rs + '">' + status + '</td>' +
-              '<td' + rs + 'text-align:right;white-space:nowrap">' + (openLine
-                ? '<button class="btn" data-action="edit-record" data-arg="' + esc(openLine.recordId) + '" title="ไปที่บันทึกการรักษา (เพิ่มหัตถการ / รายการอื่นๆ)"><span class="ms">medical_services</span></button>'
-                : (needsRecord ? '<button class="btn" data-action="withdraw-to-record" data-arg="' + esc(g.patientId) + '" title="บันทึกการรักษาของคนไข้รายนี้"><span class="ms">medical_services</span></button>' : '')) + '</td>') +
-            // Delete stays per ยา (puts that line's qty back in stock and off its record); not once the record is เสร็จสิ้น.
-            '<td style="text-align:right;white-space:nowrap">' + (admin && w.recordStatus !== 'completed' ? '<button class="btn" data-action="delete-withdraw" data-arg="' + esc(w.id) + '" title="ลบรายการนี้ (คืนสต๊อก)" style="padding:6px 8px"><span class="ms" style="font-size:18px">delete</span></button>' : '') + '</td>' +
+              '<td' + rs + '>' + status + '</td>' +
+              '<td' + rs + ' style="text-align:right;white-space:nowrap">' + (hasActions
+                ? '<button id="wdAct_' + esc(g.id) + '" class="btn" data-action="dd-wd-actions" data-arg="' + esc(g.id) + '">จัดการ <span class="ms">expand_more</span></button>' : '') + '</td>') +
           '</tr>';
         }).join('');
       }).join(''));
     var th = 'padding:10px 12px;white-space:nowrap';
     return '' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center">' +
-        searchInputHtml('wdSearch', state.withdraw.q, 'ค้นหาชื่อคนไข้ / เบอร์โทร', 'window.__valin.onWithdrawSearch(this.value)', 'width:280px') +
+        searchInputHtml('wdSearch', state.withdraw.q, 'ค้นหาชื่อคนไข้ / เบอร์โทร / HN', 'window.__valin.onWithdrawSearch(this.value)', 'width:280px') +
+        '<button id="ddWdStatus" class="btn" data-action="dd-wd-status">' + esc((statusOpts.filter(function (o) { return o.value === state.withdraw.visitStatus; })[0] || {}).label || 'สถานะการรักษาทั้งหมด') + ' <span class="ms">expand_more</span></button>' +
         '<button class="btn btn-primary" style="margin-left:auto" data-action="new-withdraw"><span class="ms">add</span> เบิกยา</button>' +
       '</div>' +
       listCardWrap(
-        '<div style="overflow-x:auto"><table class="table stock-table" style="width:100%;border-collapse:collapse">' +
+        '<div style="overflow-x:auto"><table class="table stock-table vmid" style="width:100%;border-collapse:collapse">' +
           '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
-            '<th style="' + th + '">วันที่</th><th style="' + th + '">ชื่อคนไข้ (เบอร์โทร)</th><th style="' + th + '">ชื่อเซลล์</th><th style="' + th + '">รายการยา</th><th style="' + th + ';text-align:right">จำนวน</th>' +
-            '<th style="' + th + ';text-align:right">ราคาขาย/หน่วย</th>' +
-            (admin ? '<th style="' + th + ';text-align:right">ราคาทุน/หน่วย</th><th style="' + th + ';text-align:right">จำนวนเงิน (ทุน)</th>' : '') + '<th style="' + th + '">สถานะ</th><th></th><th></th>' +
+            '<th style="' + th + '">วันที่</th><th style="' + th + '">HN</th><th style="' + th + '">ชื่อคนไข้ (เบอร์โทร)</th><th style="' + th + '">ชื่อเซลล์</th><th style="' + th + '">รายการยา</th><th style="' + th + ';text-align:right">จำนวน</th>' +
+            (admin ? '<th style="' + th + ';text-align:right">ราคา/หน่วย</th><th style="' + th + ';text-align:right">จำนวนเงินรวม</th>' : '') + '<th style="' + th + '">สถานะ</th><th></th>' +
           '</tr></thead><tbody>' + rows + '</tbody></table></div>', state.withdraw.reloading) + pagerHtml(L, 'withdraw-page') +
       '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">บันทึกการเบิกแล้ว ระบบสร้างบันทึกการรักษา (สถานะ จัดยาแล้ว) ให้ — ไปเพิ่มหัตถการ / รายการอื่นๆ และระบุจำนวนที่ใช้/ฝาก ที่หน้าบันทึกการรักษา แล้วกดเสร็จสิ้น</div>';
   }
@@ -3580,7 +3617,89 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* ---- สร้างรายการเบิกยา: one patient + sales, several medicine lines ---- */
   function newWithdrawModal() {
     openModal('medwithdraw', { date: todayStr(), patientId: '', patientName: '', phone: '', salesId: '', note: '',
-      lines: [{ name: '', qty: 1 }], _patientQuery: '', _patientSuggest: [] });
+      lines: [{ name: '', qty: 1 }], photoIds: [], _patientQuery: '', _patientSuggest: [] });
+  }
+
+  /* ---- รูปยาที่เบิก: up to WD_PHOTO_MAX photos per จัดยา-เบิกยา save. In the new-withdrawal
+   * modal they ride along with the save; from the list's menu (modal 'wdphotos') every
+   * add / remove is saved straight away. ---- */
+  var WD_PHOTO_MAX = 8;
+  function loadWdPhotoUrls(ids) {
+    (ids || []).forEach(function (id) {
+      if (state.withdraw.photoUrls[id] !== undefined) return;
+      state.withdraw.photoUrls[id] = null; // loading
+      call('getPhotoUrl', session.token, id, gsOpts({ quiet: true })).then(function (r) { state.withdraw.photoUrls[id] = r.data || ''; render(); }, function () { state.withdraw.photoUrls[id] = ''; render(); });
+    });
+  }
+  function wdPhotoBlock(d) {
+    var ids = d.photoIds || [];
+    var box = 'width:84px;height:84px;border-radius:10px;flex:none';
+    var thumbs = ids.map(function (id, i) {
+      var url = state.withdraw.photoUrls[id];
+      var img = url ? '<img src="' + esc(url) + '" data-action="wd-photo-view" data-arg="' + esc(id) + '" style="' + box + ';object-fit:cover;cursor:zoom-in" title="คลิกเพื่อดูรูปขนาดใหญ่">'
+        : '<div style="' + box + ';background:var(--hover-bg);display:flex;align-items:center;justify-content:center;color:var(--muted)">' + (url === null ? '<span class="spin"></span>' : '<span class="ms">broken_image</span>') + '</div>';
+      return '<div style="position:relative;width:84px;height:84px;flex:none">' + img +
+        '<button class="btn" data-action="wd-photo-remove" data-arg="' + i + '" title="ลบรูป" style="position:absolute;top:-7px;right:-7px;padding:1px 3px;border-radius:50%;line-height:1"><span class="ms" style="font-size:14px">close</span></button></div>';
+    }).join('');
+    var prog = state.withdraw.photoProgress;
+    return '<div style="margin:4px 0 12px">' +
+      '<label style="font-size:12px;color:var(--text-2)">รูปยาที่เบิก <span style="color:var(--muted)">(' + ids.length + '/' + WD_PHOTO_MAX + ')</span></label>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:6px">' + thumbs +
+        (ids.length < WD_PHOTO_MAX && prog == null ? '<div class="upload-drop" data-action="wd-photo-add" style="width:84px;height:84px;padding:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;flex:none"><span class="ms">add_a_photo</span><span style="font-size:11px">เพิ่มรูป</span></div>' : '') +
+      '</div>' +
+      '<input type="file" id="wdPhotoInput" accept="image/*" multiple style="display:none">' +
+      (prog != null ? '<div class="upload-progress" style="margin-top:8px"><i style="width:' + prog + '%"></i></div>' : '') +
+    '</div>';
+  }
+  function pickWdPhoto() {
+    var input = document.getElementById('wdPhotoInput');
+    if (!input) return;
+    input.onchange = function () { if (input.files && input.files.length) uploadWdPhotos(Array.prototype.slice.call(input.files)); };
+    input.click();
+  }
+  /** Uploads the picked files one after another, adding each to the modal's photoIds (and, from the list, saving it). */
+  function uploadWdPhotos(files) {
+    var draft = state.draft;
+    if (!draft) return;
+    var queue = files.slice(0, Math.max(0, WD_PHOTO_MAX - (draft.photoIds || []).length));
+    if (files.length > queue.length) toast('error', 'แนบรูปได้ไม่เกิน ' + WD_PHOTO_MAX + ' รูป');
+    state.withdraw.photoProgress = 0; render();
+    var next = function () {
+      var file = queue.shift();
+      if (!file) { state.withdraw.photoProgress = null; render(); return Promise.resolve(); }
+      return downscaleImageFile(file).then(function (f) {
+        return chunkedUpload(f, { kind: 'withdraw-photo', patientName: draft.patientName || '', date: draft.date }, function (pct) { state.withdraw.photoProgress = pct; render(); });
+      }).then(function (fileId) {
+        draft.photoIds.push(fileId);
+        loadWdPhotoUrls([fileId]);
+        return persistWdPhotos(draft);
+      }).then(next);
+    };
+    next().catch(function () { state.withdraw.photoProgress = null; render(); });
+  }
+  /** From the list's photo modal a change is saved at once; in the new-withdrawal modal it waits for บันทึก. */
+  function persistWdPhotos(draft) {
+    if (!state.modal || state.modal.type !== 'wdphotos' || state.draft !== draft) { render(); return Promise.resolve(); }
+    return call('setWithdrawalPhotos', session.token, draft.lineIds, draft.photoIds, gsOpts({ quiet: true })).then(function () { loadWithdrawals(); });
+  }
+  function removeWdPhoto(idx) {
+    var d = state.draft;
+    if (!d || !d.photoIds) return;
+    d.photoIds.splice(idx, 1);
+    render();
+    persistWdPhotos(d);
+  }
+  function openWdPhotos(g) {
+    var photoIds = (g.photoIds || []).slice();
+    openModal('wdphotos', { lineIds: g.lines.map(function (w) { return w.id; }), patientName: g.patientName, hn: g.hn, date: g.date, photoIds: photoIds });
+    loadWdPhotoUrls(photoIds);
+  }
+  function wdPhotosModalBody() {
+    var d = state.draft;
+    return modalHeader('รูปยาที่เบิก') +
+      '<div style="font-size:12px;color:var(--muted);margin:-8px 0 12px">' + esc(d.patientName) + (d.hn ? ' · HN ' + esc(d.hn) : '') + ' · ' + esc(d.date) + '</div>' +
+      wdPhotoBlock(d) +
+      '<div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn" data-action="close-modal">ปิด</button></div>';
   }
   function withdrawModalBody() {
     var d = state.draft;
@@ -3602,16 +3721,17 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="display:grid;grid-template-columns:minmax(0,1fr) 100px 40px;gap:8px;font-size:11px;color:var(--muted);margin-bottom:4px"><span>รายการยา</span><span>จำนวน</span><span></span></div>' +
       lines +
       '<button class="btn" data-action="add-withdraw-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการยา</button>' +
+      wdPhotoBlock(d) +
       field('หมายเหตุ', bindTextarea('note', 2)) +
       '<div style="font-size:11.5px;color:var(--muted);margin-top:-4px">ตัดสต๊อกยาตามจำนวนที่เบิก · ระบบสร้างบันทึกการรักษา (สถานะ จัดยาแล้ว) ให้ไปเพิ่มหัตถการ / รายการอื่นๆ ต่อ</div>' +
       saveBtn();
   }
-  /** Under a withdraw line: unit · ราคาขาย per unit for its qty tier — patched in place while typing (see the input listener). */
+  /** Under a withdraw line: its unit — patched in place while typing (see the input listener). */
   function withdrawLineCaption(l) {
     var id = stockItemIdByName(l.name);
     if (!id) return String(l.name || '').trim() ? '<span style="color:var(--red-dark)">เลือกยาจากรายการสต๊อก</span>' : '';
-    var s = medicineStockItem(id), price = medicineUnitPrice(id, l.qty);
-    return esc(s && s.unit ? s.unit : '') + ' · ราคาขาย ' + (price == null ? 'ยังไม่ได้ตั้ง' : num(price) + '/หน่วย');
+    var s = medicineStockItem(id);
+    return esc(s && s.unit ? s.unit : '');
   }
   /** Medicine stock id for an exact name match, or ''. */
   function stockItemIdByName(name) {
@@ -3627,7 +3747,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var bad = lines.filter(function (l) { return !stockItemIdByName(l.name); })[0];
     if (bad) { toast('error', 'ไม่พบ "' + bad.name + '" ในสต๊อกยา กรุณาเลือกจากรายการ'); return; }
     call('saveMedWithdrawal', session.token, {
-      date: d.date, patientId: d.patientId, salesId: d.salesId, note: d.note,
+      date: d.date, patientId: d.patientId, salesId: d.salesId, note: d.note, photoFileIds: d.photoIds || [],
       lines: lines.map(function (l) { return { itemId: stockItemIdByName(l.name), qty: l.qty }; })
     }).then(function (res) {
       var recordId = res.data && res.data.recordId;
@@ -3672,12 +3792,14 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       return !q || (x.patientName + ' ' + x.hn + ' ' + x.name).toLowerCase().indexOf(q) > -1;
     });
     var count = function (st) { return (L || []).filter(function (x) { return expiryState(x.expiry) === st; }).length; };
+    var openLot = state.deposits.panel && state.deposits.panel.id;
     var pg = localPage(filtered || [], state.deposits.page);
     var th = 'padding:10px 12px;white-space:nowrap';
     var rows = !filtered ? '<tr><td colspan="8" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
       (!filtered.length ? '<tr><td colspan="8" class="empty-state">' + (q || f ? 'ไม่พบรายการที่ค้นหา' : 'ยังไม่มียาฝาก') + '</td></tr>' :
       pg.items.map(function (x) {
-        return '<tr>' +
+        // Clicking a row opens that lot's movement in the right-hand panel; the record link / edit button keep their own actions.
+        return '<tr data-action="view-deposit" data-arg="' + esc(x.id) + '" style="cursor:pointer' + (openLot === x.id ? ';background:var(--hover-bg)' : '') + '">' +
           '<td style="padding:10px 12px;white-space:nowrap">' + esc(x.date) + '</td>' +
           '<td style="white-space:nowrap">' + (x.hn ? esc(x.hn) : '<span style="color:var(--muted)">-</span>') + '</td>' +
           '<td>' + esc(x.patientName) + '</td>' +
@@ -3701,12 +3823,72 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           return '<button type="button" class="' + (f === o.id ? 'active' : '') + '" data-action="deposit-filter" data-arg="' + esc(o.id) + '">' + esc(o.label) + '</button>';
         }).join('') + '</div>' +
       '</div>' +
-      listCardWrap('<div style="overflow-x:auto"><table class="table stock-table" style="width:100%;border-collapse:collapse">' +
+      listCardWrap('<div style="overflow-x:auto"><table class="table stock-table vmid" style="width:100%;border-collapse:collapse">' +
         '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
           '<th style="' + th + '">วันที่ฝาก</th><th style="' + th + '">HN</th><th style="' + th + '">ชื่อคนไข้</th><th style="' + th + '">รายการยา</th>' +
           '<th style="' + th + ';text-align:right">จำนวนคงเหลือ</th><th style="' + th + '">วันหมดอายุ</th><th style="' + th + '">บันทึกการรักษา</th><th></th>' +
         '</tr></thead><tbody>' + rows + '</tbody></table></div>', false) + localPagerHtml(pg, 'deposits') +
       '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">ยาฝากเกิดจากจำนวนที่เบิกแต่ไม่ได้ใช้ในบันทึกการรักษา · การใช้ยาฝากจะตัดจากรายการที่หมดอายุก่อน (ไม่ตัดรายการที่หมดอายุแล้ว)</div>';
+  }
+  /* ---- movement side panel (own root, see renderDepositPanel) ---- */
+  var depositPanelEl = document.getElementById('depositPanelRoot');
+  function renderDepositPanel() { depositPanelEl.innerHTML = depositPanelTemplate(); }
+  function toggleDepositPanel(id) {
+    if (state.deposits.panel && state.deposits.panel.id === id) { closeDepositPanel(); return; }
+    openDepositPanel(id);
+  }
+  function openDepositPanel(id) {
+    state.deposits.panel = { id: id, loading: true };
+    renderDepositPanel(); render(); // highlight the selected row
+    call('getDepositMovements', session.token, id, gsOpts({ quiet: true })).then(function (res) {
+      if (!state.deposits.panel || state.deposits.panel.id !== id) return; // closed/switched meanwhile
+      state.deposits.panel = { id: id, loading: false, lot: res.data.lot, movements: res.data.movements };
+      renderDepositPanel();
+    }, function () { state.deposits.panel = null; renderDepositPanel(); render(); });
+  }
+  function closeDepositPanel() { state.deposits.panel = null; renderDepositPanel(); render(); }
+  function depositPanelTemplate() {
+    var p = state.deposits.panel;
+    if (!p) return '';
+    if (p.loading) return sidePanelShell('close-deposit-panel', '<div class="empty-state" style="padding:60px 20px"><span class="spin"></span> กำลังโหลด...</div>');
+    var l = p.lot, unit = l.unit ? ' ' + esc(l.unit) : '';
+    var cell = function (label, value) {
+      return '<div style="min-width:0"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">' + esc(label) + '</div><div style="font-size:13px;font-weight:600;overflow-wrap:break-word">' + value + '</div></div>';
+    };
+    var th = 'padding:8px 10px;font-size:11px;color:var(--muted);background:var(--hover-bg);text-align:left';
+    var mv = !p.movements.length ? '<div class="empty-state" style="padding:20px">ยังไม่มีความเคลื่อนไหว</div>' :
+      '<table class="table vmid" style="width:100%;border-collapse:collapse">' +
+        '<thead><tr><th style="' + th + '">วันที่</th><th style="' + th + '">รายการ</th><th style="' + th + ';text-align:right">ยอดเปลี่ยนแปลง</th><th style="' + th + ';text-align:right">คงเหลือ</th></tr></thead><tbody>' +
+        p.movements.map(function (m) {
+          var plus = m.delta > 0;
+          return '<tr>' +
+            '<td style="padding:9px 10px;font-size:12.5px;white-space:nowrap">' + esc(m.date) + '</td>' +
+            '<td style="font-size:12.5px">' + esc(m.label) + (m.recordId ? ' <a href="javascript:void(0)" data-action="view-record" data-arg="' + esc(m.recordId) + '" style="color:var(--accent);font-size:11.5px;text-decoration:none">' + esc(m.recordId) + '</a>' : '') + '</td>' +
+            '<td style="font-size:12.5px;text-align:right;font-weight:600;white-space:nowrap;color:' + (plus ? 'var(--green-dark)' : 'var(--red-dark)') + '">' + (plus ? '+' : '−') + esc(Math.abs(m.delta)) + unit + '</td>' +
+            '<td style="font-size:12.5px;text-align:right;white-space:nowrap">' + esc(m.balance) + unit + '</td></tr>';
+        }).join('') + '</tbody></table>';
+    var body = '' +
+      '<div style="padding:22px 22px 12px;display:flex;justify-content:space-between;align-items:flex-start;flex:none">' +
+        '<div><div style="font-size:16px;font-weight:700">' + esc(l.name) + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:2px">ยาฝาก · ' + esc(l.patientName) + (l.hn ? ' · HN ' + esc(l.hn) : '') + '</div></div>' +
+        '<button data-action="close-deposit-panel" style="border:none;background:none;cursor:pointer"><span class="ms">close</span></button>' +
+      '</div>' +
+      '<div style="flex:1;overflow-y:auto;padding:0 22px 16px">' +
+        '<div class="day-summary-section"><div class="day-summary-section-title">สรุปรายการ</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 16px">' +
+            cell('วันที่ฝาก', esc(l.date)) + cell('วันหมดอายุ', expiryBadge(l.expiry)) +
+            cell('จำนวนที่ฝาก', esc(l.deposited) + unit) + cell('ใช้ไปแล้ว', esc(l.used) + unit) +
+            cell('คงเหลือ', '<span style="font-size:15px;color:var(--accent-hover)">' + esc(l.qty) + unit + '</span>') +
+            cell('บันทึกการรักษาที่ฝาก', l.recordId ? '<a href="javascript:void(0)" data-action="view-record" data-arg="' + esc(l.recordId) + '" style="color:var(--accent);text-decoration:none">' + esc(l.recordId) + '</a>' : '<span style="color:var(--muted)">-</span>') +
+          '</div></div>' +
+        '<div style="font-size:13px;font-weight:700;margin:14px 0 8px">รายละเอียดความเคลื่อนไหว</div>' +
+        '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">' + mv + '</div>' +
+      '</div>' +
+      '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;flex:none">' +
+        '<button class="btn" data-action="close-deposit-panel">ปิด</button>' +
+        '<button class="btn btn-primary" data-action="edit-deposit" data-arg="' + esc(l.id) + '"><span class="ms">edit</span> แก้ไข</button>' +
+      '</div>';
+    return sidePanelShell('close-deposit-panel', body, 'side-panel-wide');
   }
   function editDepositModal(id) {
     var x = (state.deposits.list || []).filter(function (d) { return d.id === id; })[0];
@@ -3728,6 +3910,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var d = state.draft;
     call('saveDeposit', session.token, { id: d.id, expiry: d.expiry, qty: isAdmin() ? d.qty : undefined }).then(function () {
       toast('success', 'บันทึกแล้ว'); closeModal(); loadDeposits();
+      if (state.deposits.panel) openDepositPanel(state.deposits.panel.id); // refresh the open movement panel
     });
   }
 
@@ -3802,36 +3985,69 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '</tr></thead><tbody>' + rows + foot + '</tbody></table></div>', state.report.loading) + localPagerHtml(pg, 'report') +
       '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">ไม่รวมรายการที่ยกเลิก · คลิกที่รายการเพื่อดูรายละเอียด</div>';
   }
+  /**
+   * Pivot of the report rows: วันที่ > ชื่อเซลล์ > ชื่อคนไข้ > รายการยา. One block per
+   * (วันที่, เซลล์) — the unit that gets a subtotal, a preview and a PDF.
+   */
+  function salesPivotBlocks(rows) {
+    var sorted = rows.map(function (r, i) { return { r: r, i: i }; }).sort(function (a, b) {
+      return a.r.date.localeCompare(b.r.date) || String(a.r.salesName).localeCompare(String(b.r.salesName), 'th') ||
+        String(a.r.patientName).localeCompare(String(b.r.patientName), 'th') || a.i - b.i;
+    }).map(function (x) { return x.r; });
+    var blocks = [], byKey = {};
+    sorted.forEach(function (r) {
+      var key = r.date + '|' + (r.salesId || r.salesName || '-');
+      var b = byKey[key];
+      if (!b) { b = byKey[key] = { key: key, date: r.date, salesId: r.salesId || '', salesName: r.salesName || '-', patients: [], rows: [], cost: 0 }; blocks.push(b); }
+      var p = b.patients[b.patients.length - 1];
+      if (!p || p.name !== r.patientName) { p = { name: r.patientName, rows: [] }; b.patients.push(p); }
+      p.rows.push(r); b.rows.push(r);
+      b.cost = Math.round((b.cost + (Number(r.costAmount) || 0)) * 100) / 100;
+    });
+    return blocks;
+  }
   function salesReportTable(D) {
-    var pg = localPage(D.rows, state.report.page);
-    var marginCell = function (v) { return '<span style="color:' + (v < 0 ? 'var(--red-dark)' : 'var(--green-dark)') + '">' + money(v) + '</span>'; };
-    var rows = !D.rows.length ? '<tr><td colspan="11" class="empty-state">ไม่พบรายการในช่วงที่เลือก</td></tr>' :
-      pg.items.map(function (r) {
-        return '<tr>' +
-          '<td style="padding:10px 12px;white-space:nowrap">' + esc(r.date) + '</td>' +
-          '<td>' + esc(r.patientName) + '</td>' +
-          '<td>' + (r.salesName ? esc(r.salesName) : '<span style="color:var(--muted)">-</span>') + '</td>' +
-          '<td>' + esc(r.itemName) + '</td>' +
-          '<td style="text-align:right;white-space:nowrap">' + esc(r.qty) + (r.unit ? ' ' + esc(r.unit) : '') + '</td>' +
-          '<td style="text-align:right">' + money(r.unitCost) + '</td>' +
-          '<td style="text-align:right">' + money(r.costAmount) + '</td>' +
-          '<td style="text-align:right">' + money(r.unitPrice) + '</td>' +
-          '<td style="text-align:right">' + money(r.saleAmount) + '</td>' +
-          '<td style="text-align:right;font-weight:600">' + marginCell(r.margin) + '</td>' +
-          '<td style="font-size:12px;color:var(--text-2)">' + (r.remark ? esc(r.remark) : '<span style="color:var(--muted)">-</span>') + '</td>' +
-        '</tr>';
+    var blocks = salesPivotBlocks(D.rows);
+    var pg = localPage(blocks, state.report.page);
+    var rows = !D.rows.length ? '<tr><td colspan="8" class="empty-state">ไม่พบรายการในช่วงที่เลือก</td></tr>' :
+      pg.items.map(function (b) {
+        var first = true, html = '';
+        var click = ' data-action="report-block" data-arg="' + esc(b.key) + '"';
+        b.patients.forEach(function (p) {
+          p.rows.forEach(function (r, i) {
+            html += '<tr' + click + ' style="cursor:pointer;' + (first ? 'border-top:2px solid var(--border)' : (i === 0 ? 'border-top:1px dashed var(--border-lighter)' : 'border-top:1px dotted var(--border-lighter)')) + '">' +
+              (first ? '<td rowspan="' + b.rows.length + '" style="padding:10px 12px;white-space:nowrap;font-weight:600">' + esc(b.date) + '</td>' +
+                '<td rowspan="' + b.rows.length + '" style="font-weight:600">' + esc(b.salesName) + '</td>' : '') +
+              (i === 0 ? '<td rowspan="' + p.rows.length + '">' + esc(p.name) + '</td>' : '') +
+              '<td>' + esc(r.itemName) + '</td>' +
+              '<td style="text-align:right;white-space:nowrap">' + esc(r.qty) + (r.unit ? ' ' + esc(r.unit) : '') + '</td>' +
+              '<td style="text-align:right">' + money(r.unitCost) + '</td>' +
+              '<td style="text-align:right;font-weight:600">' + money(r.costAmount) + '</td>' +
+              '<td style="font-size:12px;color:var(--text-2)">' + (r.remark ? '<span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark);white-space:nowrap">' + esc(r.remark) + '</span>' : '<span style="color:var(--muted)">-</span>') + '</td>' +
+            '</tr>';
+            first = false;
+          });
+        });
+        // Subtotal for this (วันที่, เซลล์) — also the spot to open its preview / PDF.
+        return html + '<tr' + click + ' style="cursor:pointer;background:var(--hover-bg)"><td colspan="6" style="padding:9px 12px;text-align:right;font-weight:700">รวม ' + esc(b.salesName) + ' · ' + esc(b.date) + '</td>' +
+          '<td style="text-align:right;font-weight:700">' + money(b.cost) + '</td>' +
+          '<td style="color:var(--accent);font-size:12px"><span class="ms" style="font-size:16px;vertical-align:middle">picture_as_pdf</span> ดูตัวอย่าง / ดาวน์โหลด</td></tr>';
       }).join('');
     var foot = !D.rows.length ? '' :
-      '<tr style="background:var(--hover-bg);font-weight:700"><td colspan="4" style="padding:10px 12px;text-align:right">รวมทั้งหมด</td>' +
-      '<td style="text-align:right">' + esc(D.totalQty) + '</td><td></td><td style="text-align:right">' + money(D.totalCost) + '</td><td></td>' +
-      '<td style="text-align:right">' + money(D.totalSale) + '</td><td style="text-align:right">' + marginCell(D.totalMargin) + '</td><td></td></tr>';
-    return listCardWrap('<div style="overflow-x:auto"><table class="table stock-table" style="width:100%;border-collapse:collapse">' +
+      '<tr style="background:var(--accent-soft);font-weight:700;border-top:2px solid var(--border)"><td colspan="6" style="padding:10px 12px;text-align:right">รวมทั้งหมด</td><td style="text-align:right">' + money(D.totalCost) + '</td><td></td></tr>';
+    // ยอดที่คลินิกเก็บจากแต่ละเซลล์ (ราคาทุน) — shown when the report covers more than one.
+    var perSales = (D.bySales || []).length > 1
+      ? '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;margin-top:12px"><div style="font-size:12.5px;font-weight:700;margin-bottom:6px">ยอดที่คลินิกเก็บจากแต่ละเซลล์ (ราคาทุน)</div>' +
+          D.bySales.map(function (b) {
+            return '<div style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>' + esc(b.salesName) + '</span><b>' + money(b.cost) + '</b></div>';
+          }).join('') + '</div>'
+      : '';
+    return listCardWrap('<div style="overflow-x:auto"><table class="table stock-table vmid" style="width:100%;border-collapse:collapse">' +
       '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
-        '<th style="' + RP_TH + '">วันที่</th><th style="' + RP_TH + '">ชื่อคนไข้</th><th style="' + RP_TH + '">ชื่อเซลล์</th><th style="' + RP_TH + '">รายการยา</th>' +
-        '<th style="' + RP_TH + ';text-align:right">จำนวน</th><th style="' + RP_TH + ';text-align:right">ราคาทุน/หน่วย</th><th style="' + RP_TH + ';text-align:right">จำนวนเงิน (ทุน)</th>' +
-        '<th style="' + RP_TH + ';text-align:right">ราคาขาย/หน่วย</th><th style="' + RP_TH + ';text-align:right">จำนวนเงิน (ราคาขาย)</th><th style="' + RP_TH + ';text-align:right">ส่วนต่างสุทธิ</th><th style="' + RP_TH + '">หมายเหตุ</th>' +
-      '</tr></thead><tbody>' + rows + foot + '</tbody></table></div>', state.report.loading) + localPagerHtml(pg, 'report') +
-      '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">รวมยาจากจัดยา-เบิกยาทุกรายการ (ราคาขายตามขั้นราคา ณ วันที่เบิก) และยาที่เบิกเพิ่มในบันทึกการรักษา (ราคาที่คิดจริง · ระบุในหมายเหตุ) · ราคาทุน ณ วันที่เบิก</div>';
+        '<th style="' + RP_TH + '">วันที่</th><th style="' + RP_TH + '">ชื่อเซลล์</th><th style="' + RP_TH + '">ชื่อคนไข้</th><th style="' + RP_TH + '">รายการยา</th>' +
+        '<th style="' + RP_TH + ';text-align:right">จำนวน</th><th style="' + RP_TH + ';text-align:right">ราคาทุน/หน่วย</th><th style="' + RP_TH + ';text-align:right">จำนวนเงิน (ทุน)</th><th style="' + RP_TH + '">หมายเหตุ</th>' +
+      '</tr></thead><tbody>' + rows + foot + '</tbody></table></div>', state.report.loading) + localPagerHtml(pg, 'report') + perSales +
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">รายได้ที่คลินิกเก็บจากเซลล์ (ราคาทุน): ยาจากจัดยา-เบิกยาทุกรายการ และยาที่เบิกเพิ่มในบันทึกการรักษา (ระบุในหมายเหตุ) · ราคาทุน ณ วันที่เบิก · ลูกค้าจ่ายค่ายาให้เซลล์โดยตรง จึงไม่แสดงราคาขาย · คลิกที่แถวเพื่อดูตัวอย่างและดาวน์โหลด PDF ของเซลล์/วันนั้น</div>';
   }
 
   /* ---- PDF ---- */
@@ -3849,8 +4065,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     }
     return html2pdfLoading;
   }
-  // Page width in px: A4 portrait for รายงานรายวัน, landscape for the 10-column รายงานรายเซลล์.
-  function reportPdfWidth(kind) { return kind === 'sales' ? 1123 : 794; }
+  // Page width in px: A4 portrait.
+  function reportPdfWidth() { return 794; }
   /**
    * The report file:
    *   [clinic header]                     [Print date]
@@ -3859,15 +4075,16 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
    *   one table of the report's rows, then the totals.
    * Fixed colours (not the app's CSS variables) so it renders the same anywhere.
    */
-  function reportPdfHtml(kind, D) {
+  function reportPdfHtml(kind, D, scope) {
     var clinic = (state.master && state.master.clinicInfo) || {};
     var rp = state.report;
+    scope = scope || {}; // a single (วันที่, เซลล์) block: its own sales name and date
     var navy = '#1E3A72', gold = '#C9A961', ink = '#1C2440', muted = '#7A839F', line = '#E4E8F1', soft = '#F5F7FC';
     var baht = function (n) { return Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); };
     var now = new Date(), pad = function (n) { return String(n).padStart(2, '0'); };
     var printed = now.getFullYear() + '-' + pad(now.getMonth() + 1) + '-' + pad(now.getDate()) + ' ' + pad(now.getHours()) + ':' + pad(now.getMinutes());
-    var range = (rp.from || '…') + ' ถึง ' + (rp.to || '…');
-    var salesName = rp.salesId ? ((state.master.sales || []).filter(function (s) { return s.id === rp.salesId; })[0] || {}).name || '' : 'ทุกเซลล์';
+    var range = scope.range || ((rp.from || '…') + ' ถึง ' + (rp.to || '…'));
+    var salesName = scope.salesName || (rp.salesId ? ((state.master.sales || []).filter(function (s) { return s.id === rp.salesId; })[0] || {}).name || '' : 'ทุกเซลล์');
     // Company logo from ตั้งค่าคลินิก > ข้อมูลบริษัท (loaded by ensureClinicLogo before rendering).
     var logo = state.master && state.master.logoUrl
       ? '<img src="' + esc(state.master.logoUrl) + '" style="width:64px;height:64px;object-fit:contain;border-radius:12px;flex:none">'
@@ -3895,15 +4112,23 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var td = function (v, right, bold) { return '<td style="padding:6px 8px;vertical-align:top;text-align:' + (right ? 'right' : 'left') + (bold ? ';font-weight:600' : '') + '">' + v + '</td>'; };
     var table, totals;
     if (kind === 'sales') {
-      table = '<thead><tr>' + th('วันที่', false, '9%') + th('ชื่อคนไข้') + th('ชื่อเซลล์') + th('รายการยา') + th('จำนวน', true, '6%') +
-        th('ราคาทุน<br>ต่อหน่วย', true, '8%') + th('จำนวนเงิน<br>(ทุน)', true, '9%') + th('ราคาขาย<br>ต่อหน่วย', true, '8%') + th('จำนวนเงิน<br>(ราคาขาย)', true, '9%') + th('ส่วนต่าง<br>สุทธิ', true, '8%') + th('หมายเหตุ', false, '13%') + '</tr></thead><tbody>' +
-        D.rows.map(function (r) {
-          return '<tr style="border-top:1px solid ' + line + '">' + td(esc(r.date)) + td(esc(r.patientName)) + td(esc(r.salesName || '-')) + td(esc(r.itemName)) +
-            td(esc(r.qty) + (r.unit ? ' ' + esc(r.unit) : ''), true) + td(baht(r.unitCost), true) + td(baht(r.costAmount), true) + td(baht(r.unitPrice), true) + td(baht(r.saleAmount), true) + td(baht(r.margin), true, true) + td(esc(r.remark || '')) + '</tr>';
-        }).join('') +
-        '<tr style="background:' + soft + ';border-top:1px solid ' + line + ';font-weight:700"><td colspan="4" style="padding:7px 8px;text-align:right">รวม</td>' +
-        td(esc(D.totalQty), true) + '<td></td>' + td(baht(D.totalCost), true) + '<td></td>' + td(baht(D.totalSale), true) + td(baht(D.totalMargin), true) + '<td></td></tr></tbody>';
-      totals = [['ยอดรวมราคาทุน', D.totalCost], ['ยอดรวมราคาขาย', D.totalSale], ['ส่วนต่างสุทธิ (บาท)', D.totalMargin]];
+      // Pivot layout: วันที่ / เซลล์ / คนไข้ shown once per group, a subtotal per (วันที่, เซลล์).
+      var blocks = salesPivotBlocks(D.rows);
+      table = '<thead><tr>' + th('วันที่', false, '11%') + th('ชื่อเซลล์', false, '14%') + th('ชื่อคนไข้', false, '17%') + th('รายการยา') + th('จำนวน', true, '8%') +
+        th('ราคาทุน<br>ต่อหน่วย', true, '10%') + th('จำนวนเงิน<br>(ทุน)', true, '11%') + th('หมายเหตุ', false, '17%') + '</tr></thead><tbody>' +
+        blocks.map(function (b) {
+          var firstRow = true, out = '';
+          b.patients.forEach(function (p) {
+            p.rows.forEach(function (r, i) {
+              out += '<tr style="border-top:1px solid ' + line + '">' + td(firstRow ? '<b>' + esc(b.date) + '</b>' : '') + td(firstRow ? '<b>' + esc(b.salesName) + '</b>' : '') + td(i === 0 ? esc(p.name) : '') + td(esc(r.itemName)) +
+                td(esc(r.qty) + (r.unit ? ' ' + esc(r.unit) : ''), true) + td(baht(r.unitCost), true) + td(baht(r.costAmount), true, true) + td(esc(r.remark || '')) + '</tr>';
+              firstRow = false;
+            });
+          });
+          return out + '<tr style="background:' + soft + ';border-top:1px solid ' + line + ';font-weight:700"><td colspan="6" style="padding:7px 8px;text-align:right">รวม ' + esc(b.salesName) + ' · ' + esc(b.date) + '</td>' + td(baht(b.cost), true) + '<td></td></tr>';
+        }).join('') + '</tbody>';
+      // ยอดที่เก็บจากแต่ละเซลล์ (when the report covers several), then the grand total.
+      totals = ((D.bySales || []).length > 1 ? D.bySales.map(function (b) { return ['เก็บจาก ' + b.salesName, b.cost]; }) : []).concat([['ยอดรวมที่คลินิกเก็บจากเซลล์ (บาท)', D.totalCost]]);
     } else {
       table = '<thead><tr>' + th('วันที่', false, '12%') + th('ชื่อคนไข้', false, '20%') + th('ชื่อเซลล์', false, '15%') + th('รายละเอียด (ตามใบเสร็จ)') + th('จำนวนเงิน', true, '14%') + '</tr></thead><tbody>' +
         D.rows.map(function (r) {
@@ -3940,16 +4165,24 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
    * PDF because Chrome often blocks its PDF viewer inside the sandboxed Apps
    * Script frame.
    */
-  function openReportPdfPreview() {
-    var rp = state.report, D = rp.data;
+  function openReportPdfPreview(blockKey) {
+    var rp = state.report, D = rp.data, scope = null;
     if (!D || !D.rows.length) return;
     var salesName = rp.salesId ? ((state.master.sales || []).filter(function (s) { return s.id === rp.salesId; })[0] || {}).name || '' : 'ทุกเซลล์';
     var filename = (rp.dataTab === 'sales' ? 'รายงานรายเซลล์-' : 'รายงานรายวัน-') + salesName + '-' + (rp.from || '') + (rp.to && rp.to !== rp.from ? '_' + rp.to : '') + '.pdf';
+    // A clicked pivot group: just that เซลล์'s lines for that วันที่.
+    if (blockKey && rp.dataTab === 'sales') {
+      var block = salesPivotBlocks(D.rows).filter(function (b) { return b.key === blockKey; })[0];
+      if (!block) return;
+      D = { rows: block.rows, totalQty: block.rows.reduce(function (x, r) { return x + (Number(r.qty) || 0); }, 0), totalCost: block.cost, bySales: [{ salesName: block.salesName, cost: block.cost }] };
+      scope = { salesName: block.salesName, range: block.date };
+      filename = 'รายงานรายเซลล์-' + block.salesName + '-' + block.date + '.pdf';
+    }
     setLoading(true);
     loadHtml2Pdf().catch(function () { /* retried on download */ }); // warm up while the user looks at the preview
     ensureClinicLogo().then(function () {
       setLoading(false);
-      rp.preview = { kind: rp.dataTab, data: D, filename: filename };
+      rp.preview = { kind: rp.dataTab, data: D, filename: filename, scope: scope };
       renderPdfPreview();
     });
   }
@@ -3963,13 +4196,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<div style="flex:none;display:flex;align-items:center;gap:10px;padding:12px 18px;background:var(--surface);box-shadow:0 2px 12px rgba(15,27,61,.15)">' +
           '<span class="ms" style="color:var(--muted)">picture_as_pdf</span>' +
           '<div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:700">ตัวอย่างก่อนดาวน์โหลด</div>' +
-          '<div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(p.filename) + ' · A4' + (p.kind === 'sales' ? ' แนวนอน' : '') + '</div></div>' +
+          '<div style="font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(p.filename) + ' · A4</div></div>' +
           '<button class="btn" data-action="close-pdf-preview">ปิด</button>' +
           '<button class="btn btn-primary" data-action="report-pdf-download"><span class="ms">download</span> ดาวน์โหลด PDF</button>' +
         '</div>' +
         '<div id="pdfPreviewScroll" data-action="close-pdf-preview-bg" style="flex:1;overflow:auto;padding:24px 16px">' +
           '<div id="pdfPreviewFrame" style="margin:0 auto;box-shadow:0 10px 40px rgba(0,0,0,.35);background:#fff;overflow:hidden">' +
-            '<div id="pdfPreviewPage" style="transform-origin:top left">' + reportPdfHtml(p.kind, p.data) + '</div>' +
+            '<div id="pdfPreviewPage" style="transform-origin:top left">' + reportPdfHtml(p.kind, p.data, p.scope) + '</div>' +
           '</div>' +
         '</div>' +
       '</div>';
@@ -3997,7 +4230,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       // Off-screen but laid out (html2canvas can't capture display:none).
       var holder = document.createElement('div');
       holder.style.cssText = 'position:fixed;left:-10000px;top:0;z-index:-1';
-      holder.innerHTML = reportPdfHtml(p.kind, p.data);
+      holder.innerHTML = reportPdfHtml(p.kind, p.data, p.scope);
       document.body.appendChild(holder);
       var done = function () { holder.remove(); setLoading(false); closePdfPreview(); };
       return window.html2pdf().set({
@@ -4005,7 +4238,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         margin: [0, 0, 8, 0], filename: p.filename,
         image: { type: 'jpeg', quality: 0.96 },
         html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: p.kind === 'sales' ? 'landscape' : 'portrait' },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
         // Table rows are never split across pages.
         pagebreak: { mode: ['css', 'legacy'], avoid: ['tr'] }
       }).from(holder.firstChild).save().then(done, function (e) { holder.remove(); setLoading(false); throw e; });
@@ -4019,7 +4252,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     call('listExpenses', session.token, { page: state.expense.page, filters: { q: state.expense.q, category: state.expense.category } }).then(function (res) { state.expense.list = res.data; state.expense.reloading = false; render(); });
   }
   function loadOrders() {
-    call('listOrders', session.token, { page: state.expense.orderPage, filters: { q: state.expense.orderQ, category: state.expense.orderCategory } }).then(function (res) { state.expense.orders = res.data; state.expense.orderReloading = false; render(); });
+    call('listOrders', session.token, { page: state.expense.orderPage, filters: { q: state.expense.orderQ, category: state.expense.orderCategory } }).then(function (res) { state.expense.orders = res.data; state.expense.orderReloading = false; render();
+      var op = state.expense.orderPanel; if (op && !op.loading) openOrderPanel(op.id, true); // an edit may have changed the open order
+    });
   }
   var expenseCatFilterOptions = function () { return [{ value: '', label: 'หมวดหมู่ทั้งหมด' }].concat((state.master.expenseCategories || []).map(function (c) { return { value: c.name, label: c.name }; })); };
   // จัดซื้อ (purchase order) line items draw their category from the same
@@ -4082,7 +4317,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var rows = !L ? '<tr><td colspan="4" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
       (!L.items.length ? '<tr><td colspan="4" class="empty-state">ไม่พบรายการ</td></tr>' :
       L.items.map(function (o) {
-        return '<tr><td>' + esc(o.date) + '</td><td>' + esc(o.supplier) + '</td><td>' + money(o.totalAmount) + '</td>' +
+        var open = state.expense.orderPanel && state.expense.orderPanel.id === o.id;
+        return '<tr data-action="view-order" data-arg="' + esc(o.id) + '" style="cursor:pointer' + (open ? ';background:var(--hover-bg)' : '') + '"><td style="padding-left:12px">' + esc(o.date) + '</td><td>' + esc(o.supplier) + '</td><td>' + money(o.totalAmount) + '</td>' +
           '<td style="text-align:right"><button class="btn" data-action="edit-order" data-arg="' + esc(o.id) + '"><span class="ms">edit</span></button> ' +
           (isAdmin() ? '<button class="btn" data-action="delete-order" data-arg="' + esc(o.id) + '"><span class="ms">delete</span></button>' : '') + '</td></tr>';
       }).join(''));
@@ -4096,6 +4332,66 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">วันที่</th><th>ผู้จำหน่าย</th><th>ยอดรวม</th><th></th></tr></thead>' +
           '<tbody>' + rows + '</tbody></table>', state.expense.orderReloading) + pagerHtml(L, 'order-page');
   }
+  /* ---- PO detail side panel (own root, like the ยาฝาก one) ---- */
+  var orderPanelEl = document.getElementById('orderPanelRoot');
+  function renderOrderPanel() { orderPanelEl.innerHTML = orderPanelTemplate(); }
+  function toggleOrderPanel(id) {
+    if (state.expense.orderPanel && state.expense.orderPanel.id === id) { closeOrderPanel(); return; }
+    openOrderPanel(id);
+  }
+  function openOrderPanel(id, silent) {
+    if (!silent) state.expense.orderPanel = { id: id, loading: true };
+    renderOrderPanel(); if (!silent) render(); // highlight the selected row
+    call('getOrder', session.token, id, gsOpts({ quiet: true })).then(function (res) {
+      if (!state.expense.orderPanel || state.expense.orderPanel.id !== id) return; // closed/switched meanwhile
+      state.expense.orderPanel = { id: id, loading: false, order: res.data };
+      renderOrderPanel();
+    }, function () { state.expense.orderPanel = null; renderOrderPanel(); render(); });
+  }
+  function closeOrderPanel() { state.expense.orderPanel = null; renderOrderPanel(); render(); }
+  function orderPanelTemplate() {
+    var p = state.expense.orderPanel;
+    if (!p) return '';
+    if (p.loading) return sidePanelShell('close-order-panel', '<div class="empty-state" style="padding:60px 20px"><span class="spin"></span> กำลังโหลด...</div>');
+    var o = p.order;
+    var cell = function (label, value) {
+      return '<div style="min-width:0"><div style="font-size:11px;color:var(--muted);margin-bottom:3px">' + esc(label) + '</div><div style="font-size:13px;font-weight:600;overflow-wrap:break-word">' + value + '</div></div>';
+    };
+    var th = 'padding:8px 10px;font-size:11px;color:var(--muted);background:var(--hover-bg);text-align:left';
+    var lines = !o.lines.length ? '<div class="empty-state" style="padding:20px">ไม่มีรายการสินค้า</div>' :
+      '<table class="table vmid" style="width:100%;border-collapse:collapse"><thead><tr>' +
+        '<th style="' + th + '">ชื่อสินค้า</th><th style="' + th + ';text-align:right">จำนวน</th><th style="' + th + ';text-align:right">ราคา/หน่วย</th><th style="' + th + ';text-align:right">จำนวนเงิน</th></tr></thead><tbody>' +
+        o.lines.map(function (l) {
+          return '<tr><td style="padding:9px 10px;font-size:12.5px">' + esc(l.itemName) + '<div style="font-size:11px;color:var(--muted)">' + esc(l.category) + (l.itemId ? ' · ตัดเข้าสต๊อก' : '') + '</div></td>' +
+            '<td style="font-size:12.5px;text-align:right;white-space:nowrap">' + esc(l.qty) + '</td>' +
+            '<td style="font-size:12.5px;text-align:right;white-space:nowrap">' + money(l.unitPrice) + '</td>' +
+            '<td style="font-size:12.5px;text-align:right;white-space:nowrap;font-weight:600">' + money(l.lineTotal || orderLineAmount(l)) + '</td></tr>';
+        }).join('') +
+        '<tr><td colspan="3" style="padding:10px;text-align:right;font-size:12.5px;font-weight:700;border-top:1px solid var(--border)">รวมทั้งสิ้น</td><td style="text-align:right;font-weight:700;font-size:14px;border-top:1px solid var(--border);padding-right:10px;white-space:nowrap">' + money(o.totalAmount) + '</td></tr>' +
+        '</tbody></table>';
+    var body = '' +
+      '<div style="padding:22px 22px 12px;display:flex;justify-content:space-between;align-items:flex-start;flex:none">' +
+        '<div><div style="font-size:16px;font-weight:700">' + esc(o.supplier) + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:2px">ใบสั่งซื้อ ' + esc(o.id) + '</div></div>' +
+        '<button data-action="close-order-panel" style="border:none;background:none;cursor:pointer"><span class="ms">close</span></button>' +
+      '</div>' +
+      '<div style="flex:1;overflow-y:auto;padding:0 22px 16px">' +
+        '<div class="day-summary-section"><div class="day-summary-section-title">สรุปรายการ</div>' +
+          '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px 16px">' +
+            cell('วันที่', esc(o.date)) + cell('ผู้จำหน่าย', esc(o.supplier)) +
+            cell('จำนวนรายการ', esc(o.lines.length)) + cell('ยอดรวม', '<span style="font-size:15px;color:var(--accent-hover)">' + money(o.totalAmount) + '</span>') +
+            cell('ผู้บันทึก', o.createdBy ? esc(o.createdBy) : '<span style="color:var(--muted)">-</span>') +
+            cell('สต๊อก', o.stockApplied ? 'เพิ่มเข้าสต๊อกแล้ว' : '<span style="color:var(--muted)">ไม่ได้เชื่อมสต๊อก</span>') +
+          '</div></div>' +
+        '<div style="font-size:13px;font-weight:700;margin:14px 0 8px">รายการสินค้า</div>' +
+        '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">' + lines + '</div>' +
+      '</div>' +
+      '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;flex:none">' +
+        '<button class="btn" data-action="close-order-panel">ปิด</button>' +
+        '<button class="btn btn-primary" data-action="order-panel-edit" data-arg="' + esc(o.id) + '"><span class="ms">edit</span> แก้ไข</button>' +
+      '</div>';
+    return sidePanelShell('close-order-panel', body, 'side-panel-wide');
+  }
   function newOrderModal() { openModal('order', { date: todayStr(), supplier: '', lines: [{ category: (state.master.stockCategories[0] || {}).name || '', itemName: '', qty: 1, unitPrice: 0 }] }); }
   function editOrderModal(id) {
     call('getOrder', session.token, id).then(function (res) { openModal('order', res.data); });
@@ -4103,7 +4399,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function deleteOrderConfirm(id) {
     Swal.fire({ icon: 'warning', title: 'ลบใบสั่งซื้อนี้?', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
       if (!r.isConfirmed) return;
-      call('deleteOrder', session.token, id).then(function () { toast('success', 'ลบแล้ว'); loadOrders(); });
+      call('deleteOrder', session.token, id).then(function () {
+        toast('success', 'ลบแล้ว');
+        if (state.expense.orderPanel && state.expense.orderPanel.id === id) { state.expense.orderPanel = null; renderOrderPanel(); }
+        loadOrders();
+      });
     });
   }
   function addOrderLine() { state.draft.lines.push({ category: (state.master.stockCategories[0] || {}).name || '', itemName: '', qty: 1, unitPrice: 0 }); render(); }
@@ -4646,6 +4946,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'stocklogentry': return stockLogEntryModalBody();
       case 'stockadjust': return stockAdjustModalBody();
       case 'medwithdraw': return withdrawModalBody();
+      case 'wdphotos': return wdPhotosModalBody();
       case 'payment': return paymentModalBody();
       case 'deposit': return depositModalBody();
       case 'procedure': return procedureModalBody();
@@ -4772,6 +5073,12 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'delete-record': deleteRecordConfirm(arg); break;
       case 'issue-receipt': issueReceiptAction(arg); break;
       case 'view-record': openRecordPanel(arg); break;
+      case 'close-receipt-preview': case 'close-receipt-preview-bg': if (ev.target === el || action === 'close-receipt-preview') closeReceiptPreview(); break;
+      case 'receipt-preview-print': receiptFrameCall('print'); break;
+      case 'receipt-preview-pdf': receiptFrameCall('saveReceiptPdf'); break;
+      case 'view-order': toggleOrderPanel(arg); break;
+      case 'close-order-panel': case 'close-order-panel-bg': if (ev.target === el || action === 'close-order-panel') closeOrderPanel(); break;
+      case 'order-panel-edit': closeOrderPanel(); editOrderModal(arg); break;
       case 'view-opd-photo-large': openPhotoLightbox(state.records.panel && state.records.panel.opdPhotoUrl, 'รูปถ่าย OPD'); break;
       case 'close-record-panel': case 'close-record-panel-bg': if (ev.target === el || action === 'close-record-panel') closeRecordPanel(); break;
       case 'view-day': openDayPanel(arg); break;
@@ -4792,6 +5099,12 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       // expenseTabView/orderTabView) — a smoother "in flight" transition
       // that clears itself in loadRecords()/loadStock()/loadExpenses()/
       // loadOrders() once the new data actually lands.
+      case 'dd-wd-status': openPortal('ddWdStatus', statusFilterOptions(), function (v) { state.withdraw.visitStatus = v; state.withdraw.page = 1; state.withdraw.reloading = true; render(); loadWithdrawals(); }, state.withdraw.visitStatus); break;
+      case 'dd-wd-actions': openWithdrawActions(arg); break;
+      case 'dd-record-actions': openRecordActions(arg); break;
+      case 'view-deposit': toggleDepositPanel(arg); break;
+      case 'close-deposit-panel': case 'close-deposit-panel-bg': if (ev.target === el || action === 'close-deposit-panel') closeDepositPanel(); break;
+      case 'report-block': openReportPdfPreview(arg); break;
       case 'dd-doctor': openPortal('ddDoctor', doctorFilterOptions(), function (v) { state.records.doctorId = v; state.records.page = 1; state.records.reloading = true; render(); loadRecords(); }, state.records.doctorId); break;
       case 'dd-status': openPortal('ddStatus', statusFilterOptions(), function (v) { state.records.visitStatus = v; state.records.page = 1; state.records.reloading = true; render(); loadRecords(); }, state.records.visitStatus); break;
       case 'dd-stockcat': openPortal('ddStockCat', stockCatFilterOptions(), function (v) { state.stock.category = v; state.stock.page = 1; state.stock.reloading = true; render(); loadStock(); }, state.stock.category); break;
@@ -4832,10 +5145,14 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'exp-tab': expTab(arg); break;
       case 'stock-tab': stockTab(arg); break;
       case 'new-withdraw': newWithdrawModal(); break;
+      case 'wd-photo-add': pickWdPhoto(); break;
+      case 'wd-photo-remove': removeWdPhoto(Number(arg)); break;
+      case 'wd-photo-view': openPhotoLightbox(state.withdraw.photoUrls[arg], 'รูปยาที่เบิก'); break;
+      case 'wd-photos-open': { var wdg = ((state.withdraw.list && state.withdraw.list.items) || []).filter(function (x) { return x.id === arg; })[0]; if (wdg) openWdPhotos(wdg); break; }
       case 'withdraw-to-record': withdrawToRecord(arg); break;
       case 'report-tab': reportTab(arg); break;
       case 'run-report': runReport(); break;
-      case 'report-pdf': openReportPdfPreview(); break;
+      case 'report-pdf': openReportPdfPreview(null); break;
       case 'report-pdf-download': downloadReportPdf(); break;
       case 'edit-deposit': editDepositModal(arg); break;
       case 'deposit-filter': state.deposits.filter = arg; state.deposits.page = 1; render(); break;
@@ -4924,7 +5241,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   // value the staff already typed/edited.
   var PROMO_PICK_RE = /^promoItems\.(\d+)\.promoId$/;
   var STOCK_NAME_PICK_RE = /^(supplies|medicineItems)\.(\d+)\.name$/;
-  var DISPENSE_FIELD_RE = /^medicineItems\.(\d+)\.(qtyDispensed|qtyUsed|unitPrice)$/;
+  var DISPENSE_FIELD_RE = /^medicineItems\.(\d+)\.(qtyDispensed|qtyUsed)$/;
   document.addEventListener('input', function (ev) {
     var el = ev.target;
     var bindPath = el.getAttribute && el.getAttribute('data-bind');
@@ -4987,12 +5304,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           var unitEl = document.querySelector('[data-bind="supplies.' + stockPick[2] + '.unit"]');
           if (unitEl) unitEl.value = stockItem.unit;
         }
-        // A picked ยา fills ราคาต่อหน่วย from its ราคาขาย tiers unless staff typed a price themselves.
         if (stockPick[1] === 'medicineItems') {
-          var tierPrice = stockItem && !stockLine._priceManual ? medicineUnitPrice(stockItem.id, stockLine.qtyDispensed) : null;
-          if (tierPrice != null) stockLine.unitPrice = tierPrice;
           recalcDispenseLine(stockLine);
-          patchDispenseRow(Number(stockPick[2]), tierPrice != null); // also refreshes the name/price captions
+          patchDispenseRow(Number(stockPick[2])); // refreshes the name caption
         }
       }
       return;
@@ -5008,14 +5322,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var dispense = bindPath.match(DISPENSE_FIELD_RE);
     if (dispense) {
       var dLine = state.draft.medicineItems[Number(dispense[1])];
-      var priceChanged = false;
-      if (dispense[2] === 'unitPrice') dLine._priceManual = true;
-      if (dispense[2] === 'qtyDispensed' && !dLine._priceManual && dLine.itemId) {
-        var p2 = medicineUnitPrice(dLine.itemId, dLine.qtyDispensed);
-        if (p2 != null && p2 !== dLine.unitPrice) { dLine.unitPrice = p2; priceChanged = true; }
-      }
       recalcDispenseLine(dLine);
-      patchDispenseRow(Number(dispense[1]), priceChanged);
+      patchDispenseRow(Number(dispense[1]));
       return;
     }
     var depositPick = bindPath.match(/^depositUseItems\.(\d+)\.itemId$/);

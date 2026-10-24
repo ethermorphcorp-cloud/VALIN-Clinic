@@ -1,8 +1,10 @@
 <?
 /* Receipt.html — printable receipt page, served via renderReceiptPage_/doGet
-   (?page=receipt&ticket=...), opened in a new browser tab from the record
-   panel's "ออกใบเสร็จ" button (window.open — NOT an Apps Script dialog, so
-   google.script.host is never available here; use window.close() instead).
+   (?page=receipt&ticket=...) and by getReceiptHtml for the in-app preview
+   (shown in an iframe whose toolbar calls print / saveReceiptPdf; the page
+   hides its own buttons there). Opened on its own it is a plain page, NOT an
+   Apps Script dialog, so google.script.host is never available; use
+   window.close() instead.
 
    Template variables set by renderReceiptPage_ in Code.gs:
      valid : boolean — false if the one-time view ticket is missing/expired
@@ -99,7 +101,7 @@ if (valid) {
   }
 
   // 2. รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค — the shape explicitly requested.
-  if (data.medicineItems && data.medicineItems.length) {
+  if (data.medicineItems && data.medicineItems.length && Number(data.medicineAmount) > 0) { // ยาเบิกเพิ่ม is not charged; only older records carry an amount
     items.push({ no: lineNo++, label: 'รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค', amount: Number(data.medicineAmount) || 0, sub: false });
     data.medicineItems.forEach(function (m, i) { items.push({ no: (i + 1), label: (m.name || 'ยา/สินค้า') + (m.qtyDispensed ? ' × ' + m.qtyDispensed : ''), amount: Number(m.amount) || 0, sub: true }); });
   }
@@ -468,6 +470,9 @@ if (valid) {
     }
 
     /* ---------- Actions ---------- */
+    .embedded .actions { display: none; }
+    .capturing .actions { display: none; }
+    .capturing .receipt { box-shadow: none; border-radius: 0; opacity: 1; }
     .actions {
       display: flex;
       gap: 8px;
@@ -624,13 +629,37 @@ if (valid) {
     </div>
 
     <div class="actions">
-      <button onclick="window.close()">ปิด</button>
+      <button onclick="closeReceipt()">ปิด</button>
+      <button onclick="saveReceiptPdf()">บันทึกเป็น PDF</button>
       <button class="primary" onclick="window.print()">พิมพ์ใบเสร็จ</button>
     </div>
 
   </div>
 
   <script>
+    // Shown in the app's preview frame the page has no buttons of its own (the
+    // app's toolbar calls print / saveReceiptPdf); opened on its own it keeps them.
+    // (the preview frame is a srcdoc iframe; the web app itself always runs in a frame, so parent!==window can't tell)
+    if (location.protocol === 'about:') document.documentElement.classList.add('embedded');
+    function closeReceipt() { window.close(); }
+    // บันทึกเป็น PDF — html2pdf is only loaded when it is asked for.
+    function saveReceiptPdf() {
+      var el = document.getElementById('receipt');
+      var run = function () {
+        document.body.classList.add('capturing');
+        var done = function () { document.body.classList.remove('capturing'); };
+        window.html2pdf().set({
+          margin: [8, 8, 8, 8], filename: 'ใบเสร็จ-<?= data.receiptNo ?>.pdf', image: { type: 'jpeg', quality: 0.96 },
+          html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        }).from(el).save().then(done, done);
+      };
+      if (window.html2pdf) { run(); return; }
+      var s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+      s.onload = run;
+      s.onerror = function () { alert('โหลดตัวสร้าง PDF ไม่สำเร็จ — ใช้ปุ่มพิมพ์แล้วเลือก "บันทึกเป็น PDF" แทนได้'); };
+      document.head.appendChild(s);
+    }
     // แสดง loading เล็กน้อยเพื่อความรู้สึก "smooth" แล้วค่อยเผยใบเสร็จ
     window.addEventListener('load', function () {
       setTimeout(function () {
