@@ -3439,17 +3439,31 @@ function listMedWithdrawals(token, opts) {
         return String(r.PatientName).toLowerCase().indexOf(q) > -1 || (qDigits && String(r.Phone).replace(/[^\d]/g, '').indexOf(qDigits) > -1);
       });
     }
-    rows.sort(function (a, b) { return dateStr_(b.Date).localeCompare(dateStr_(a.Date)) || String(b.CreatedAt).localeCompare(String(a.CreatedAt)); });
     var showCost = session.level === 'admin';
     var stockById = {};
     getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { stockById[s.ItemID] = s; });
-    var page = paginate_(rows, opts.page, opts.pageSize);
-    page.items = page.items.map(function (r) { return mapWithdrawalOut_(r, showCost, stockById); });
-    return { ok: true, data: page };
+    // One entry per save (BatchID; rows from before it share date + patient +
+    // sales): the list shows the patient/sales/status once with a row per ยา,
+    // and pages by these groups so a save never splits across pages.
+    var groups = {}, order = [];
+    rows.sort(function (a, b) { return String(a.CreatedAt).localeCompare(String(b.CreatedAt)) || String(a.WithdrawID).localeCompare(String(b.WithdrawID)); });
+    rows.forEach(function (r) {
+      var key = r.BatchID || (dateStr_(r.Date) + '|' + r.PatientID + '|' + r.SalesID);
+      var g = groups[key];
+      if (!g) {
+        g = groups[key] = { id: key, date: dateStr_(r.Date), patientId: r.PatientID, patientName: r.PatientName, phone: r.Phone, salesId: r.SalesID, salesName: r.SalesName, note: r.Note || '', createdAt: String(r.CreatedAt), lines: [] };
+        order.push(g);
+      }
+      g.lines.push(mapWithdrawalOut_(r, showCost, stockById));
+      g.createdAt = String(r.CreatedAt);
+      if (!g.note && r.Note) g.note = r.Note;
+    });
+    order.sort(function (a, b) { return b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt); });
+    return { ok: true, data: paginate_(order, opts.page, opts.pageSize) };
   });
 }
 
-/** payload: {date, patientId, salesId, note, lines:[{itemId, qty}]} — one MedWithdrawals row per line, each taken out of Stock. */
+/** payload: {date, patientId, salesId, note, lines:[{itemId, qty}]} — one MedWithdrawals row per line (all sharing a BatchID), each taken out of Stock. */
 function saveMedWithdrawal(token, payload) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'staff');

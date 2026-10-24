@@ -3515,28 +3515,40 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }, 300);
   function withdrawTemplate() {
     var L = state.withdraw.list, admin = isAdmin();
-    var cols = admin ? 10 : 8;
+    var cols = admin ? 11 : 9;
     var rows = !L ? '<tr><td colspan="' + cols + '" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
       (!L.items.length ? '<tr><td colspan="' + cols + '" class="empty-state">' + (state.withdraw.q ? 'ไม่พบรายการที่ค้นหา' : 'ยังไม่มีรายการเบิกยา') + '</td></tr>' :
-      L.items.map(function (w) {
-        var s = stockItemsOfType('medicine').filter(function (it) { return it.id === w.itemId; })[0];
-        // Step 3 of the flow: a line waits until the patient's บันทึกการรักษา charges it.
-        var status = w.recordId
-          ? '<a href="javascript:void(0)" data-action="view-record" data-arg="' + esc(w.recordId) + '" class="tag-badge" style="background:var(--green-soft);color:var(--green-dark);text-decoration:none">บันทึกแล้ว · ' + esc(w.recordId) + '</a>'
-          : '<span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark)">รอบันทึกการรักษา</span>';
-        return '<tr>' +
-          '<td style="padding:10px 12px">' + esc(w.date) + '</td>' +
-          '<td>' + esc(w.patientName) + ' <span style="color:var(--muted)">(' + esc(w.phone) + ')</span></td>' +
-          '<td>' + (w.salesName ? esc(w.salesName) : '<span style="color:var(--muted)">-</span>') + '</td>' +
-          '<td>' + esc(w.itemName) + (w.note ? '<div style="font-size:11px;color:var(--muted);white-space:normal">' + esc(w.note) + '</div>' : '') + '</td>' +
-          '<td style="text-align:right">' + esc(w.qty) + (s && s.unit ? ' ' + esc(s.unit) : '') + '</td>' +
-          '<td style="text-align:right">' + money(w.unitPrice) + '</td>' +
-          (admin ? '<td style="text-align:right">' + money(w.unitCost) + '</td><td style="text-align:right;font-weight:600">' + money(w.amount) + '</td>' : '') +
-          '<td>' + status + '</td>' +
-          '<td style="text-align:right;white-space:nowrap">' + (w.recordId ? '' :
-            '<button class="btn" data-action="withdraw-to-record" data-arg="' + esc(w.patientId) + '" title="บันทึกการรักษาของคนไข้รายนี้"><span class="ms">medical_services</span></button>' +
-            (admin ? ' <button class="btn" data-action="delete-withdraw" data-arg="' + esc(w.id) + '" title="ลบ (คืนสต๊อก)"><span class="ms">delete</span></button>' : '')) + '</td>' +
-        '</tr>';
+      L.items.map(function (g) {
+        // One group per save: วันที่ / คนไข้ / เซลล์ / สถานะ / ปุ่มบันทึกการรักษา once
+        // (rowspan), and a row per ยา for the item, qty and price columns.
+        var n = g.lines.length, waiting = g.lines.filter(function (w) { return !w.recordId; }).length;
+        var recordIds = g.lines.map(function (w) { return w.recordId; }).filter(function (id, i, a) { return id && a.indexOf(id) === i; });
+        // Step 3 of the flow: a line waits until the patient's บันทึกการรักษา takes it in.
+        var recLinks = recordIds.map(function (id) {
+          return '<a href="javascript:void(0)" data-action="view-record" data-arg="' + esc(id) + '" class="tag-badge" style="background:var(--green-soft);color:var(--green-dark);text-decoration:none;margin:1px 2px 1px 0">บันทึกแล้ว · ' + esc(id) + '</a>';
+        }).join('');
+        var status = !recordIds.length ? '<span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark)">รอบันทึกการรักษา</span>'
+          : (waiting ? '<span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark)" title="บันทึกแล้ว ' + (n - waiting) + ' จาก ' + n + ' รายการ">รอบันทึก ' + waiting + '/' + n + ' รายการ</span><div style="margin-top:3px">' + recLinks + '</div>' : recLinks);
+        var rs = ' rowspan="' + n + '" style="vertical-align:top;';
+        return g.lines.map(function (w, i) {
+          var s = stockItemsOfType('medicine').filter(function (it) { return it.id === w.itemId; })[0];
+          return '<tr' + (i ? ' style="border-top:1px dashed var(--border-lighter)"' : '') + '>' +
+            (i ? '' :
+              '<td' + rs + 'padding:10px 12px">' + esc(g.date) + '</td>' +
+              '<td' + rs + '">' + esc(g.patientName) + ' <span style="color:var(--muted)">(' + esc(g.phone) + ')</span>' + (g.note ? '<div style="font-size:11px;color:var(--muted);white-space:normal;max-width:220px">' + esc(g.note) + '</div>' : '') + '</td>' +
+              '<td' + rs + '">' + (g.salesName ? esc(g.salesName) : '<span style="color:var(--muted)">-</span>') + '</td>') +
+            '<td>' + esc(w.itemName) + '</td>' +
+            '<td style="text-align:right">' + esc(w.qty) + (s && s.unit ? ' ' + esc(s.unit) : '') + '</td>' +
+            '<td style="text-align:right">' + money(w.unitPrice) + '</td>' +
+            (admin ? '<td style="text-align:right">' + money(w.unitCost) + '</td><td style="text-align:right;font-weight:600">' + money(w.amount) + '</td>' : '') +
+            (i ? '' :
+              '<td' + rs + '">' + status + '</td>' +
+              '<td' + rs + 'text-align:right;white-space:nowrap">' + (waiting ?
+                '<button class="btn" data-action="withdraw-to-record" data-arg="' + esc(g.patientId) + '" title="บันทึกการรักษาของคนไข้รายนี้"><span class="ms">medical_services</span></button>' : '') + '</td>') +
+            // Delete stays per ยา (puts that line's qty back in stock); a taken-in line must be removed from its record first.
+            '<td style="text-align:right;white-space:nowrap">' + (admin && !w.recordId ? '<button class="btn" data-action="delete-withdraw" data-arg="' + esc(w.id) + '" title="ลบรายการนี้ (คืนสต๊อก)" style="padding:6px 8px"><span class="ms" style="font-size:18px">delete</span></button>' : '') + '</td>' +
+          '</tr>';
+        }).join('');
       }).join(''));
     var th = 'padding:10px 12px;white-space:nowrap';
     return '' +
@@ -3549,7 +3561,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
             '<th style="' + th + '">วันที่</th><th style="' + th + '">ชื่อคนไข้ (เบอร์โทร)</th><th style="' + th + '">ชื่อเซลล์</th><th style="' + th + '">รายการยา</th><th style="' + th + ';text-align:right">จำนวน</th>' +
             '<th style="' + th + ';text-align:right">ราคาขาย/หน่วย</th>' +
-            (admin ? '<th style="' + th + ';text-align:right">ราคาทุน/หน่วย</th><th style="' + th + ';text-align:right">จำนวนเงิน (ทุน)</th>' : '') + '<th style="' + th + '">สถานะ</th><th></th>' +
+            (admin ? '<th style="' + th + ';text-align:right">ราคาทุน/หน่วย</th><th style="' + th + ';text-align:right">จำนวนเงิน (ทุน)</th>' : '') + '<th style="' + th + '">สถานะ</th><th></th><th></th>' +
           '</tr></thead><tbody>' + rows + '</tbody></table></div>', state.withdraw.reloading) + pagerHtml(L, 'withdraw-page') +
       '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">ยาที่เบิกจะถูกดึงไปคิดเงินในบันทึกการรักษาของคนไข้ (ระบุจำนวนที่ใช้/ฝาก และราคาขายได้ที่นั่น)</div>';
   }
