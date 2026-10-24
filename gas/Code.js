@@ -25,8 +25,8 @@
  * running — treat this comment as documentation, not configuration):
  *
  *   Patients       ID, FirstName, LastName, Phone, DOB, Gender, Email,
- *                  PhotoFileId, JoinedDate, CreatedAt, UpdatedAt, Nickname
- *   Records        Core: RID, Date, PatientID, PatientName, Phone,
+ *                  PhotoFileId, JoinedDate, CreatedAt, UpdatedAt, Nickname, HN
+ *   Records       Core: RID, Date, PatientID, PatientName, Phone,
  *                  ServiceCategory, Detail, DoctorID, DoctorName, SalesID,
  *                  SalesName, PaymentMethod, SuppliesJSON, UseCanula,
  *                  CanulaAmount, Amount, Status, ReceiptNo, Note,
@@ -63,7 +63,11 @@
  *                  "รายการโปร" picker and the Records.PromoJSON lines above;
  *                  ClinicSharePct is always derived as (100 - DoctorSharePct)
  *                  at read time, never stored.
- *   Categories     CategoryID, Type, Name, SortOrder      (Type: treatment|stock|expense)
+ *   Procedures     ProcID, Name, Category, Price, Status, CreatedAt, UpdatedAt
+ *                  — รายการหัตถการ picked by the record modal (ProcedureJSON).
+ *   MedDeposits / MedWithdrawals — ยาฝาก lots and จัดยา-เบิกยา lines, see
+ *                  CONFIG.HEADERS.
+ *   Categories     CategoryID, Type, Name, SortOrder      (Type: treatment (หัตถการ)|stock|expense)
  *   Staff          StaffID, Name, Role, Username, PasswordHash, PasswordSalt,
  *                  LineID, Level, Active, CreatedAt — LineID (round 20) is
  *                  what the LINE webhook chat commands authorize against,
@@ -156,6 +160,7 @@ var CONFIG = {
     COUNTERS: 'Counters',
     MED_DEPOSITS: 'MedDeposits',
     MED_WITHDRAWALS: 'MedWithdrawals',
+    PROCEDURES: 'Procedures',
     AUDIT_LOG: 'AuditLog'
   },
   HEADERS: {
@@ -165,7 +170,9 @@ var CONFIG = {
     // match what's on the sheet, so appending keeps every existing row's
     // values correctly aligned under their original columns. Re-running
     // setupProject() after a schema change like this is always safe.
-    Patients: ['ID', 'FirstName', 'LastName', 'Phone', 'DOB', 'Gender', 'Email', 'PhotoFileId', 'JoinedDate', 'CreatedAt', 'UpdatedAt', 'Nickname'],
+    // HN = the clinic's own patient number, typed by staff (optional, unique
+    // when filled) — separate from the auto-generated ID.
+    Patients: ['ID', 'FirstName', 'LastName', 'Phone', 'DOB', 'Gender', 'Email', 'PhotoFileId', 'JoinedDate', 'CreatedAt', 'UpdatedAt', 'Nickname', 'HN'],
     // Revenue-split fields (added for the commission engine): OtherAmount is
     // now the SUM of the round-13 repeatable "รายการอื่นๆ" lines (see
     // OtherItemsJSON) — still excluded from anyone's commission share, only
@@ -175,7 +182,7 @@ var CONFIG = {
     // splits). DoctorShareRaw is the plain commission BEFORE the
     // daily-minimum top-up — as of round 13 it is
     // Amount*DoctorCommissionPct/100 + sum(each PromoJSON line's amount *
-    // that promo's own DoctorSharePct/100) (see computeRecordShares_).
+    // that promo's own DoctorSharePct/100) (see buildDoctorShares_).
     // DoctorShare is the FINAL amount actually used (topped up if needed);
     // DoctorShareNote records when/why a top-up was applied. ClinicShare =
     // (Amount + PromoAmount + CanulaAmount) - SalesShare - DoctorShare —
@@ -201,16 +208,44 @@ var CONFIG = {
     // supplier" in the record modal); a DIFFERENT concept from the
     // dashboard's Orders-based "ยอดจ่าย Supplier" slice (purchase orders) —
     // the two are not reconciled/merged.
-    Records: ['RID', 'Date', 'PatientID', 'PatientName', 'Phone', 'ServiceCategory', 'Detail', 'DoctorID', 'DoctorName', 'SalesID', 'SalesName', 'PaymentMethod', 'SuppliesJSON', 'UseCanula', 'CanulaAmount', 'Amount', 'Status', 'ReceiptNo', 'Note', 'CreatedBy', 'CreatedAt', 'UpdatedAt', 'OtherAmount', 'SalesCommissionPct', 'SalesShare', 'DoctorCommissionPct', 'DoctorShareRaw', 'DoctorShare', 'DoctorShareNote', 'ClinicShare', 'VisitStatus', 'UsePromo', 'PromoJSON', 'PromoAmount', 'UseMedicine', 'MedicineJSON', 'MedicineAmount', 'UseOther', 'OtherItemsJSON', 'SupplierPayAmount', 'OpdImageFileId', 'UseSupplies', 'UseOwnMed', 'OwnMedJSON', 'UseDepositUse', 'DepositUseJSON', 'UseMessenger', 'MessengerJSON', 'StockApplied'],
-    // MedDeposits — ยาฝาก: one balance row per patient + medicine item, kept
-    // in sync by applyRecordEffects_ (เบิกยาหน้าคลีนิค lines add their จำนวนฝาก,
-    // รายการใช้ยาฝาก lines take it back out). Date/CreatedBy are the latest change.
-    MedDeposits: ['DepositID', 'Date', 'PatientID', 'PatientName', 'ItemName', 'QtyRemaining', 'CreatedBy', 'ItemID', 'UpdatedAt'],
-    // MedWithdrawals — เมนู "เบิกยาคลีนิค": one row per medicine line. UnitCost
+    // UseProcedure/ProcedureJSON: รายการหัตถการ lines picked from the
+    // Procedures sheet, each {procId,name,price,amount,doctorId}; Amount
+    // (above) is their sum on records saved since. Older records only have
+    // Amount.
+    // DoctorSharesJSON: one entry per doctor on the record ({doctorId, name,
+    // pct, raw, share, note}) — each หัตถการ/โปร line names its own doctor, so
+    // one visit can pay several doctors. DoctorID/DoctorName/DoctorShareRaw/
+    // DoctorShare/DoctorShareNote keep the first doctor / the names joined /
+    // the totals for older readers (see applyDoctorShares_). Records from
+    // before it have one doctor, read from those columns (recordDoctorShares_).
+    // WithdrawJSON: the จัดยา-เบิกยา lines this record took in, each
+    // {withdrawId, itemId, name, qtyDispensed, qtyUsed, qtyDeposit, expiry} —
+    // not charged here (the sales person sells them); only their ยาฝาก part
+    // matters to the record.
+    // VisitStatus: 'dispensed' จัดยาแล้ว | 'completed' เสร็จสิ้น; older
+    // ''/'scheduled' read as 'dispensed'.
+    // ClinicShare is now everything collected (incl. ยาเบิกเพิ่ม and
+    // รายการอื่นๆ) minus the sales and doctor shares — there is no separate
+    // supplier share any more (SupplierPayAmount is still written, unused).
+    Records: ['RID', 'Date', 'PatientID', 'PatientName', 'Phone', 'ServiceCategory', 'Detail', 'DoctorID', 'DoctorName', 'SalesID', 'SalesName', 'PaymentMethod', 'SuppliesJSON', 'UseCanula', 'CanulaAmount', 'Amount', 'Status', 'ReceiptNo', 'Note', 'CreatedBy', 'CreatedAt', 'UpdatedAt', 'OtherAmount', 'SalesCommissionPct', 'SalesShare', 'DoctorCommissionPct', 'DoctorShareRaw', 'DoctorShare', 'DoctorShareNote', 'ClinicShare', 'VisitStatus', 'UsePromo', 'PromoJSON', 'PromoAmount', 'UseMedicine', 'MedicineJSON', 'MedicineAmount', 'UseOther', 'OtherItemsJSON', 'SupplierPayAmount', 'OpdImageFileId', 'UseSupplies', 'UseOwnMed', 'OwnMedJSON', 'UseDepositUse', 'DepositUseJSON', 'UseMessenger', 'MessengerJSON', 'StockApplied', 'UseProcedure', 'ProcedureJSON', 'DoctorSharesJSON', 'WithdrawJSON'],
+    // MedDeposits — ยาฝาก, one row per lot: a record's medicine line that is
+    // not all used creates a lot (RecordID = that record) with its own
+    // ExpiryDate; รายการใช้ยาฝาก takes from the patient's lots, earliest
+    // expiry first (see planDeposits_). QtyDeposited is what the lot started
+    // with. Rows from before lots existed are one balance per patient + item
+    // with blank RecordID/ExpiryDate/QtyDeposited.
+    MedDeposits: ['DepositID', 'Date', 'PatientID', 'PatientName', 'ItemName', 'QtyRemaining', 'CreatedBy', 'ItemID', 'UpdatedAt', 'ExpiryDate', 'RecordID', 'QtyDeposited'],
+    // MedWithdrawals — เมนู "จัดยา-เบิกยา": one row per medicine line. UnitCost
     // is the item's ราคาทุน snapshotted at save time (Amount = Qty * UnitCost);
     // both are admin-only on the way out. Qty is taken out of Stock.
-    // BatchID groups the lines saved together in one เบิกยาคลีนิค save.
-    MedWithdrawals: ['WithdrawID', 'Date', 'PatientID', 'PatientName', 'Phone', 'SalesID', 'SalesName', 'ItemID', 'ItemName', 'Qty', 'UnitCost', 'Amount', 'Note', 'CreatedBy', 'CreatedAt', 'BatchID'],
+    // BatchID groups the lines saved together in one save. UnitPrice/
+    // SaleAmount = ราคาขาย (the qty's price tier when withdrawn, then whatever
+    // the treatment record charged); RecordID = the record that charged it,
+    // blank while it is still waiting for บันทึกการรักษา.
+    MedWithdrawals: ['WithdrawID', 'Date', 'PatientID', 'PatientName', 'Phone', 'SalesID', 'SalesName', 'ItemID', 'ItemName', 'Qty', 'UnitCost', 'Amount', 'Note', 'CreatedBy', 'CreatedAt', 'BatchID', 'UnitPrice', 'SaleAmount', 'RecordID'],
+    // Procedures — รายการหัตถการ (จัดการสินค้า/บริการ). Category is a
+    // Categories row of Type 'treatment'.
+    Procedures: ['ProcID', 'Name', 'Category', 'Price', 'Status', 'CreatedAt', 'UpdatedAt'],
     // StockType: 'supply' (เวชภัณฑ์) | 'medicine' (ยา) — splits the Stock page
     // into two tabs and feeds the record modal's stock-backed name
     // suggestions (รายการเวชภัณฑ์ที่ใช้ / รายการซื้อยาเพิ่ม). Blank on rows
@@ -253,7 +288,7 @@ var CONFIG = {
     // standalone from the treatment record modal / revenue-split engine; round
     // 13 explicitly REVERSES that — the record modal's "รายการโปร" picker now
     // reads this list live, and each promo's DoctorSharePct feeds directly
-    // into ส่วนแบ่งแพทย์ (see computeRecordShares_ / Records.PromoJSON above).
+    // into ส่วนแบ่งแพทย์ (see buildDoctorShares_ / Records.PromoJSON above).
     // ClinicSharePct is always derived as (100 - DoctorSharePct), never
     // stored, so it can never drift.
     Promotions: ['PromoID', 'Name', 'Price', 'DoctorSharePct', 'Status', 'CreatedAt', 'UpdatedAt'],
@@ -266,7 +301,7 @@ var CONFIG = {
   // Columns that must be stored/read as literal text so leading zeros
   // (phone numbers, ID codes) are never lost to number coercion.
   TEXT_COLUMNS: {
-    Patients: ['Phone'],
+    Patients: ['Phone', 'HN'],
     Records: ['Phone', 'ReceiptNo'],
     MedWithdrawals: ['Phone'],
     Staff: ['Username']
@@ -277,8 +312,9 @@ var CONFIG = {
   NUMBER_COLUMNS: {
     Stock: ['Qty', 'MinQty', 'CostPrice', 'Price1', 'Price3', 'Price5', 'Price10', 'Price20', 'Price50'],
     StockLog: ['QtyIn', 'QtyRemaining', 'QtyOut'],
-    MedDeposits: ['QtyRemaining'],
-    MedWithdrawals: ['Qty', 'UnitCost', 'Amount']
+    MedDeposits: ['QtyRemaining', 'QtyDeposited'],
+    MedWithdrawals: ['Qty', 'UnitCost', 'Amount', 'UnitPrice', 'SaleAmount'],
+    Procedures: ['Price']
   },
   PROPS: {
     SPREADSHEET_ID: 'SPREADSHEET_ID',
@@ -298,7 +334,7 @@ var CONFIG = {
     LINE_CHANNEL_ACCESS_TOKEN: 'LINE_CHANNEL_ACCESS_TOKEN'
   },
   CACHE: {
-    MASTER_DATA_KEY: 'MASTER_DATA_V1',
+    MASTER_DATA_KEY: 'MASTER_DATA_V2', // V2: carries `procedures`
     MASTER_DATA_TTL: 21600, // 6h, the max CacheService allows
     SESSION_PREFIX: 'SESSION_',
     SESSION_TTL: 21600,     // 6h
@@ -306,7 +342,7 @@ var CONFIG = {
     RECEIPT_TICKET_TTL: 300, // 5 minutes
     // Lightweight full-list caches used to power client-side autocomplete
     // (patient/stock suggest boxes) without a server round-trip per keystroke.
-    PATIENTS_LITE_KEY: 'PATIENTS_LITE_V1',
+    PATIENTS_LITE_KEY: 'PATIENTS_LITE_V2', // V2: entries carry `hn`
     STOCK_LITE_KEY: 'STOCK_LITE_V3', // V3: entries carry `type` and sale `prices` (never cost)
     LITE_TTL: 21600,
     // Round 19 item 4: getDashboardData's per-date-range result cache. Keyed
@@ -894,6 +930,7 @@ function buildMasterData_() {
   // of requiring a separate listPromotions() round trip before the modal
   // can render its dropdown.
   var promoRows = getRows_(getSheet_(CONFIG.SHEETS.PROMOTIONS)).filter(function (p) { return isActiveStatus_(p.Status); });
+  var procRows = getRows_(getSheet_(CONFIG.SHEETS.PROCEDURES)).filter(function (p) { return isActiveStatus_(p.Status); });
   var treatmentCats = categories.filter(function (c) { return c.Type === 'treatment'; });
   var stockCats = categories.filter(function (c) { return c.Type === 'stock'; });
   var expenseCats = categories.filter(function (c) { return c.Type === 'expense'; });
@@ -910,6 +947,7 @@ function buildMasterData_() {
     stockCategories: stockCats.map(function (c) { return { id: c.CategoryID, name: c.Name }; }),
     expenseCategories: expenseCats.map(function (c) { return { id: c.CategoryID, name: c.Name }; }),
     promotions: promoRows.map(function (p) { return { id: p.PromoID, name: p.Name, price: Number(p.Price) || 0, doctorSharePct: Number(p.DoctorSharePct) || 0 }; }),
+    procedures: procRows.map(function (p) { return { id: p.ProcID, name: p.Name, category: p.Category || '', price: Number(p.Price) || 0 }; }),
     clinicInfo: clinicInfo
   };
 }
@@ -937,7 +975,7 @@ function listAllPatientsLite(token) {
     var raw = cache.get(CONFIG.CACHE.PATIENTS_LITE_KEY);
     if (raw) return { ok: true, data: JSON.parse(raw) };
     var rows = getRows_(getSheet_(CONFIG.SHEETS.PATIENTS));
-    var data = rows.map(function (p) { return { id: p.ID, firstName: p.FirstName, lastName: p.LastName, nickname: p.Nickname || '', phone: p.Phone }; });
+    var data = rows.map(function (p) { return { id: p.ID, hn: p.HN || '', firstName: p.FirstName, lastName: p.LastName, nickname: p.Nickname || '', phone: p.Phone }; });
     try { cache.put(CONFIG.CACHE.PATIENTS_LITE_KEY, JSON.stringify(data), CONFIG.CACHE.LITE_TTL); } catch (e) { /* too large for cache — still return live data */ }
     return { ok: true, data: data };
   });
@@ -1042,14 +1080,7 @@ function listPatients(token, opts) {
     var filters = compactFilters_(opts.filters);
     var sheet = getSheet_(CONFIG.SHEETS.PATIENTS);
     var rows = getRows_(sheet);
-    if (filters.q) {
-      var q = String(filters.q).trim().toLowerCase();
-      var qDigits = q.replace(/[^\d]/g, '');
-      rows = rows.filter(function (p) {
-        var fullName = (p.FirstName + ' ' + p.LastName).toLowerCase();
-        return fullName.indexOf(q) > -1 || (qDigits && String(p.Phone).indexOf(qDigits) > -1);
-      });
-    }
+    if (filters.q) rows = rows.filter(patientMatcher_(filters.q));
     rows.sort(function (a, b) { return String(b.CreatedAt).localeCompare(String(a.CreatedAt)); });
     var page = paginate_(rows, opts.page, opts.pageSize);
     page.items = page.items.map(mapPatientOut_);
@@ -1057,9 +1088,20 @@ function listPatients(token, opts) {
   });
 }
 
+/** Patients-row filter for a search box: name, phone digits or HN. */
+function patientMatcher_(q) {
+  q = String(q || '').trim().toLowerCase();
+  var qDigits = q.replace(/[^\d]/g, '');
+  return function (p) {
+    var fullName = (p.FirstName + ' ' + p.LastName).toLowerCase();
+    return fullName.indexOf(q) > -1 || (qDigits && String(p.Phone).indexOf(qDigits) > -1) ||
+      (p.HN && String(p.HN).toLowerCase().indexOf(q) > -1);
+  };
+}
+
 function mapPatientOut_(p) {
   return {
-    id: p.ID, firstName: p.FirstName, lastName: p.LastName, nickname: p.Nickname || '', phone: p.Phone, dob: dateStr_(p.DOB),
+    id: p.ID, hn: p.HN || '', firstName: p.FirstName, lastName: p.LastName, nickname: p.Nickname || '', phone: p.Phone, dob: dateStr_(p.DOB),
     gender: p.Gender, email: p.Email, photoFileId: p.PhotoFileId, joinedDate: dateStr_(p.JoinedDate), row: p._row
   };
 }
@@ -1124,14 +1166,9 @@ function getPatientProfile(token, id) {
 function searchPatients(token, q, limit) {
   return safeCall_(function () {
     requireAuth_(token, 'staff');
-    q = String(q || '').trim().toLowerCase();
-    if (!q) return { ok: true, data: [] };
-    var qDigits = q.replace(/[^\d]/g, '');
+    if (!String(q || '').trim()) return { ok: true, data: [] };
     var rows = getRows_(getSheet_(CONFIG.SHEETS.PATIENTS));
-    var matches = rows.filter(function (p) {
-      var fullName = (p.FirstName + ' ' + p.LastName).toLowerCase();
-      return fullName.indexOf(q) > -1 || (qDigits && String(p.Phone).indexOf(qDigits) > -1);
-    }).slice(0, limit || 8);
+    var matches = rows.filter(patientMatcher_(q)).slice(0, limit || 8);
     return { ok: true, data: matches.map(mapPatientOut_) };
   });
 }
@@ -1159,8 +1196,13 @@ function savePatient(token, patient) {
     try {
       var sheet = getSheet_(CONFIG.SHEETS.PATIENTS);
       var isNew = !patient.id;
+      var hn = String(patient.hn || '').trim();
+      if (hn) {
+        var taken = getRows_(sheet).filter(function (p) { return String(p.HN || '').trim().toLowerCase() === hn.toLowerCase() && p.ID !== patient.id; })[0];
+        if (taken) throw ValidationError_('เลข HN ' + hn + ' ซ้ำกับคนไข้ ' + taken.FirstName + ' ' + taken.LastName);
+      }
       var obj = {
-        ID: isNew ? ('P' + nextSeq_('PATIENT', 5)) : patient.id,
+        ID: isNew ? ('P' + nextSeq_('PATIENT', 5)) : patient.id, HN: hn,
         FirstName: patient.firstName, LastName: patient.lastName, Nickname: patient.nickname || '', Phone: phone,
         DOB: patient.dob || '', Gender: patient.gender || '', Email: patient.email || '',
         PhotoFileId: patient.photoFileId || '', JoinedDate: patient.joinedDate || todayStr_(),
@@ -1381,6 +1423,74 @@ function deletePromotion(token, id) {
     deleteRowByIndex_(sheet, rowIndex);
     invalidateMasterCache_();
     writeAudit_(session, 'DELETE', 'Promotion', id, '');
+    return { ok: true };
+  });
+}
+
+/* ---------------------------------------------------------------- */
+/* รายการหัตถการ (จัดการสินค้า/บริการ) — the record modal's หัตถการ   */
+/* picker reads the active ones from master data, so every write here   */
+/* invalidates it, same as Promotions above.                             */
+/* ---------------------------------------------------------------- */
+function mapProcedureOut_(p) {
+  return { id: p.ProcID, name: p.Name, category: p.Category || '', price: Number(p.Price) || 0, status: p.Status || 'active' };
+}
+
+function listProcedures(token) {
+  return safeCall_(function () {
+    requireAuth_(token, 'staff');
+    var rows = getRows_(getSheet_(CONFIG.SHEETS.PROCEDURES));
+    rows.sort(function (a, b) { return String(a.Category).localeCompare(String(b.Category), 'th') || String(a.Name).localeCompare(String(b.Name), 'th'); });
+    return { ok: true, data: rows.map(mapProcedureOut_) };
+  });
+}
+
+function saveProcedure(token, proc) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'admin');
+    requireFields_(proc, { name: 'ชื่อหัตถการ' });
+    var sheet = getSheet_(CONFIG.SHEETS.PROCEDURES);
+    var isNew = !proc.id;
+    var existing = isNew ? null : getRows_(sheet).filter(function (r) { return r.ProcID === proc.id; })[0];
+    if (!isNew && !existing) throw ValidationError_('ไม่พบข้อมูลหัตถการ');
+    var obj = {
+      ProcID: isNew ? ('PR' + nextSeq_('PROCEDURE', 4)) : proc.id,
+      Name: String(proc.name).trim(), Category: proc.category || '',
+      Price: requireNumber_(proc.price || 0, 'ราคา', { min: 0 }),
+      Status: proc.status === 'inactive' ? 'inactive' : 'active',
+      CreatedAt: isNew ? nowStr_() : existing.CreatedAt, UpdatedAt: nowStr_()
+    };
+    if (isNew) appendRow_(sheet, CONFIG.HEADERS.Procedures, obj);
+    else updateRowByIndex_(sheet, CONFIG.HEADERS.Procedures, existing._row, obj);
+    invalidateMasterCache_();
+    writeAudit_(session, isNew ? 'CREATE' : 'UPDATE', 'Procedure', obj.ProcID, obj.Name);
+    return { ok: true, data: mapProcedureOut_(obj) };
+  });
+}
+
+function toggleProcedureStatus(token, id) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'admin');
+    var sheet = getSheet_(CONFIG.SHEETS.PROCEDURES);
+    var row = getRows_(sheet).filter(function (r) { return r.ProcID === id; })[0];
+    if (!row) throw ValidationError_('ไม่พบข้อมูลหัตถการ');
+    var newStatus = row.Status === 'inactive' ? 'active' : 'inactive';
+    updateRowByIndex_(sheet, CONFIG.HEADERS.Procedures, row._row, Object.assign({}, row, { Status: newStatus, UpdatedAt: nowStr_() }));
+    invalidateMasterCache_();
+    writeAudit_(session, 'UPDATE', 'Procedure', id, 'status -> ' + newStatus);
+    return { ok: true, data: { status: newStatus } };
+  });
+}
+
+function deleteProcedure(token, id) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'admin');
+    var sheet = getSheet_(CONFIG.SHEETS.PROCEDURES);
+    var rowIndex = findRowIndexById_(sheet, 'ProcID', id);
+    if (rowIndex < 0) throw ValidationError_('ไม่พบข้อมูลหัตถการ');
+    deleteRowByIndex_(sheet, rowIndex);
+    invalidateMasterCache_();
+    writeAudit_(session, 'DELETE', 'Procedure', id, '');
     return { ok: true };
   });
 }
@@ -2090,14 +2200,20 @@ function deleteStockLogEntry(token, id) {
    PromoJSON: JSON array of {promoId,name,price,doctorSharePct,amount} — round
      13 "รายการโปร"; doctorSharePct is snapshotted server-side from the
      Promotions sheet at save time (never trust the client's copy).
-   MedicineJSON: "รายการเบิกยาหน้าคลีนิค" — JSON array of {itemId, name,
-     qtyDispensed, qtyUsed, qtyDeposit, unitPrice, amount}: qtyDispensed is
-     taken out of Stock, qtyDeposit (= dispensed - used) goes into the
-     patient's MedDeposits balance, amount = qtyDispensed * unitPrice is
-     charged. Lines saved before this shape existed are {name, amount}.
-   OwnMedJSON {name,qty} "รายการถือยาเข้า", DepositUseJSON {itemId,name,qty}
-     "รายการใช้ยาฝาก" (taken out of MedDeposits), MessengerJSON {name,qty,
-     note} "รายการ Messenger/พัสดุ" — none of these three are charged.
+   MedicineJSON: "รายการยา" — JSON array of {withdrawId?, itemId, name,
+     qtyDispensed, qtyUsed, qtyDeposit, expiry, unitPrice, amount,
+     unitCost?}: a line with withdrawId charges that จัดยา-เบิกยา line (its
+     qty already left Stock); any other line is เบิกเพิ่ม and its
+     qtyDispensed is taken out of Stock here. qtyDeposit (= dispensed -
+     used) becomes a ยาฝาก lot expiring on `expiry`, amount = qtyDispensed *
+     unitPrice is charged. Lines saved before this shape existed are
+     {name, amount}.
+   OwnMedJSON {name,qty} "รายการถือยาเข้า", DepositUseJSON {itemId,name,qty,
+     lots} "รายการใช้ยาฝาก" (taken out of MedDeposits lots, see
+     planDeposits_), MessengerJSON {name,qty,note} "รายการ Messenger/พัสดุ"
+     — none of these three are charged.
+   ProcedureJSON: "รายการหัตถการ" — {procId,name,price,amount}; Amount is
+     their sum.
    StockApplied: 'TRUE' on records created since stock/deposit effects
      existed — only those records' lines move Stock/MedDeposits (see
      recordEffects_), so editing an older record never re-deducts it.
@@ -2122,10 +2238,11 @@ function mapRecordOut_(r) {
   var medicineAmount = Number(r.MedicineAmount) || 0;
   var doctorShareRaw = Number(r.DoctorShareRaw) || 0;
   var salesShare = Number(r.SalesShare) || 0;
-  // grossBase mirrors computeRecordShares_/recomputeDoctorDayShares_: the
-  // pool that ส่วนแบ่งแพทย์/เซลล์/คลินิก are carved out of is the procedure
-  // amount + promo amount + canula (see the round-13 formula comment below).
+  // grossBase = procedure + promo + canula (what the sales/doctor % apply
+  // to); collected adds ยาเบิกเพิ่ม + รายการอื่นๆ, and ส่วนแบ่งคลีนิค is all of
+  // it minus the sales and doctor shares (see recordClinicShare_).
   var grossBase = round2_(amount + promoAmount + (useCanula ? canulaAmount : 0));
+  var collected = recordCollected_(r);
   return {
     id: r.RID, date: dateStr_(r.Date), patientId: r.PatientID, patientName: r.PatientName, phone: r.Phone,
     serviceCategory: r.ServiceCategory, detail: r.Detail, doctorId: r.DoctorID, doctorName: r.DoctorName,
@@ -2137,7 +2254,7 @@ function mapRecordOut_(r) {
       (r.UseSupplies === '' && parseSupplies_(r.SuppliesJSON).length > 0),
     canulaAmount: canulaAmount, amount: amount, status: r.Status || 'unpaid',
     receiptNo: r.ReceiptNo || '', note: r.Note || '', createdBy: r.CreatedBy, row: r._row,
-    // Revenue-split fields (see computeRecordShares_/recomputeDoctorDayShares_).
+    // Revenue-split fields (see buildDoctorShares_/recomputeDoctorDayShares_).
     // doctorShareRaw/clinicShareRaw are the plain per-record commission split
     // BEFORE the doctor's daily-minimum-guarantee top-up is applied — the
     // per-record detail panel shows these (not doctorShare/clinicShare, which
@@ -2150,23 +2267,27 @@ function mapRecordOut_(r) {
     doctorShare: Number(r.DoctorShare) || 0,
     doctorShareRaw: doctorShareRaw,
     doctorShareNote: r.DoctorShareNote || '',
-    clinicShare: Number(r.ClinicShare) || 0,
-    clinicShareRaw: round2_(grossBase - salesShare - doctorShareRaw),
+    doctorShares: recordDoctorShares_(r),
+    clinicShare: recordClinicShare_(r),
+    clinicShareRaw: round2_(collected - salesShare - doctorShareRaw),
     // Round 13 line-item groups.
     usePromo: String(r.UsePromo) === 'TRUE' || r.UsePromo === true,
     promoItems: parseLineItems_(r.PromoJSON), promoAmount: promoAmount,
     useMedicine: String(r.UseMedicine) === 'TRUE' || r.UseMedicine === true,
-    medicineItems: parseLineItems_(r.MedicineJSON), medicineAmount: medicineAmount,
+    // unitCost (ราคาทุน) stays on the server — only รายงานรายเซลล์ reads it.
+    medicineItems: parseLineItems_(r.MedicineJSON).map(function (l) { var o = Object.assign({}, l); delete o.unitCost; return o; }),
+    medicineAmount: medicineAmount,
+    useProcedure: isTrue_(r.UseProcedure), procedureItems: parseLineItems_(r.ProcedureJSON),
     useOther: String(r.UseOther) === 'TRUE' || r.UseOther === true,
     otherItems: parseLineItems_(r.OtherItemsJSON),
     useOwnMed: isTrue_(r.UseOwnMed), ownMedItems: parseLineItems_(r.OwnMedJSON),
     useDepositUse: isTrue_(r.UseDepositUse), depositUseItems: parseLineItems_(r.DepositUseJSON),
     useMessenger: isTrue_(r.UseMessenger), messengerItems: parseLineItems_(r.MessengerJSON),
     stockApplied: isTrue_(r.StockApplied),
-    supplierPayAmount: Number(r.SupplierPayAmount) || round2_(medicineAmount + otherAmount),
+    withdrawItems: parseLineItems_(r.WithdrawJSON),
     estimatedRevenue: grossBase,
-    totalCollected: round2_(grossBase + medicineAmount + otherAmount),
-    visitStatus: r.VisitStatus || 'scheduled',
+    totalCollected: collected,
+    visitStatus: r.VisitStatus === 'completed' ? 'completed' : 'dispensed', // older ''/'scheduled' read as จัดยาแล้ว
     // Round 14 item 1.7 — OPD photo attachment (Drive fileId; fetch its
     // viewable data URI via getPhotoUrl, same as patient/login/logo photos).
     opdImageFileId: r.OpdImageFileId || ''
@@ -2177,10 +2298,9 @@ function mapRecordOut_(r) {
    REVENUE SPLIT ENGINE — see the spec's formulas (ยอดชำระจากลูกค้า /
    ส่วนแบ่งเซลล์ / ส่วนแบ่งแพทย์ / ส่วนแบ่งคลินิก) and the confirmed
    clarifications: (1) "สถานะ" (payment: ชำระแล้ว/รอชำระ/ยกเลิก) stays as-is
-   and still gates revenue inclusion; VisitStatus (นัดหมาย/เสร็จสิ้น) is a
-   separate, independent workflow marker. (2) OtherAmount/MedicineAmount
-   ("จำนวนเงินอื่นๆ"/"จำนวนเงินยา") are tracked as their own bucket
-   (SupplierPayAmount) and are NOT added into anyone's revenue share.
+   and still gates revenue inclusion; VisitStatus (จัดยาแล้ว/เสร็จสิ้น) is a separate, independent workflow marker. (2)
+   OtherAmount/MedicineAmount ("จำนวนเงินอื่นๆ"/"ค่ายาเบิกเพิ่ม") are not in the
+   sales/doctor % base; they now go to the clinic (there is no supplier share).
    ------------------------------------------------------------------------
    ROUND 13 UPDATE — ส่วนแบ่งโปรโมชัน. Per the client's explicit spec this
    round REVERSES round 12's "Promotions is standalone" decision: each
@@ -2193,10 +2313,12 @@ function mapRecordOut_(r) {
    useCanula):
      salesShare      = round(A * Cs / 100)                     -- (2) sales never sees promo money
      doctorShareRaw  = round(A * Cd / 100) + PD                -- (1)
-     grossBase       = A + P + K                                -- everything the 3-way split is carved from
-     clinicShareRaw  = grossBase - salesShare - doctorShareRaw  -- (3) "ที่เหลือ" of both A and P, plus K in full
-   With P=0 this is identical to the pre-round-13 formulas, so historical
-   records (PromoAmount blank/0) are unaffected.
+     collected       = A + P + K + M + O                        -- M ยาเบิกเพิ่ม, O รายการอื่นๆ
+     clinicShareRaw  = collected - salesShare - doctorShareRaw  -- (3) everything left over
+   Since multi-doctor records, A and P are per line: each หัตถการ line pays
+   its own doctor A_line * Cd_line, each โปร line pays its doctor
+   P_line * promo%, and the daily minimum is per doctor (buildDoctorShares_ /
+   recomputeDoctorDayShares_).
    ====================================================================== */
 
 /** Checkbox-style flags are written as 'TRUE'/'FALSE', but Sheets stores them as real booleans — accept both. */
@@ -2213,55 +2335,78 @@ function round2_(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 
-/**
- * Raw (pre-daily-minimum) commission split for one record.
- * @param {number} customerAmount    "จำนวนเงินหัตถการ" — procedure amount only.
- * @param {number} promoAmount       Sum of this record's รายการโปร line amounts.
- * @param {number} promoDoctorShare  Sum of (line.amount * line.doctorSharePct/100)
- *   across this record's รายการโปร lines — the caller (saveRecord) computes
- *   this from server-trusted Promotions data, never from client input.
- * @param {number} canulaAmount      Canula amount, already zeroed by the
- *   caller if useCanula is false.
- */
-function computeRecordShares_(customerAmount, promoAmount, promoDoctorShare, canulaAmount, doctor, sales) {
-  var salesPct = sales ? (Number(sales.CommissionRate) || 0) : 0;
-  var doctorPct = doctor ? (Number(doctor.CommissionPct) || 0) : 0;
-  var salesShare = round2_((Number(customerAmount) || 0) * salesPct / 100);
-  var doctorShareRaw = round2_((Number(customerAmount) || 0) * doctorPct / 100 + (Number(promoDoctorShare) || 0));
-  var grossBase = round2_((Number(customerAmount) || 0) + (Number(promoAmount) || 0) + (Number(canulaAmount) || 0));
-  return {
-    salesPct: salesPct,
-    salesShare: salesShare,
-    doctorPct: doctorPct,
-    doctorShareRaw: doctorShareRaw,
-    grossBase: grossBase,
-    clinicShareRaw: round2_(grossBase - salesShare - doctorShareRaw)
-  };
+/** What the patient pays for one Records row: หัตถการ + โปร + canula + ยาเบิกเพิ่ม + รายการอื่นๆ. */
+function recordCollected_(r) {
+  var canula = isTrue_(r.UseCanula) ? (Number(r.CanulaAmount) || 0) : 0;
+  return round2_((Number(r.Amount) || 0) + (Number(r.PromoAmount) || 0) + canula + (Number(r.MedicineAmount) || 0) + (Number(r.OtherAmount) || 0));
+}
+
+/** ส่วนแบ่งคลีนิค = everything collected − ส่วนแบ่งเซลล์ − ส่วนแบ่งแพทย์ (final, after the daily minimum). Read this rather than the ClinicShare column, which older rows wrote without ยา/รายการอื่นๆ. */
+function recordClinicShare_(r) {
+  return round2_(recordCollected_(r) - (Number(r.SalesShare) || 0) - (Number(r.DoctorShare) || 0));
+}
+
+/** The record's per-doctor shares ({doctorId, name, pct, raw, share, note}); rows from before DoctorSharesJSON have their one doctor in the plain columns. */
+function recordDoctorShares_(r) {
+  var list = parseLineItems_(r.DoctorSharesJSON);
+  if (list.length || r.DoctorSharesJSON) return list;
+  return r.DoctorID ? [{
+    doctorId: r.DoctorID, name: r.DoctorName || '', pct: Number(r.DoctorCommissionPct) || 0,
+    raw: Number(r.DoctorShareRaw) || 0, share: Number(r.DoctorShare) || 0, note: r.DoctorShareNote || ''
+  }] : [];
+}
+
+/** Writes a per-doctor share list onto a Records row object (in place) and derives the summary columns from it. */
+function applyDoctorShares_(r, list) {
+  r.DoctorSharesJSON = JSON.stringify(list);
+  r.DoctorID = list.length ? list[0].doctorId : '';
+  r.DoctorName = list.map(function (d) { return d.name; }).join(', ');
+  r.DoctorCommissionPct = list.length ? list[0].pct : '';
+  r.DoctorShareRaw = round2_(list.reduce(function (s, d) { return s + (Number(d.raw) || 0); }, 0));
+  r.DoctorShare = round2_(list.reduce(function (s, d) { return s + (Number(d.share) || 0); }, 0));
+  r.DoctorShareNote = list.map(function (d) { return d.note; }).filter(Boolean).join(' · ');
+  r.ClinicShare = recordClinicShare_(r);
+  return r;
 }
 
 /**
- * Enforces a doctor's daily minimum guarantee across every one of their
- * (non-cancelled) records on one date: if the sum of raw commission-based
- * DoctorShareRaw values for the day is below the doctor's configured
- * MinAmount, the shortfall is topped up entirely onto the most recently
- * saved record in the group (flagged with a DoctorShareNote so it's
- * auditable in one place), and every other record in the group is reset to
- * its plain raw share. ClinicShare is recomputed for every touched record
- * since it depends on DoctorShare. Must be called from inside the caller's
- * LockService lock (saveRecord/deleteRecord) since it rewrites sibling
- * rows on the Records sheet.
+ * Raw (pre-daily-minimum) ส่วนแบ่งแพทย์ per doctor. entries: one per
+ * หัตถการ line {doctorId, base: amount} (the doctor's own CommissionPct
+ * applies) and one per โปร line {doctorId, extra: amount * promo
+ * DoctorSharePct / 100}. Returns [{doctorId, name, pct, raw, share, note}]
+ * in first-appearance order; share = raw until recomputeDoctorDayShares_
+ * applies the minimum.
  */
-// Round 19 item 4: `allRows` is an optional pre-fetched Records getRows_()
-// snapshot — when a caller (saveRecord) already has a fresh, POST-write
-// snapshot of the whole sheet in hand, passing it in here avoids yet
-// another independent full-sheet read (a real cost once Records passes
-// 5000+ rows). Callers that don't have one (deleteRecord — the row shift
-// from deleteRowByIndex_ means any pre-delete snapshot would have stale
-// `_row` numbers) simply omit it and get the original fresh-read behavior.
-// Also now RETURNS the (possibly-updated) group array so a caller that just
-// wrote a record into this exact doctor+date group can read its final
-// DoctorShare/ClinicShare straight off the return value instead of doing a
-// second full-sheet re-read+filter (see saveRecord).
+function buildDoctorShares_(entries, doctorById) {
+  var byId = {}, order = [];
+  entries.forEach(function (e) {
+    if (!e.doctorId) return;
+    var g = byId[e.doctorId];
+    if (!g) {
+      var d = doctorById[e.doctorId];
+      g = byId[e.doctorId] = { doctorId: e.doctorId, name: d ? d.Name : '', pct: d ? Number(d.CommissionPct) || 0 : 0, raw: 0, share: 0, note: '' };
+      order.push(g);
+    }
+    g.raw += (Number(e.base) || 0) * g.pct / 100 + (Number(e.extra) || 0);
+  });
+  order.forEach(function (g) { g.raw = round2_(g.raw); g.share = g.raw; });
+  return order;
+}
+
+/**
+ * Enforces one doctor's daily minimum guarantee across every (non-cancelled)
+ * record on one date that pays that doctor: if the doctor's raw shares for
+ * the day add up to less than their MinAmount, the shortfall is topped up
+ * onto their entry in the most recently saved record (with a note), and
+ * their entries in the day's other records go back to plain raw. The
+ * record's totals and ClinicShare are re-derived (applyDoctorShares_).
+ * Must run inside the caller's script lock.
+ *
+ * `allRows` is an optional Records getRows_() snapshot taken after the
+ * caller's own write; rows this rewrites are updated in it in place, so the
+ * caller can run this for several doctors on one snapshot (see saveRecord).
+ * Returns the day's group for that doctor.
+ */
 function recomputeDoctorDayShares_(doctorId, date, allRows) {
   if (!doctorId || !date) return [];
   var doctorRows = getRows_(getSheet_(CONFIG.SHEETS.DOCTORS));
@@ -2270,39 +2415,48 @@ function recomputeDoctorDayShares_(doctorId, date, allRows) {
 
   var sheet = getSheet_(CONFIG.SHEETS.RECORDS);
   var rows = allRows || getRows_(sheet);
+  var entryOf = function (list) { return list.filter(function (d) { return d.doctorId === doctorId; })[0]; };
   var group = rows.filter(function (r) {
-    return r.DoctorID === doctorId && dateStr_(r.Date) === date && r.Status !== 'cancelled';
+    return dateStr_(r.Date) === date && r.Status !== 'cancelled' && entryOf(recordDoctorShares_(r));
   });
   if (!group.length) return [];
   group.sort(function (a, b) { return String(a.CreatedAt).localeCompare(String(b.CreatedAt)); });
 
   var rawTotal = 0;
-  group.forEach(function (r) { rawTotal += Number(r.DoctorShareRaw) || 0; });
+  group.forEach(function (r) { rawTotal += Number(entryOf(recordDoctorShares_(r)).raw) || 0; });
   var shortfall = minAmount > rawTotal ? round2_(minAmount - rawTotal) : 0;
   var lastIdx = group.length - 1;
 
-  return group.map(function (r, i) {
-    var raw = Number(r.DoctorShareRaw) || 0;
-    var finalShare = raw;
-    var note = '';
+  group.forEach(function (r, i) {
+    var list = recordDoctorShares_(r).map(function (d) { return Object.assign({}, d); });
+    var e = entryOf(list);
+    e.share = Number(e.raw) || 0;
+    e.note = '';
     if (shortfall > 0 && i === lastIdx) {
-      finalShare = round2_(raw + shortfall);
-      note = 'ปรับเพิ่มให้ครบยอดขั้นต่ำต่อวัน (' + minAmount.toLocaleString('en-US') + ' บาท) ของ ' + (doctor ? doctor.Name : doctorId);
+      e.share = round2_(e.share + shortfall);
+      e.note = 'ปรับเพิ่มให้ครบยอดขั้นต่ำต่อวัน (' + minAmount.toLocaleString('en-US') + ' บาท) ของ ' + (doctor ? doctor.Name : doctorId);
     }
-    var customerAmount = Number(r.Amount) || 0;
-    var promoAmount = Number(r.PromoAmount) || 0;
-    var canula = isTrue_(r.UseCanula) ? (Number(r.CanulaAmount) || 0) : 0;
-    var salesShare = Number(r.SalesShare) || 0;
-    // grossBase = A + P + K (see the round-13 formula comment above
-    // computeRecordShares_) — with PromoAmount 0/blank this is identical to
-    // the pre-round-13 "customerAmount + canula" base.
-    var grossBase = round2_(customerAmount + promoAmount + canula);
-    var clinicShare = round2_(grossBase - salesShare - finalShare);
-    var updated = Object.assign({}, r, { DoctorShare: finalShare, DoctorShareNote: note, ClinicShare: clinicShare });
-    if (Number(r.DoctorShare) !== finalShare || String(r.DoctorShareNote || '') !== note || Number(r.ClinicShare) !== clinicShare) {
-      updateRowByIndex_(sheet, CONFIG.HEADERS.Records, r._row, updated);
+    var before = [r.DoctorSharesJSON, Number(r.DoctorShare), String(r.DoctorShareNote || ''), Number(r.ClinicShare)].join('|');
+    applyDoctorShares_(r, list);
+    if ([r.DoctorSharesJSON, Number(r.DoctorShare), String(r.DoctorShareNote || ''), Number(r.ClinicShare)].join('|') !== before) {
+      updateRowByIndex_(sheet, CONFIG.HEADERS.Records, r._row, r);
     }
-    return updated;
+  });
+  return group;
+}
+
+/** Re-applies the daily minimum for every doctor a record pays (before and after a change) on its date(s). */
+function recomputeRecordDoctors_(oldRow, newRow, allRows) {
+  var seen = {};
+  [oldRow, newRow].forEach(function (r) {
+    if (!r) return;
+    var date = dateStr_(r.Date);
+    recordDoctorShares_(r).forEach(function (d) {
+      var key = d.doctorId + '|' + date;
+      if (seen[key]) return;
+      seen[key] = true;
+      recomputeDoctorDayShares_(d.doctorId, date, allRows);
+    });
   });
 }
 
@@ -2319,8 +2473,10 @@ function listRecords(token, opts) {
         return String(r.PatientName).toLowerCase().indexOf(q) > -1 || (qDigits && String(r.Phone).indexOf(qDigits) > -1);
       });
     }
-    if (filters.doctorId) rows = rows.filter(function (r) { return r.DoctorID === filters.doctorId; });
+    if (filters.doctorId) rows = rows.filter(function (r) { return recordDoctorShares_(r).some(function (d) { return d.doctorId === filters.doctorId; }); });
     if (filters.status) rows = rows.filter(function (r) { return r.Status === filters.status; });
+    // สถานะการรักษา: anything not completed reads as จัดยาแล้ว (see mapRecordOut_).
+    if (filters.visitStatus) rows = rows.filter(function (r) { return (r.VisitStatus === 'completed' ? 'completed' : 'dispensed') === filters.visitStatus; });
     if (filters.dateFrom) rows = rows.filter(function (r) { return dateStr_(r.Date) >= filters.dateFrom; });
     if (filters.dateTo) rows = rows.filter(function (r) { return dateStr_(r.Date) <= filters.dateTo; });
     // Sort by date descending (latest first) — compare normalized 'yyyy-MM-dd'
@@ -2392,19 +2548,19 @@ function computeDailySummaryDetail_(dateStr) {
     otherAmountTotal += other;
     promoAmountTotal += promo;
     medicineAmountTotal += medicine;
-    clinicNet += Number(r.ClinicShare) || 0;
+    clinicNet += recordClinicShare_(r);
     if (r.PaymentMethod === 'เงินสด') cashAmount += collected;
     else if (r.PaymentMethod === 'โอนเงิน') transferAmount += collected;
     else if (r.PaymentMethod === 'บัตรเครดิต') cardAmount += collected;
-    if (r.DoctorID) {
-      if (!doctorMap[r.DoctorID]) doctorMap[r.DoctorID] = { name: r.DoctorName, amount: 0, topped: false };
-      doctorMap[r.DoctorID].amount += Number(r.DoctorShare) || 0;
+    recordDoctorShares_(r).forEach(function (d) {
+      if (!doctorMap[d.doctorId]) doctorMap[d.doctorId] = { name: d.name, amount: 0, topped: false };
+      doctorMap[d.doctorId].amount += Number(d.share) || 0;
       // DoctorShareNote is only ever set by recomputeDoctorDayShares_ when a
       // record's share was topped up to meet the doctor's daily minimum —
       // surfacing that here lets the summary mark the doctor with a footnote
       // instead of silently showing an inflated number with no explanation.
-      if (r.DoctorShareNote) doctorMap[r.DoctorID].topped = true;
-    }
+      if (d.note) doctorMap[d.doctorId].topped = true;
+    });
     if (r.SalesID) {
       if (!salesMap[r.SalesID]) salesMap[r.SalesID] = { name: r.SalesName, amount: 0 };
       salesMap[r.SalesID].amount += Number(r.SalesShare) || 0;
@@ -2508,30 +2664,72 @@ function sumLineItems_(items, useFlag, fieldLabel) {
   return { items: out, total: round2_(total) };
 }
 
-/** รายการเบิกยาหน้าคลีนิค lines -> {items, total}; see the MedicineJSON note above. */
-function medicineLines_(record) {
+/**
+ * รายการยาเบิกเพิ่ม lines -> {items, total}; see the MedicineJSON note above.
+ * Charged, taken out of Stock by this record, and each keeps a unitCost
+ * snapshot (ราคาทุน, for รายงานรายเซลล์ — never sent to the client, see
+ * mapRecordOut_). ctx: {stockById, oldLines}.
+ */
+function medicineLines_(record, ctx) {
   var out = { items: [], total: 0 };
   if (!record.useMedicine || !Array.isArray(record.medicineItems)) return out;
   record.medicineItems.forEach(function (it, i) {
     if (!it || (!String(it.name || '').trim() && !it.itemId)) return;
-    var line = ' (บรรทัดที่ ' + (i + 1) + ')';
+    var line = ' (ยาเบิกเพิ่ม บรรทัดที่ ' + (i + 1) + ')';
     if (!('qtyDispensed' in it)) { // pre-dispense-table line: name + amount only
       var legacyAmt = requireNumber_(it.amount || 0, 'จำนวนเงินยา' + line, { min: 0 });
       out.items.push({ name: it.name || '', amount: legacyAmt });
       out.total += legacyAmt;
       return;
     }
-    if (!it.itemId) throw ValidationError_('กรุณาเลือกยาจากรายการสต๊อกยา' + line);
-    var qd = requireNumber_(it.qtyDispensed || 0, 'จำนวนที่เบิก' + line, { min: 0 });
-    var qu = requireNumber_(it.qtyUsed || 0, 'จำนวนที่ใช้' + line, { min: 0 });
-    if (qu > qd) throw ValidationError_('จำนวนที่ใช้มากกว่าจำนวนที่เบิก' + line);
-    var up = requireNumber_(it.unitPrice || 0, 'ราคาต่อหน่วย' + line, { min: 0 });
-    var amt = round2_(qd * up);
-    out.items.push({ itemId: it.itemId, name: String(it.name || '').trim(), qtyDispensed: qd, qtyUsed: qu, qtyDeposit: round2_(qd - qu), unitPrice: up, amount: amt });
-    out.total += amt;
+    if (!it.itemId || !ctx.stockById[it.itemId]) throw ValidationError_('กรุณาเลือกยาจากรายการสต๊อกยา' + line);
+    var old = (ctx.oldLines || []).filter(function (l) { return l.itemId === it.itemId && l.unitCost != null; })[0];
+    var o = {
+      itemId: it.itemId, name: String(it.name || '').trim(),
+      qtyDispensed: requireNumber_(it.qtyDispensed || 0, 'จำนวนที่เบิก' + line, { min: 0 }),
+      unitCost: old ? Number(old.unitCost) || 0 : Number(ctx.stockById[it.itemId].CostPrice) || 0
+    };
+    depositSplit_(o, it, line);
+    o.unitPrice = requireNumber_(it.unitPrice || 0, 'ราคาต่อหน่วย' + line, { min: 0 });
+    o.amount = round2_(o.qtyDispensed * o.unitPrice);
+    out.items.push(o);
+    out.total += o.amount;
   });
   out.total = round2_(out.total);
   return out;
+}
+
+/**
+ * รายการยาจากใบเบิก -> the WithdrawJSON lines. Each names a จัดยา-เบิกยา line
+ * (withdrawId) that must be this patient's and not taken in by another
+ * record; its item and qtyDispensed come from that row (it already left
+ * Stock). Not charged — only the used / ยาฝาก split is the client's.
+ * ctx: {rid, patientId, wdById}.
+ */
+function withdrawLines_(record, ctx) {
+  var seen = {};
+  if (record.useWithdraw === false) return []; // unticked: the lines go back to waiting
+  return (Array.isArray(record.withdrawItems) ? record.withdrawItems : []).filter(function (it) { return it && it.withdrawId; }).map(function (it, i) {
+    var line = ' (ยาจากใบเบิก บรรทัดที่ ' + (i + 1) + ')';
+    var wd = ctx.wdById[it.withdrawId];
+    if (!wd || wd.PatientID !== ctx.patientId) throw ValidationError_('ไม่พบรายการเบิกยาของคนไข้รายนี้ (อาจถูกลบไปแล้ว)' + line);
+    if (wd.RecordID && wd.RecordID !== ctx.rid) throw ValidationError_('รายการเบิกยา ' + wd.ItemName + ' ถูกบันทึกในการรักษา ' + wd.RecordID + ' แล้ว' + line);
+    if (seen[it.withdrawId]) throw ValidationError_('รายการเบิกยา ' + wd.ItemName + ' ซ้ำ' + line);
+    seen[it.withdrawId] = true;
+    var o = { withdrawId: wd.WithdrawID, itemId: wd.ItemID, name: wd.ItemName, qtyDispensed: Number(wd.Qty) || 0 };
+    return depositSplit_(o, it, line);
+  });
+}
+
+/** Sets qtyUsed / qtyDeposit (= dispensed − used, becomes a ยาฝาก lot) / its expiry on line o from client line it. */
+function depositSplit_(o, it, line) {
+  var qu = requireNumber_(it.qtyUsed || 0, 'จำนวนที่ใช้' + line, { min: 0 });
+  if (qu > o.qtyDispensed) throw ValidationError_('จำนวนที่ใช้มากกว่าจำนวนที่เบิก' + line);
+  o.qtyUsed = qu;
+  o.qtyDeposit = round2_(o.qtyDispensed - qu);
+  o.expiry = o.qtyDeposit > 0 && it.expiry ? String(it.expiry) : '';
+  if (o.expiry) requireDateStr_(o.expiry, 'วันหมดอายุยาฝาก' + line);
+  return o;
 }
 
 /** Uncharged quantity lines (ถือยาเข้า / ใช้ยาฝาก / Messenger): blank names dropped, qty validated, only `fields` kept. */
@@ -2547,66 +2745,41 @@ function qtyLines_(items, use, label, fields, requireItem) {
 }
 
 /**
- * What a saved Records row takes out of Stock and puts into / takes out of
- * MedDeposits: {stock: {itemId: qty}, deposit: {'patientId|itemId': qty}}.
- * Rows without StockApplied=TRUE (saved before this existed) have none.
+ * What a saved Records row takes out of Stock: {itemId: qty}. Its ยาจากใบเบิก
+ * (WithdrawJSON) took nothing — the withdrawal already did. Rows without StockApplied=TRUE (saved before this existed)
+ * take nothing.
  */
-function recordEffects_(r) {
-  var eff = { stock: {}, deposit: {} };
+function recordStockEffects_(r) {
+  var eff = {};
   if (!isTrue_(r.StockApplied)) return eff;
-  var add = function (map, key, n) { if (key && n) map[key] = round2_((map[key] || 0) + n); };
+  var add = function (key, n) { if (key && n) eff[key] = round2_((eff[key] || 0) + n); };
   if (isTrue_(r.UseSupplies)) {
-    parseLineItems_(r.SuppliesJSON).forEach(function (l) { add(eff.stock, l.itemId, Number(l.qty) || 0); });
+    parseLineItems_(r.SuppliesJSON).forEach(function (l) { add(l.itemId, Number(l.qty) || 0); });
   }
   if (isTrue_(r.UseMedicine)) {
-    parseLineItems_(r.MedicineJSON).forEach(function (l) {
-      add(eff.stock, l.itemId, Number(l.qtyDispensed) || 0);
-      add(eff.deposit, l.itemId && (r.PatientID + '|' + l.itemId), Number(l.qtyDeposit) || 0);
-    });
-  }
-  if (isTrue_(r.UseDepositUse)) {
-    parseLineItems_(r.DepositUseJSON).forEach(function (l) { add(eff.deposit, l.itemId && (r.PatientID + '|' + l.itemId), -(Number(l.qty) || 0)); });
+    parseLineItems_(r.MedicineJSON).forEach(function (l) { add(l.itemId, Number(l.qtyDispensed) || 0); });
   }
   return eff;
 }
 
 /**
- * Moves Stock and MedDeposits by (newEff - oldEff) — so a new record applies
- * its lines, an edit applies only what changed, and a delete (newEff empty)
- * puts everything back. Checks every item first and throws before writing
- * anything if a deposit balance would go below zero (stock itself may go
- * negative). Stock moves are StockLog rows of kind `logKind` (default
- * 'record'; เบิกยาคลีนิค passes 'withdraw') dated today — not the record's
+ * Moves Stock by (newEff - oldEff) — so a new record applies its lines, an
+ * edit applies only what changed, and a delete (newEff empty) puts
+ * everything back. Stock may go negative; only a missing item throws (before
+ * anything is written). Moves are StockLog rows of kind `logKind` (default
+ * 'record'; จัดยา-เบิกยา passes 'withdraw') dated today — not the record's
  * date, so they are always the item's latest entry and Stock.Qty follows
  * them. Must run inside the caller's script lock.
  */
-function applyRecordEffects_(session, oldEff, newEff, label, patientName, logKind) {
-  var diff = function (a, b) {
-    var out = {};
-    Object.keys(a).concat(Object.keys(b)).forEach(function (k) { var d = round2_((b[k] || 0) - (a[k] || 0)); if (d) out[k] = d; });
-    return out;
-  };
-  var stockDelta = diff(oldEff.stock, newEff.stock);     // + = more taken out of stock
-  var depositDelta = diff(oldEff.deposit, newEff.deposit); // + = more deposited
-  if (!Object.keys(stockDelta).length && !Object.keys(depositDelta).length) return;
-
+function applyStockEffects_(session, oldEff, newEff, label, logKind) {
+  var stockDelta = {}; // + = more taken out of stock
+  Object.keys(oldEff).concat(Object.keys(newEff)).forEach(function (k) { var d = round2_((newEff[k] || 0) - (oldEff[k] || 0)); if (d) stockDelta[k] = d; });
+  if (!Object.keys(stockDelta).length) return;
   var stockById = {};
   getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (r) { stockById[r.ItemID] = r; });
-  // Stock may go negative (usage recorded before a stock update) — only a missing item blocks the save.
   Object.keys(stockDelta).forEach(function (id) {
     if (!stockById[id] && stockDelta[id] > 0) throw ValidationError_('ไม่พบรายการในสต๊อก (อาจถูกลบไปแล้ว)');
   });
-  var depSheet = getSheet_(CONFIG.SHEETS.MED_DEPOSITS);
-  var depByKey = {};
-  getRows_(depSheet).forEach(function (r) { depByKey[r.PatientID + '|' + r.ItemID] = r; });
-  Object.keys(depositDelta).forEach(function (k) {
-    var row = depByKey[k], bal = row ? Number(row.QtyRemaining) || 0 : 0;
-    if (bal + depositDelta[k] < 0) {
-      var name = row ? row.ItemName : (stockById[k.split('|')[1]] || {}).Name || '';
-      throw ValidationError_('ยาฝาก ' + name + ' ไม่พอ (คงเหลือ ' + bal + ')');
-    }
-  });
-
   var logSheet = getSheet_(CONFIG.SHEETS.STOCK_LOG);
   var movedIds = Object.keys(stockDelta).filter(function (id) { return stockById[id]; });
   movedIds.forEach(function (id) {
@@ -2616,32 +2789,199 @@ function applyRecordEffects_(session, oldEff, newEff, label, patientName, logKin
     resyncStockQtyFromLog_(id);
   });
   if (movedIds.length) invalidateStockLiteCache_();
-
-  Object.keys(depositDelta).forEach(function (k) {
-    var row = depByKey[k], parts = k.split('|');
-    if (row) {
-      updateRowByIndex_(depSheet, CONFIG.HEADERS.MedDeposits, row._row, Object.assign({}, row, {
-        Date: todayStr_(), QtyRemaining: round2_((Number(row.QtyRemaining) || 0) + depositDelta[k]), CreatedBy: session.username, UpdatedAt: nowStr_()
-      }));
-    } else {
-      appendRow_(depSheet, CONFIG.HEADERS.MedDeposits, {
-        DepositID: 'DP' + nextSeq_('DEPOSIT', 5), Date: todayStr_(), PatientID: parts[0], PatientName: patientName || '',
-        ItemName: (stockById[parts[1]] || {}).Name || '', QtyRemaining: depositDelta[k], CreatedBy: session.username, ItemID: parts[1], UpdatedAt: nowStr_()
-      });
-    }
-  });
 }
 
-/** ยาฝาก the patient still has (balance > 0) — record modal and patient panel. */
-function patientDeposits_(patientId) {
-  return getRows_(getSheet_(CONFIG.SHEETS.MED_DEPOSITS)).filter(function (r) { return r.PatientID === patientId && (Number(r.QtyRemaining) || 0) > 0; }).map(function (r) {
-    return { id: r.DepositID, itemId: r.ItemID, name: r.ItemName, qty: Number(r.QtyRemaining) || 0, date: dateStr_(r.Date), createdBy: r.CreatedBy };
+/* ---------------------------------------------------------------------
+   ยาฝาก lots (MedDeposits). A record's deposit side is:
+     deposits: {'itemId|expiry': qty} — its รายการยา lines' จำนวนฝาก, kept
+       as lots with RecordID = the record (see recordDepositSide_);
+     uses: its รายการใช้ยาฝาก lines {itemId, name, qty, lots:[{depositId,
+       qty}]} — `lots` says which lots each line was taken from, so an edit
+       or delete can put it back exactly (older lines have none and go back
+       to the patient's lot of that item without a record).
+   --------------------------------------------------------------------- */
+function recordDepositSide_(r) {
+  var side = { deposits: {}, uses: [] };
+  if (!isTrue_(r.StockApplied)) return side;
+  (isTrue_(r.UseMedicine) ? parseLineItems_(r.MedicineJSON) : []).concat(parseLineItems_(r.WithdrawJSON)).forEach(function (l) {
+    var q = Number(l.qtyDeposit) || 0;
+    if (l.itemId && q > 0) { var k = l.itemId + '|' + (l.expiry || ''); side.deposits[k] = round2_((side.deposits[k] || 0) + q); }
   });
+  if (isTrue_(r.UseDepositUse)) side.uses = parseLineItems_(r.DepositUseJSON).filter(function (l) { return l.itemId; });
+  return side;
+}
+
+/** A lot is expired once its ExpiryDate is before today; blank never expires. */
+function depositExpired_(lot) {
+  var e = dateStr_(lot.ExpiryDate);
+  return !!e && e < todayStr_();
+}
+
+/**
+ * Works out every MedDeposits change for moving one record's deposit side
+ * from `oldSide` to `newSide`, in memory only — throws (nothing written yet)
+ * if a lot would go below zero or the patient lacks enough unexpired ยาฝาก.
+ * Order: put back what the old version used, adjust the lots it deposited,
+ * then take the new uses from the earliest-expiring unexpired lots (blank
+ * expiry last). Returns {uses, commit}: `uses` are newSide.uses with their
+ * `lots` filled in (store them on the record); commit() writes the rows.
+ * ctx: {rid, date, patientId, patientName}. Must run inside the script lock.
+ */
+function planDeposits_(session, ctx, oldSide, newSide) {
+  var sheet = getSheet_(CONFIG.SHEETS.MED_DEPOSITS);
+  var lots = getRows_(sheet).filter(function (r) { return r.PatientID === ctx.patientId; });
+  var byId = {}, changed = {}, added = [];
+  lots.forEach(function (l) { byId[l.DepositID] = l; });
+  var itemNames = null;
+  var itemName = function (itemId) {
+    if (!itemNames) { itemNames = {}; getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { itemNames[s.ItemID] = s.Name; }); }
+    return itemNames[itemId] || '';
+  };
+  var newLot = function (itemId, expiry, recordId, qty) {
+    var l = {
+      DepositID: 'DP' + nextSeq_('DEPOSIT', 5), Date: ctx.date || todayStr_(), PatientID: ctx.patientId, PatientName: ctx.patientName || '',
+      ItemName: itemName(itemId), QtyRemaining: 0, CreatedBy: session.username, ItemID: itemId, UpdatedAt: nowStr_(),
+      ExpiryDate: expiry || '', RecordID: recordId || '', QtyDeposited: 0
+    };
+    lots.push(l); byId[l.DepositID] = l; added.push(l);
+    return l;
+  };
+  var move = function (l, qty) { l.QtyRemaining = round2_((Number(l.QtyRemaining) || 0) + qty); changed[l.DepositID] = l; };
+  // The patient's lot of an item that isn't tied to a record (the pre-lot balance rows).
+  var looseLot = function (itemId) {
+    return lots.filter(function (l) { return l.ItemID === itemId && !l.RecordID; })[0] ||
+      lots.filter(function (l) { return l.ItemID === itemId; })[0] || newLot(itemId, '', '', 0);
+  };
+
+  // 1. Put back what the old version used.
+  oldSide.uses.forEach(function (u) {
+    if (Array.isArray(u.lots) && u.lots.length) {
+      u.lots.forEach(function (p) { move(byId[p.depositId] || looseLot(u.itemId), Number(p.qty) || 0); });
+    } else {
+      move(looseLot(u.itemId), Number(u.qty) || 0);
+    }
+  });
+
+  // 2. Lots this record deposited: change each by (new - old).
+  Object.keys(oldSide.deposits).concat(Object.keys(newSide.deposits)).forEach(function (k, i, all) {
+    if (all.indexOf(k) !== i) return;
+    var d = round2_((newSide.deposits[k] || 0) - (oldSide.deposits[k] || 0));
+    if (!d) return;
+    var parts = k.split('|'), itemId = parts[0], expiry = parts[1];
+    var lot = lots.filter(function (l) { return l.RecordID === ctx.rid && l.ItemID === itemId && dateStr_(l.ExpiryDate) === expiry; })[0];
+    if (!lot && oldSide.deposits[k]) lot = looseLot(itemId); // deposited before lots existed
+    if (!lot) lot = newLot(itemId, expiry, ctx.rid, 0);
+    move(lot, d);
+    if (lot.RecordID === ctx.rid) lot.QtyDeposited = round2_((Number(lot.QtyDeposited) || 0) + d);
+    if (lot.QtyRemaining < 0) throw ValidationError_('ยาฝาก ' + (lot.ItemName || itemName(itemId)) + ' จากรายการนี้ถูกใช้ไปแล้ว ลดจำนวนฝากไม่ได้');
+  });
+
+  // 3. Take the new uses, earliest expiry first.
+  var uses = newSide.uses.map(function (u) {
+    var need = Number(u.qty) || 0, taken = [];
+    var avail = lots.filter(function (l) { return l.ItemID === u.itemId && (Number(l.QtyRemaining) || 0) > 0 && !depositExpired_(l); })
+      .sort(function (a, b) {
+        var ea = dateStr_(a.ExpiryDate) || '9999', eb = dateStr_(b.ExpiryDate) || '9999';
+        return ea.localeCompare(eb) || dateStr_(a.Date).localeCompare(dateStr_(b.Date));
+      });
+    avail.forEach(function (l) {
+      if (need <= 0) return;
+      var q = Math.min(need, Number(l.QtyRemaining) || 0);
+      move(l, -q);
+      taken.push({ depositId: l.DepositID, qty: round2_(q) });
+      need = round2_(need - q);
+    });
+    if (need > 0) {
+      var left = round2_((Number(u.qty) || 0) - need);
+      throw ValidationError_('ยาฝาก ' + (u.name || itemName(u.itemId)) + ' ไม่พอ (คงเหลือที่ยังไม่หมดอายุ ' + left + ')');
+    }
+    return Object.assign({}, u, { lots: taken });
+  });
+
+  // Every touched lot must still be >= 0 (step 1/2 can only add, except a reduced deposit, checked above).
+  Object.keys(changed).forEach(function (id) {
+    if ((Number(changed[id].QtyRemaining) || 0) < 0) throw ValidationError_('ยาฝาก ' + changed[id].ItemName + ' ไม่พอ');
+  });
+
+  return {
+    uses: uses,
+    commit: function () {
+      Object.keys(changed).forEach(function (id) {
+        var l = changed[id];
+        l.CreatedBy = session.username; l.UpdatedAt = nowStr_();
+        if (added.indexOf(l) > -1) appendRow_(sheet, CONFIG.HEADERS.MedDeposits, l);
+        else updateRowByIndex_(sheet, CONFIG.HEADERS.MedDeposits, l._row, l);
+      });
+    }
+  };
+}
+
+function mapDepositOut_(r) {
+  return {
+    id: r.DepositID, itemId: r.ItemID, name: r.ItemName, qty: Number(r.QtyRemaining) || 0,
+    qtyDeposited: numOrNull_(r.QtyDeposited), date: dateStr_(r.Date), expiry: dateStr_(r.ExpiryDate),
+    expired: depositExpired_(r), recordId: r.RecordID || '', createdBy: r.CreatedBy
+  };
+}
+
+/** ยาฝาก lots the patient still has (balance > 0) — record modal and patient panel. */
+function patientDeposits_(patientId) {
+  return getRows_(getSheet_(CONFIG.SHEETS.MED_DEPOSITS)).filter(function (r) { return r.PatientID === patientId && (Number(r.QtyRemaining) || 0) > 0; })
+    .map(mapDepositOut_)
+    .sort(function (a, b) { return (a.expiry || '9999').localeCompare(b.expiry || '9999') || a.date.localeCompare(b.date); });
 }
 function listPatientDeposits(token, patientId) {
   return safeCall_(function () {
     requireAuth_(token, 'staff');
     return { ok: true, data: patientDeposits_(patientId) };
+  });
+}
+
+/** เมนู "รายการยาฝาก": every lot still holding ยา (balance > 0), with the patient's HN and the item's unit; the page filters/pages it. */
+function listDeposits(token) {
+  return safeCall_(function () {
+    requireAuth_(token, 'staff');
+    var hnById = {}, unitById = {};
+    getRows_(getSheet_(CONFIG.SHEETS.PATIENTS)).forEach(function (p) { hnById[p.ID] = p.HN || ''; });
+    getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { unitById[s.ItemID] = s.Unit || ''; });
+    var rows = getRows_(getSheet_(CONFIG.SHEETS.MED_DEPOSITS)).filter(function (r) { return (Number(r.QtyRemaining) || 0) > 0; });
+    var out = rows.map(function (r) {
+      return Object.assign(mapDepositOut_(r), { patientId: r.PatientID, patientName: r.PatientName, hn: hnById[r.PatientID] || '', unit: unitById[r.ItemID] || '' });
+    });
+    out.sort(function (a, b) { return (a.expiry || '9999').localeCompare(b.expiry || '9999') || a.patientName.localeCompare(b.patientName, 'th'); });
+    return { ok: true, data: out };
+  });
+}
+
+/**
+ * Edits one ยาฝาก lot: {id, expiry, qty}. Anyone may set the วันหมดอายุ;
+ * changing the จำนวนคงเหลือ (a correction after a count, or writing off an
+ * expired lot by setting 0) is admin-only.
+ */
+function saveDeposit(token, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'staff');
+    payload = payload || {};
+    if (payload.expiry) requireDateStr_(payload.expiry, 'วันหมดอายุ');
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var sheet = getSheet_(CONFIG.SHEETS.MED_DEPOSITS);
+      var row = getRows_(sheet).filter(function (r) { return r.DepositID === payload.id; })[0];
+      if (!row) throw ValidationError_('ไม่พบรายการยาฝาก');
+      var upd = { ExpiryDate: payload.expiry || '', UpdatedAt: nowStr_(), CreatedBy: session.username };
+      var oldQty = Number(row.QtyRemaining) || 0, detail = 'expiry ' + (payload.expiry || '-');
+      if (payload.qty !== undefined && payload.qty !== '' && Number(payload.qty) !== oldQty) {
+        if (session.level !== 'admin') throw ValidationError_('การแก้ไขจำนวนยาฝากต้องใช้สิทธิ์ผู้ดูแลระบบ');
+        upd.QtyRemaining = requireNumber_(payload.qty, 'จำนวนคงเหลือ', { min: 0 });
+        detail += ' · qty ' + oldQty + ' -> ' + upd.QtyRemaining;
+      }
+      updateRowByIndex_(sheet, CONFIG.HEADERS.MedDeposits, row._row, Object.assign({}, row, upd));
+      writeAudit_(session, 'UPDATE', 'MedDeposit', row.DepositID, row.PatientName + ' ' + row.ItemName + ' · ' + detail);
+      return { ok: true };
+    } finally {
+      lock.releaseLock();
+    }
   });
 }
 
@@ -2652,19 +2992,24 @@ function saveRecord(token, record) {
     // no longer a required field. ServiceCategory column stays in the
     // schema (append-only discipline) and still stores whatever the client
     // sends (now always '' going forward); old records keep their value.
-    requireFields_(record, {
-      date: 'วันที่', patientId: 'คนไข้',
-      doctorId: 'แพทย์', paymentMethod: 'วิธีชำระเงิน'
-    });
+    // วิธีชำระเงิน/สถานะการชำระ are set afterwards by payRecord (ขั้นตอนชำระเงิน).
+    // แพทย์ is chosen per หัตถการ/โปร line (one visit may pay several doctors).
+    requireFields_(record, { date: 'วันที่', patientId: 'คนไข้' });
     requireDateStr_(record.date, 'วันที่');
     // "amount" here is จำนวนเงินหัตถการ — the base procedure price that
-    // sales/doctor commission % are computed against. Canula/promo/medicine/
-    // other money are tracked separately (see header schema comment) — only
-    // amount (always) and promo (round 13) feed the commissionable base.
-    var amount = requireNumber_(record.amount || 0, 'จำนวนเงินหัตถการ', { min: 0 });
+    // sales/doctor commission % are computed against: the sum of the
+    // รายการหัตถการ lines (a client without them still sends a plain amount).
+    // Canula/promo/medicine/other money are tracked separately (see header
+    // schema comment) — only amount (always) and promo (round 13) feed the
+    // commissionable base.
+    var procedureItems = (record.useProcedure && Array.isArray(record.procedureItems) ? record.procedureItems : [])
+      .filter(function (it) { return it && (it.procId || String(it.name || '').trim()); });
+    var amount = Array.isArray(record.procedureItems)
+      ? round2_(procedureItems.reduce(function (s, it, i) { return s + requireNumber_(it.amount || 0, 'จำนวนเงินหัตถการ (บรรทัดที่ ' + (i + 1) + ')', { min: 0 }); }, 0))
+      : requireNumber_(record.amount || 0, 'จำนวนเงินหัตถการ', { min: 0 });
     var canulaAmount = requireNumber_(record.canulaAmount || 0, 'ค่าใช้ Canula', { min: 0 });
     // รายการเวชภัณฑ์ที่ใช้ — quantity only (no money); blank-name lines dropped;
-    // lines picked from stock (itemId) are deducted via applyRecordEffects_.
+    // lines picked from stock (itemId) are deducted via applyStockEffects_.
     var supplies = (record.useSupplies && Array.isArray(record.supplies) ? record.supplies : [])
       .filter(function (it) { return it && String(it.name || '').trim(); })
       .map(function (it) {
@@ -2676,7 +3021,7 @@ function saveRecord(token, record) {
 
     // Round 13 repeatable line-item groups — sums are ALWAYS recomputed
     // server-side from the line arrays (never trust a client-sent aggregate).
-    var medicineGroup = medicineLines_(record);
+    // รายการยา (medicineLines_) needs the sheets, so it is built inside the lock.
     var ownMedItems = qtyLines_(record.ownMedItems, !!record.useOwnMed, 'ถือยาเข้า', [], false);
     var depositUseItems = qtyLines_(record.depositUseItems, !!record.useDepositUse, 'ใช้ยาฝาก', ['itemId'], true);
     var messengerItems = qtyLines_(record.messengerItems, !!record.useMessenger, 'Messenger/พัสดุ', ['note'], false);
@@ -2692,9 +3037,16 @@ function saveRecord(token, record) {
       var patient = patientRows.filter(function (p) { return p.ID === record.patientId; })[0];
       if (!patient) throw ValidationError_('ไม่พบข้อมูลคนไข้ที่เลือก');
 
-      var doctorRows = getRows_(getSheet_(CONFIG.SHEETS.DOCTORS));
-      var doctor = doctorRows.filter(function (d) { return d.DoctorID === record.doctorId; })[0];
-      if (!doctor) throw ValidationError_('ไม่พบข้อมูลแพทย์ที่เลือก');
+      var doctorById = {};
+      getRows_(getSheet_(CONFIG.SHEETS.DOCTORS)).forEach(function (d) { doctorById[d.DoctorID] = d; });
+      // Every หัตถการ/โปร line names its doctor (legacy clients send one record-level doctorId).
+      var lineDoctor = function (line, label) {
+        var id = line.doctorId || record.doctorId;
+        if (!id) throw ValidationError_('กรุณาเลือกแพทย์ (' + label + ')');
+        if (!doctorById[id]) throw ValidationError_('ไม่พบข้อมูลแพทย์ที่เลือก (' + label + ')');
+        return id;
+      };
+      var doctorEntries = [];
 
       var salesName = '', sales = null;
       if (record.salesId) {
@@ -2709,58 +3061,77 @@ function saveRecord(token, record) {
       // the doctor's commission; only the line's `amount` (จำนวนเงินโปร,
       // pre-filled from the promo's price but editable) is taken as-is, same
       // trust level as the treatment amount itself.
-      var promoAmount = 0, promoDoctorShare = 0, promoOut = [];
+      var promoAmount = 0, promoOut = [];
       if (record.usePromo && Array.isArray(record.promoItems) && record.promoItems.length) {
         var allPromos = getRows_(getSheet_(CONFIG.SHEETS.PROMOTIONS));
-        record.promoItems.forEach(function (line) {
+        record.promoItems.forEach(function (line, i) {
           var promo = allPromos.filter(function (p) { return p.PromoID === line.promoId; })[0];
           if (!promo) throw ValidationError_('ไม่พบโปรโมชันที่เลือก (อาจถูกลบไปแล้ว)');
           var lineAmount = requireNumber_(line.amount || 0, 'จำนวนเงินโปร', { min: 0 });
           var doctorPct = Number(promo.DoctorSharePct) || 0;
+          var doctorId = lineDoctor(line, 'โปร บรรทัดที่ ' + (i + 1));
           promoAmount += lineAmount;
-          promoDoctorShare += lineAmount * doctorPct / 100;
-          promoOut.push({ promoId: promo.PromoID, name: promo.Name, price: Number(promo.Price) || 0, doctorSharePct: doctorPct, amount: lineAmount });
+          doctorEntries.push({ doctorId: doctorId, extra: lineAmount * doctorPct / 100 });
+          promoOut.push({ promoId: promo.PromoID, name: promo.Name, price: Number(promo.Price) || 0, doctorSharePct: doctorPct, amount: lineAmount, doctorId: doctorId });
         });
       }
       promoAmount = round2_(promoAmount);
-      promoDoctorShare = round2_(promoDoctorShare);
 
-      var oldDoctorId = '', oldDate = '';
       if (!isNew) {
         var existingRows = getRows_(sheet);
         var existing = existingRows.filter(function (r) { return r.RID === record.id; })[0];
         if (!existing) throw ValidationError_('ไม่พบข้อมูลการรักษาที่จะแก้ไข');
-        oldDoctorId = existing.DoctorID;
-        oldDate = dateStr_(existing.Date);
         // Editing a record keeps the sales % it was saved with; only picking a
         // different sales person takes that person's current rate.
         if (sales && existing.SalesID === sales.SalesID && existing.SalesCommissionPct !== '' && existing.SalesCommissionPct != null) {
           sales = Object.assign({}, sales, { CommissionRate: Number(existing.SalesCommissionPct) || 0 });
         }
       }
+      var rid = isNew ? ('R' + nextSeq_('RECORD', 6)) : record.id;
 
-      var shares = computeRecordShares_(amount, promoAmount, promoDoctorShare, record.useCanula ? canulaAmount : 0, doctor, sales);
-      var supplierPayAmount = round2_(medicineGroup.total + otherAmount);
+      // รายการหัตถการ — name/price re-read from the Procedures sheet; only the
+      // line's amount (pre-filled from the price, editable) is the client's.
+      // A line whose procedure was since deleted keeps its saved name.
+      var procById = {};
+      getRows_(getSheet_(CONFIG.SHEETS.PROCEDURES)).forEach(function (p) { procById[p.ProcID] = p; });
+      var procedureOut = procedureItems.map(function (it, i) {
+        var p = procById[it.procId];
+        if (!p && !String(it.name || '').trim()) throw ValidationError_('ไม่พบหัตถการที่เลือก (อาจถูกลบไปแล้ว)');
+        var doctorId = lineDoctor(it, 'หัตถการ บรรทัดที่ ' + (i + 1));
+        doctorEntries.push({ doctorId: doctorId, base: Number(it.amount) || 0 });
+        return { procId: p ? p.ProcID : (it.procId || ''), name: p ? p.Name : String(it.name).trim(), price: p ? Number(p.Price) || 0 : Number(it.price) || 0, amount: Number(it.amount) || 0, doctorId: doctorId };
+      });
+
+      var wdSheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
+      var wdRows = getRows_(wdSheet), wdById = {}, stockById = {};
+      wdRows.forEach(function (w) { wdById[w.WithdrawID] = w; });
+      getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { stockById[s.ItemID] = s; });
+      var medicineGroup = medicineLines_(record, { stockById: stockById, oldLines: isNew ? [] : parseLineItems_(existing.MedicineJSON) });
+      var withdrawItems = withdrawLines_(record, { rid: rid, patientId: patient.ID, wdById: wdById });
+
+      var salesPct = sales ? (Number(sales.CommissionRate) || 0) : 0;
+      var doctorShares = buildDoctorShares_(doctorEntries, doctorById);
+      // เสร็จสิ้น only when staff says so (and it stays so); จัดยาแล้ว until then.
+      var visitStatus = record.complete || (!isNew && existing.VisitStatus === 'completed') ? 'completed' : 'dispensed';
 
       var obj = {
-        RID: isNew ? ('R' + nextSeq_('RECORD', 6)) : record.id,
+        RID: rid,
         Date: record.date, PatientID: patient.ID, PatientName: patient.FirstName + ' ' + patient.LastName,
-        Phone: patient.Phone, ServiceCategory: record.serviceCategory, Detail: record.detail || '',
-        DoctorID: doctor.DoctorID, DoctorName: doctor.Name, SalesID: record.salesId || '', SalesName: salesName,
-        PaymentMethod: record.paymentMethod, SuppliesJSON: JSON.stringify(supplies),
+        Phone: patient.Phone, ServiceCategory: record.serviceCategory || '', Detail: record.detail || '',
+        SalesID: record.salesId || '', SalesName: salesName,
+        // Payment fields only change through payRecord.
+        PaymentMethod: isNew ? '' : existing.PaymentMethod, SuppliesJSON: JSON.stringify(supplies),
         UseCanula: record.useCanula ? 'TRUE' : 'FALSE', CanulaAmount: record.useCanula ? canulaAmount : 0,
-        Amount: amount, Status: record.status || 'unpaid', ReceiptNo: isNew ? '' : (record.receiptNo || ''),
-        Note: record.note || '', CreatedBy: isNew ? session.username : (record.createdBy || session.username),
-        CreatedAt: isNew ? nowStr_() : (record.createdAt || nowStr_()), UpdatedAt: nowStr_(),
+        Amount: amount, Status: isNew ? 'unpaid' : (existing.Status || 'unpaid'), ReceiptNo: isNew ? '' : (existing.ReceiptNo || ''),
+        Note: record.note || '', CreatedBy: isNew ? session.username : (existing.CreatedBy || session.username),
+        CreatedAt: isNew ? nowStr_() : (existing.CreatedAt || nowStr_()), UpdatedAt: nowStr_(),
         OtherAmount: otherAmount,
-        SalesCommissionPct: shares.salesPct, SalesShare: shares.salesShare,
-        DoctorCommissionPct: shares.doctorPct, DoctorShareRaw: shares.doctorShareRaw,
-        DoctorShare: shares.doctorShareRaw, DoctorShareNote: '', ClinicShare: shares.clinicShareRaw,
-        VisitStatus: record.visitStatus === 'completed' ? 'completed' : 'scheduled',
+        SalesCommissionPct: salesPct, SalesShare: round2_(amount * salesPct / 100),
+        VisitStatus: visitStatus,
         UsePromo: record.usePromo ? 'TRUE' : 'FALSE', PromoJSON: JSON.stringify(promoOut), PromoAmount: promoAmount,
         UseMedicine: record.useMedicine ? 'TRUE' : 'FALSE', MedicineJSON: JSON.stringify(medicineGroup.items), MedicineAmount: medicineGroup.total,
         UseOther: record.useOther ? 'TRUE' : 'FALSE', OtherItemsJSON: JSON.stringify(otherGroup.items),
-        SupplierPayAmount: supplierPayAmount,
+        SupplierPayAmount: round2_(medicineGroup.total + otherAmount),
         // Round 14 item 1.7 — OPD photo attachment (Drive fileId, uploaded
         // client-side via the shared resumable-chunk-upload flow before
         // save; see startResumableUpload's 'opd-photo' kind).
@@ -2769,13 +3140,22 @@ function saveRecord(token, record) {
         UseOwnMed: ownMedItems.length ? 'TRUE' : 'FALSE', OwnMedJSON: JSON.stringify(ownMedItems),
         UseDepositUse: depositUseItems.length ? 'TRUE' : 'FALSE', DepositUseJSON: JSON.stringify(depositUseItems),
         UseMessenger: messengerItems.length ? 'TRUE' : 'FALSE', MessengerJSON: JSON.stringify(messengerItems),
-        StockApplied: isNew ? 'TRUE' : (existing.StockApplied || '')
+        StockApplied: isNew ? 'TRUE' : (existing.StockApplied || ''),
+        UseProcedure: procedureOut.length ? 'TRUE' : 'FALSE', ProcedureJSON: JSON.stringify(procedureOut),
+        WithdrawJSON: JSON.stringify(withdrawItems)
       };
+      applyDoctorShares_(obj, doctorShares); // DoctorID/DoctorName/shares/ClinicShare
 
-      // Stock + ยาฝาก first: it throws (before anything is written) if
-      // stock or a deposit balance would go negative.
-      applyRecordEffects_(session, isNew ? { stock: {}, deposit: {} } : recordEffects_(existing), recordEffects_(obj),
-        'บันทึกการรักษา ' + obj.RID + ' · ' + obj.PatientName, obj.PatientName);
+      // ยาฝาก + Stock before the record itself: both throw before writing
+      // anything if a deposit lot would go negative / an item is missing.
+      // The planned uses carry the lots they came from (see planDeposits_).
+      var label = 'บันทึกการรักษา ' + obj.RID + ' · ' + obj.PatientName;
+      var depositPlan = planDeposits_(session, { rid: rid, date: record.date, patientId: patient.ID, patientName: obj.PatientName },
+        isNew ? { deposits: {}, uses: [] } : recordDepositSide_(existing), recordDepositSide_(obj));
+      if (isTrue_(obj.StockApplied)) obj.DepositUseJSON = JSON.stringify(depositPlan.uses);
+      applyStockEffects_(session, isNew ? {} : recordStockEffects_(existing), recordStockEffects_(obj), label);
+      depositPlan.commit();
+      linkWithdrawals_(wdSheet, wdRows, rid, withdrawItems);
 
       if (isNew) {
         appendRow_(sheet, CONFIG.HEADERS.Records, obj);
@@ -2802,34 +3182,19 @@ function saveRecord(token, record) {
       }
 
       // Round 19 item 4: read the Records sheet ONCE now that the write
-      // above is done, and hand that single snapshot to both
-      // recomputeDoctorDayShares_ calls below instead of each one doing its
-      // own independent full-sheet getRows_() read — appendRow_/
-      // updateRowByIndex_ never shift existing row indices (only a delete
-      // does), so this snapshot's `_row` numbers stay valid for both calls.
-      // The old-group and new-group filters are always disjoint (they only
-      // differ when doctorId/date actually changed), so reusing one
-      // snapshot for both is equivalent to two independent fresh reads.
+      // above is done, and hand that single snapshot to every
+      // recomputeDoctorDayShares_ call — appendRow_/updateRowByIndex_ never
+      // shift existing row indices (only a delete does), and each call
+      // updates the rows it rewrites in the snapshot itself. Every doctor the
+      // record pays now or paid before (on the old date too, if it moved)
+      // gets their daily-minimum top-up re-derived.
       var postWriteRows = getRows_(sheet);
-      // Re-derive the doctor's daily-minimum-guarantee top-up across every
-      // record for this doctor+date (including the one just written above).
-      var newGroup = recomputeDoctorDayShares_(doctor.DoctorID, record.date, postWriteRows);
-      // If this was an edit that moved the record to a different doctor
-      // and/or date, the OLD group lost a record and must also be
-      // recalculated (the shortfall/top-up there may now look different).
-      if (!isNew && (oldDoctorId !== doctor.DoctorID || oldDate !== record.date)) {
-        recomputeDoctorDayShares_(oldDoctorId, oldDate, postWriteRows);
-      }
+      recomputeRecordDoctors_(isNew ? null : existing, obj, postWriteRows);
 
       writeAudit_(session, isNew ? 'CREATE' : 'UPDATE', 'Record', obj.RID, obj.PatientName + ' ' + obj.Amount);
       bumpDashboardCacheVersion_(); // Round 19 item 4: treatment records feed dashboard totals
-      // The record we just saved always lands inside `newGroup` — it's
-      // exactly what recomputeDoctorDayShares_ filtered for
-      // (doctor.DoctorID + record.date) — so read its final
-      // DoctorShare/ClinicShare straight off that in-memory result instead
-      // of a second full-sheet re-read+filter to see what the top-up
-      // mechanism actually wrote.
-      var savedRow = newGroup.filter(function (r) { return r.RID === obj.RID; })[0];
+      // The snapshot carries whatever top-up was just written onto this record.
+      var savedRow = postWriteRows.filter(function (r) { return r.RID === obj.RID; })[0];
       return { ok: true, data: mapRecordOut_(savedRow || Object.assign({ _row: 0 }, obj)) };
     } finally {
       lock.releaseLock();
@@ -2848,13 +3213,18 @@ function deleteRecord(token, id) {
       var existing = rows.filter(function (r) { return r.RID === id; })[0];
       if (!existing) throw ValidationError_('ไม่พบข้อมูลการรักษา');
       // Put back whatever this record took out of Stock / moved in ยาฝาก
-      // (throws, deleting nothing, if its deposited medicine was already used).
-      applyRecordEffects_(session, recordEffects_(existing), { stock: {}, deposit: {} }, 'ลบบันทึกการรักษา ' + id + ' · ' + existing.PatientName, existing.PatientName);
-      var doctorId = existing.DoctorID, date = dateStr_(existing.Date);
+      // (throws, deleting nothing, if its deposited medicine was already used),
+      // and its จัดยา-เบิกยา lines go back to waiting for a record.
+      var depositPlan = planDeposits_(session, { rid: id, date: dateStr_(existing.Date), patientId: existing.PatientID, patientName: existing.PatientName },
+        recordDepositSide_(existing), { deposits: {}, uses: [] });
+      applyStockEffects_(session, recordStockEffects_(existing), {}, 'ลบบันทึกการรักษา ' + id + ' · ' + existing.PatientName);
+      depositPlan.commit();
+      var wdSheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
+      linkWithdrawals_(wdSheet, getRows_(wdSheet), id, []);
       deleteRowByIndex_(sheet, existing._row);
       // The deleted record's share of the daily minimum (if any) needs to
-      // be re-distributed among whatever's left in the group.
-      recomputeDoctorDayShares_(doctorId, date);
+      // be re-distributed among whatever's left in each doctor's group.
+      recomputeRecordDoctors_(existing, null);
       // Round 17 item 2 (natural extension of the same cleanup): deleting
       // the record entirely should also clean up its attached OPD photo in
       // Drive, same reasoning as the edit-time cleanup in saveRecord —
@@ -2900,6 +3270,37 @@ function issueReceipt(token, rid) {
   });
 }
 
+/**
+ * ขั้นตอนชำระเงิน — the last step of a treatment record. payload:
+ * {status: 'paid'|'unpaid'|'cancelled', paymentMethod}. Moving into or out of
+ * ยกเลิก changes the doctor's daily-minimum group, so that is recomputed.
+ */
+function payRecord(token, rid, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'staff');
+    payload = payload || {};
+    var status = payload.status || 'paid';
+    if (['paid', 'unpaid', 'cancelled'].indexOf(status) === -1) throw ValidationError_('สถานะการชำระเงินไม่ถูกต้อง');
+    if (status === 'paid') requireFields_(payload, { paymentMethod: 'วิธีชำระเงิน' });
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var sheet = getSheet_(CONFIG.SHEETS.RECORDS);
+      var record = getRows_(sheet).filter(function (r) { return r.RID === rid; })[0];
+      if (!record) throw ValidationError_('ไม่พบข้อมูลการรักษา');
+      var oldStatus = record.Status || 'unpaid';
+      var updated = Object.assign({}, record, { Status: status, PaymentMethod: payload.paymentMethod || record.PaymentMethod || '', UpdatedAt: nowStr_() });
+      updateRowByIndex_(sheet, CONFIG.HEADERS.Records, record._row, updated);
+      if ((oldStatus === 'cancelled') !== (status === 'cancelled')) recomputeRecordDoctors_(null, updated);
+      writeAudit_(session, 'PAY', 'Record', rid, status + ' ' + (updated.PaymentMethod || ''));
+      bumpDashboardCacheVersion_();
+      return { ok: true, data: mapRecordOut_(updated) };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
 /** Builds the data object handed to Receipt.html for rendering / printing. */
 function buildReceiptData_(rid) {
   var rows = getRows_(getSheet_(CONFIG.SHEETS.RECORDS));
@@ -2935,8 +3336,10 @@ function buildReceiptData_(rid) {
   var amount = Number(r.Amount) || 0;
   var promoAmount = Number(r.PromoAmount) || 0;
   var medicineAmount = Number(r.MedicineAmount) || 0;
+  var patient = getRows_(getSheet_(CONFIG.SHEETS.PATIENTS)).filter(function (p) { return p.ID === r.PatientID; })[0];
   return {
-    receiptNo: r.ReceiptNo, date: dateStr_(r.Date), patientId: r.PatientID || '', patientName: r.PatientName, phone: r.Phone,
+    receiptNo: r.ReceiptNo, date: dateStr_(r.Date), patientId: r.PatientID || '', hn: patient ? (patient.HN || '') : '', patientName: r.PatientName, phone: r.Phone,
+    procedureItems: parseLineItems_(r.ProcedureJSON),
     serviceCategory: r.ServiceCategory, detail: r.Detail, doctorName: r.DoctorName, paymentMethod: r.PaymentMethod,
     note: r.Note || '',
     supplies: supplies, useCanula: useCanula, canulaAmount: canulaAmount, otherAmount: otherAmount,
@@ -2959,19 +3362,69 @@ function buildReceiptData_(rid) {
    ====================================================================== */
 
 /* ======================================================================
-   เบิกยาคลีนิค — MedWithdrawals. Medicine taken out of clinic stock for a
-   patient by a sales person, valued at ราคาทุน (admins only see the money).
+   จัดยา-เบิกยา — MedWithdrawals. Medicine taken out of clinic stock for a
+   patient by a sales person (step 2 of the flow). Each line then waits for
+   the patient's บันทึกการรักษา to charge it (RecordID). ราคาทุน is admin-only.
    ====================================================================== */
 
+/** ราคาขาย per unit for `qty` units of a Stock row: the largest priced tier <= qty, else the smallest priced tier, else 0 (same rule as the record form). */
+function tierPrice_(stockRow, qty) {
+  var pick = null, first = null;
+  STOCK_PRICE_TIERS.forEach(function (t) {
+    var p = numOrNull_(stockRow['Price' + t]);
+    if (p == null) return;
+    if (first == null) first = p;
+    if (t <= qty) pick = p;
+  });
+  return pick != null ? pick : (first || 0);
+}
+
+/** A withdrawal's ราคาขาย per unit: what was saved, or (rows from before it existed) the item's current tier price. */
+function withdrawalUnitPrice_(w, stockById) {
+  var p = numOrNull_(w.UnitPrice);
+  if (p != null) return p;
+  var s = stockById[w.ItemID];
+  return s ? tierPrice_(s, Number(w.Qty) || 0) : 0;
+}
+
 /** `showCost` must only be true for admins. */
-function mapWithdrawalOut_(w, showCost) {
+function mapWithdrawalOut_(w, showCost, stockById) {
+  var unitPrice = withdrawalUnitPrice_(w, stockById || {});
   var out = {
     id: w.WithdrawID, date: dateStr_(w.Date), patientId: w.PatientID, patientName: w.PatientName, phone: w.Phone,
     salesId: w.SalesID, salesName: w.SalesName, itemId: w.ItemID, itemName: w.ItemName, qty: Number(w.Qty) || 0,
-    note: w.Note || '', createdBy: w.CreatedBy
+    unitPrice: unitPrice, saleAmount: numOrNull_(w.SaleAmount) != null ? Number(w.SaleAmount) : round2_((Number(w.Qty) || 0) * unitPrice),
+    recordId: w.RecordID || '', note: w.Note || '', createdBy: w.CreatedBy
   };
   if (showCost) { out.unitCost = Number(w.UnitCost) || 0; out.amount = Number(w.Amount) || 0; }
   return out;
+}
+
+/**
+ * Points the withdrawals record `rid` took in (its WithdrawJSON lines) at it
+ * (RecordID = rid); any that pointed at rid but no longer appear go back to
+ * waiting (RecordID blank). Their ราคาขาย stays what was set at จัดยา-เบิกยา —
+ * the record doesn't charge them. Must run inside the script lock.
+ */
+function linkWithdrawals_(sheet, rows, rid, withdrawItems) {
+  var taken = {};
+  (withdrawItems || []).forEach(function (l) { taken[l.withdrawId] = true; });
+  rows.forEach(function (w) {
+    var want = taken[w.WithdrawID] ? rid : (w.RecordID === rid ? '' : w.RecordID);
+    if (want !== (w.RecordID || '')) updateRowByIndex_(sheet, CONFIG.HEADERS.MedWithdrawals, w._row, Object.assign({}, w, { RecordID: want }));
+  });
+}
+
+/** The patient's จัดยา-เบิกยา lines no record has charged yet — the record modal pre-fills its รายการยา from these. */
+function listPendingWithdrawals(token, patientId) {
+  return safeCall_(function () {
+    requireAuth_(token, 'staff');
+    var stockById = {};
+    getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { stockById[s.ItemID] = s; });
+    var rows = getRows_(getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS)).filter(function (w) { return w.PatientID === patientId && !w.RecordID; });
+    rows.sort(function (a, b) { return String(a.CreatedAt).localeCompare(String(b.CreatedAt)); });
+    return { ok: true, data: rows.map(function (w) { return mapWithdrawalOut_(w, false, stockById); }) };
+  });
 }
 
 function listMedWithdrawals(token, opts) {
@@ -2988,8 +3441,10 @@ function listMedWithdrawals(token, opts) {
     }
     rows.sort(function (a, b) { return dateStr_(b.Date).localeCompare(dateStr_(a.Date)) || String(b.CreatedAt).localeCompare(String(a.CreatedAt)); });
     var showCost = session.level === 'admin';
+    var stockById = {};
+    getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { stockById[s.ItemID] = s; });
     var page = paginate_(rows, opts.page, opts.pageSize);
-    page.items = page.items.map(function (r) { return mapWithdrawalOut_(r, showCost); });
+    page.items = page.items.map(function (r) { return mapWithdrawalOut_(r, showCost, stockById); });
     return { ok: true, data: page };
   });
 }
@@ -3021,16 +3476,16 @@ function saveMedWithdrawal(token, payload) {
         if (!item || stockTypeOf_(item) !== 'medicine') throw ValidationError_('กรุณาเลือกยาจากรายการสต๊อกยา' + line);
         var qty = requireNumber_(l.qty, 'จำนวน' + line, { min: 0 });
         if (!qty) throw ValidationError_('จำนวนต้องมากกว่า 0' + line);
-        var cost = Number(item.CostPrice) || 0;
+        var cost = Number(item.CostPrice) || 0, price = tierPrice_(item, qty);
         take[item.ItemID] = round2_((take[item.ItemID] || 0) + qty);
         return {
           Date: payload.date, PatientID: patient.ID, PatientName: patientName, Phone: patient.Phone,
           SalesID: sales.SalesID, SalesName: sales.Name, ItemID: item.ItemID, ItemName: item.Name,
-          Qty: qty, UnitCost: cost, Amount: round2_(qty * cost), Note: payload.note || '', CreatedBy: session.username, CreatedAt: nowStr_()
+          Qty: qty, UnitCost: cost, Amount: round2_(qty * cost), Note: payload.note || '', CreatedBy: session.username, CreatedAt: nowStr_(),
+          UnitPrice: price, SaleAmount: round2_(qty * price), RecordID: ''
         };
       });
-      applyRecordEffects_(session, { stock: {}, deposit: {} }, { stock: take, deposit: {} },
-        'เบิกยาคลีนิค · ' + patientName + ' · ' + sales.Name, patientName, 'withdraw');
+      applyStockEffects_(session, {}, take, 'จัดยา-เบิกยา · ' + patientName + ' · ' + sales.Name, 'withdraw');
       var sheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
       var ids = nextSeqBlock_('WITHDRAW', rows.length, 5);
       var batchId = 'WB' + nextSeq_('WITHDRAW_BATCH', 5); // groups this save's lines
@@ -3053,9 +3508,10 @@ function deleteMedWithdrawal(token, id) {
       var sheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
       var row = getRows_(sheet).filter(function (r) { return r.WithdrawID === id; })[0];
       if (!row) throw ValidationError_('ไม่พบรายการ');
+      if (row.RecordID) throw ValidationError_('รายการนี้ถูกบันทึกในการรักษา ' + row.RecordID + ' แล้ว — ลบออกจากบันทึกการรักษานั้นก่อน');
       var give = {};
       give[row.ItemID] = Number(row.Qty) || 0;
-      applyRecordEffects_(session, { stock: give, deposit: {} }, { stock: {}, deposit: {} }, 'ลบรายการเบิกยาคลีนิค ' + id + ' · ' + row.PatientName, row.PatientName, 'withdraw');
+      applyStockEffects_(session, give, {}, 'ลบรายการจัดยา-เบิกยา ' + id + ' · ' + row.PatientName, 'withdraw');
       deleteRowByIndex_(sheet, row._row);
       writeAudit_(session, 'DELETE', 'MedWithdrawal', id, row.PatientName + ' ' + row.ItemName);
       return { ok: true };
@@ -3065,52 +3521,99 @@ function deleteMedWithdrawal(token, id) {
   });
 }
 
+/* ======================================================================
+   รายงาน (admin only) — opts: {dateFrom, dateTo, salesId}; blank salesId =
+   everyone. Both return flat rows, oldest first, plus totals.
+   ====================================================================== */
+
+function reportOpts_(opts) {
+  opts = opts || {};
+  if (opts.dateFrom) requireDateStr_(opts.dateFrom, 'วันที่เริ่มต้น');
+  if (opts.dateTo) requireDateStr_(opts.dateTo, 'วันที่สิ้นสุด');
+  return function (date, salesId) {
+    return (!opts.salesId || salesId === opts.salesId) && (!opts.dateFrom || date >= opts.dateFrom) && (!opts.dateTo || date <= opts.dateTo);
+  };
+}
+
+/** The receipt's lines for one Records row, as short "name ×qty · amount" texts (same groups Receipt.html prints). */
+function receiptLines_(r) {
+  var out = [];
+  var procs = parseLineItems_(r.ProcedureJSON);
+  if (procs.length) procs.forEach(function (p) { out.push({ name: p.name, amount: Number(p.amount) || 0 }); });
+  else if (Number(r.Amount)) out.push({ name: r.Detail ? 'หัตถการ (' + r.Detail + ')' : 'หัตถการ', amount: Number(r.Amount) || 0 });
+  parseLineItems_(r.PromoJSON).forEach(function (p) { out.push({ name: 'โปร ' + p.name, amount: Number(p.amount) || 0 }); });
+  parseLineItems_(r.MedicineJSON).forEach(function (m) { out.push({ name: (m.name || 'ยา') + (m.qtyDispensed ? ' ×' + m.qtyDispensed : ''), amount: Number(m.amount) || 0 }); });
+  if (isTrue_(r.UseCanula) && Number(r.CanulaAmount)) out.push({ name: 'Canula (เข็มทู่)', amount: Number(r.CanulaAmount) || 0 });
+  var others = parseLineItems_(r.OtherItemsJSON);
+  if (others.length) others.forEach(function (o) { out.push({ name: o.label || 'อื่นๆ', amount: Number(o.amount) || 0 }); });
+  else if (Number(r.OtherAmount)) out.push({ name: 'รายการอื่นๆ', amount: Number(r.OtherAmount) || 0 });
+  return out;
+}
+
+/** รายงานรายวัน: one row per treatment record (cancelled ones left out) — ชื่อคนไข้, เซลล์, the receipt's lines and its total. */
+function getDailyReport(token, opts) {
+  return safeCall_(function () {
+    requireAuth_(token, 'admin');
+    var keep = reportOpts_(opts);
+    var rows = getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).filter(function (r) { return r.Status !== 'cancelled' && keep(dateStr_(r.Date), r.SalesID); });
+    rows.sort(function (a, b) { return dateStr_(a.Date).localeCompare(dateStr_(b.Date)) || String(a.CreatedAt).localeCompare(String(b.CreatedAt)); });
+    var out = rows.map(function (r) {
+      var m = mapRecordOut_(r);
+      return { id: r.RID, date: m.date, patientName: r.PatientName, phone: r.Phone, salesName: r.SalesName || '', receiptNo: r.ReceiptNo || '', status: m.status, lines: receiptLines_(r), amount: m.totalCollected };
+    });
+    return { ok: true, data: { rows: out, totalAmount: round2_(out.reduce(function (s, x) { return s + x.amount; }, 0)) } };
+  });
+}
+
 /**
- * รายงานเซลล์ (admin only). Source: เบิกยาคลีนิค (MedWithdrawals) — each line at
- * its ราคาทุน (UnitCost snapshotted when it was saved). opts: {salesId,
- * dateFrom, dateTo}; blank salesId = everyone. Rows are one per date + sales
- * person, with that day's customers (each with their own lines) so the
- * client can stack customers inside one cell, show the detail panel and
- * build the PDF without another round trip.
+ * รายงานรายเซลล์: one row per ยา sold — every จัดยา-เบิกยา line (taken into
+ * a record or not yet: a withdrawal counts as bought either way, at the
+ * ราคาขาย set when it was withdrawn) plus every ยาเบิกเพิ่ม line on a
+ * non-cancelled record (at what the record charged, with a หมายเหตุ). ราคาทุน
+ * is the snapshot taken when it left stock. ส่วนต่างสุทธิ = ขาย − ทุน.
  */
 function getSalesReport(token, opts) {
   return safeCall_(function () {
     requireAuth_(token, 'admin');
-    opts = opts || {};
-    if (opts.dateFrom) requireDateStr_(opts.dateFrom, 'วันที่เริ่มต้น');
-    if (opts.dateTo) requireDateStr_(opts.dateTo, 'วันที่สิ้นสุด');
-    var unitById = {};
-    getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { unitById[s.ItemID] = s.Unit || ''; });
-    var groups = {}, order = [];
-    var rows = getRows_(getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS));
-    rows.sort(function (a, b) { return String(a.CreatedAt).localeCompare(String(b.CreatedAt)); }); // lines in the order they were saved
-    rows.forEach(function (w) {
+    var keep = reportOpts_(opts);
+    var stockById = {};
+    getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { stockById[s.ItemID] = s; });
+    var out = [];
+    var push = function (o) {
+      o.unit = (stockById[o.itemId] || {}).Unit || '';
+      o.costAmount = round2_(o.qty * o.unitCost);
+      o.saleAmount = o.saleAmount != null ? round2_(o.saleAmount) : round2_(o.qty * o.unitPrice);
+      o.margin = round2_(o.saleAmount - o.costAmount);
+      out.push(o);
+    };
+    getRows_(getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS)).forEach(function (w) {
       var d = dateStr_(w.Date);
-      if (opts.salesId && w.SalesID !== opts.salesId) return;
-      if (opts.dateFrom && d < opts.dateFrom) return;
-      if (opts.dateTo && d > opts.dateTo) return;
-      var key = d + '|' + w.SalesID;
-      var g = groups[key];
-      if (!g) {
-        g = groups[key] = { id: key, date: d, salesId: w.SalesID, salesName: w.SalesName, customers: [], totalQty: 0, totalAmount: 0 };
-        order.push(g);
-      }
-      // A patient with several withdrawals the same day stays one customer line.
-      var c = g.customers.filter(function (x) { return x.patientId === w.PatientID; })[0];
-      if (!c) { c = { patientId: w.PatientID, patientName: w.PatientName, phone: w.Phone, items: [], totalQty: 0, totalAmount: 0 }; g.customers.push(c); }
-      var qty = numOrNull_(w.Qty) || 0, unitCost = numOrNull_(w.UnitCost) || 0, amount = numOrNull_(w.Amount) || 0;
-      c.items.push({ withdrawId: w.WithdrawID, itemName: w.ItemName, qty: qty, unit: unitById[w.ItemID] || '', unitPrice: unitCost, amount: amount });
-      c.totalQty = round2_(c.totalQty + qty);
-      c.totalAmount = round2_(c.totalAmount + amount);
-      g.totalQty = round2_(g.totalQty + qty);
-      g.totalAmount = round2_(g.totalAmount + amount);
+      if (!keep(d, w.SalesID)) return;
+      var unitPrice = withdrawalUnitPrice_(w, stockById), qty = Number(w.Qty) || 0;
+      push({
+        date: d, sortKey: String(w.CreatedAt), patientName: w.PatientName, salesName: w.SalesName || '', itemId: w.ItemID, itemName: w.ItemName,
+        qty: qty, unitCost: Number(w.UnitCost) || 0, unitPrice: unitPrice,
+        saleAmount: numOrNull_(w.SaleAmount) != null ? Number(w.SaleAmount) : null,
+        remark: ''
+      });
     });
-    order.sort(function (a, b) { return b.date.localeCompare(a.date) || String(a.salesName).localeCompare(String(b.salesName), 'th'); });
-    return { ok: true, data: {
-      rows: order,
-      totalQty: round2_(order.reduce(function (s, g) { return s + g.totalQty; }, 0)),
-      totalAmount: round2_(order.reduce(function (s, g) { return s + g.totalAmount; }, 0))
-    } };
+    getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).forEach(function (r) {
+      var d = dateStr_(r.Date);
+      if (r.Status === 'cancelled' || !isTrue_(r.UseMedicine) || !keep(d, r.SalesID)) return;
+      parseLineItems_(r.MedicineJSON).forEach(function (l) {
+        if (l.withdrawId || !('qtyDispensed' in l) || !l.itemId) return;
+        var s = stockById[l.itemId] || {};
+        push({
+          date: d, sortKey: String(r.CreatedAt), patientName: r.PatientName, salesName: r.SalesName || '', itemId: l.itemId, itemName: l.name,
+          qty: Number(l.qtyDispensed) || 0, unitCost: l.unitCost != null ? Number(l.unitCost) || 0 : Number(s.CostPrice) || 0,
+          unitPrice: Number(l.unitPrice) || 0, saleAmount: Number(l.amount) || 0, remark: 'เบิกยาเพิ่มในบันทึกการรักษา ' + r.RID
+        });
+      });
+    });
+    out.sort(function (a, b) { return a.date.localeCompare(b.date) || a.sortKey.localeCompare(b.sortKey); });
+    out.forEach(function (o) { delete o.sortKey; });
+    var sum = function (k) { return round2_(out.reduce(function (s, o) { return s + o[k]; }, 0)); };
+    return { ok: true, data: { rows: out, totalQty: sum('qty'), totalCost: sum('costAmount'), totalSale: sum('saleAmount'), totalMargin: sum('margin') } };
   });
 }
 
@@ -3198,17 +3701,17 @@ function mapOrderOut_(o, lines) {
 }
 
 /**
- * Stock a PO puts in, in applyRecordEffects_'s shape (negative = added to
- * stock): {stock: {itemId: -qty}, deposit: {}}. Only POs with
- * StockApplied=TRUE count, and items no longer in Stock are skipped so a
- * deleted stock item never blocks editing/deleting the PO.
+ * Stock a PO puts in, in applyStockEffects_'s shape (negative = added to
+ * stock): {itemId: -qty}. Only POs with StockApplied=TRUE count, and items
+ * no longer in Stock are skipped so a deleted stock item never blocks
+ * editing/deleting the PO.
  */
 function orderEffects_(orderRow, lines, stockIds) {
-  var eff = { stock: {}, deposit: {} };
+  var eff = {};
   if (!orderRow || !isTrue_(orderRow.StockApplied)) return eff;
   lines.forEach(function (l) {
     var id = l.ItemID || l.itemId, qty = Number(l.Qty != null ? l.Qty : l.qty) || 0;
-    if (id && qty && stockIds[id]) eff.stock[id] = round2_((eff.stock[id] || 0) - qty);
+    if (id && qty && stockIds[id]) eff[id] = round2_((eff[id] || 0) - qty);
   });
   return eff;
 }
@@ -3297,8 +3800,8 @@ function saveOrder(token, order) {
       // Add the purchased qty to Stock (an edit moves only the difference).
       var stockIds = stockIdSet_();
       var oldLines = isNew ? [] : getRows_(lineSheet).filter(function (l) { return l.PoID === order.id; });
-      applyRecordEffects_(session, orderEffects_(existingOrder, oldLines, stockIds), orderEffects_(obj, lines, stockIds),
-        'จัดซื้อ ' + poId + ' · ' + order.supplier, '', 'purchase');
+      applyStockEffects_(session, orderEffects_(existingOrder, oldLines, stockIds), orderEffects_(obj, lines, stockIds),
+        'จัดซื้อ ' + poId + ' · ' + order.supplier, 'purchase');
       if (isNew) appendRow_(orderSheet, CONFIG.HEADERS.Orders, obj);
       else {
         var rowIndex = findRowIndexById_(orderSheet, 'PoID', order.id);
@@ -3337,8 +3840,8 @@ function deleteOrder(token, id) {
       var lineSheet = getSheet_(CONFIG.SHEETS.ORDER_LINES);
       var lineRows = getRows_(lineSheet).filter(function (l) { return l.PoID === id; });
       // Take the purchased qty back out of Stock (may go negative, like any other stock-out).
-      applyRecordEffects_(session, orderEffects_(orderRow, lineRows, stockIdSet_()), { stock: {}, deposit: {} },
-        'ลบใบสั่งซื้อ ' + id + ' · ' + orderRow.Supplier, '', 'purchase');
+      applyStockEffects_(session, orderEffects_(orderRow, lineRows, stockIdSet_()), {},
+        'ลบใบสั่งซื้อ ' + id + ' · ' + orderRow.Supplier, 'purchase');
       deleteRowByIndex_(orderSheet, orderRow._row);
       lineRows.sort(function (a, b) { return b._row - a._row; });
       lineRows.forEach(function (l) { deleteRowByIndex_(lineSheet, l._row); });
@@ -3409,16 +3912,9 @@ function getDashboardData(token, opts) {
     var allOrders = getRows_(getSheet_(CONFIG.SHEETS.ORDERS));
     var periodOrders = allOrders.filter(function (r) { var d = dateStr_(r.Date); return d >= dateFrom && d <= dateTo; });
 
-    // True total money collected per record = จำนวนเงินหัตถการ + จำนวนเงินโปร +
-    // canula (if used) + จำนวนเงินยา + จำนวนเงินอื่นๆ (round 13). This ties out
-    // exactly with clinicShare+salesShare+doctorShare+medicineAmount+otherAmount
-    // (see recomputeDoctorDayShares_ / computeRecordShares_ — Medicine/Other
-    // are deliberately excluded from every revenue share so SupplierPayAmount
-    // always balances as its own bucket; promo money IS inside the 3-way split).
-    function recordTotalCollected_(r) {
-      var canula = (String(r.UseCanula) === 'TRUE' || r.UseCanula === true) ? (Number(r.CanulaAmount) || 0) : 0;
-      return (Number(r.Amount) || 0) + (Number(r.PromoAmount) || 0) + canula + (Number(r.MedicineAmount) || 0) + (Number(r.OtherAmount) || 0);
-    }
+    // True total money collected per record (recordCollected_) ties out
+    // exactly with clinic + sales + doctor shares (recordClinicShare_).
+    var recordTotalCollected_ = recordCollected_;
 
     var totalRevenue = periodRecords.reduce(function (s, r) { return s + recordTotalCollected_(r); }, 0);
     var expenseFromExpenses = periodExpenses.reduce(function (s, r) { return s + (Number(r.Amount) || 0); }, 0);
@@ -3432,7 +3928,7 @@ function getDashboardData(token, opts) {
     // earlier placeholder that naively attributed a whole record's amount
     // to "sales revenue" whenever a salesperson was assigned.
     var salesRevenue = periodRecords.reduce(function (s, r) { return s + (Number(r.SalesShare) || 0); }, 0);
-    var clinicRevenue = periodRecords.reduce(function (s, r) { return s + (Number(r.ClinicShare) || 0); }, 0);
+    var clinicRevenue = periodRecords.reduce(function (s, r) { return s + recordClinicShare_(r); }, 0);
     // Round 16 item 4: still computed (some downstream reporting may still
     // want it) even though it's no longer one of the 8 dashboard stat cards
     // — see stats.doctorRevenue below, which replaced it in the card list.
@@ -3476,7 +3972,7 @@ function getDashboardData(token, opts) {
 
     // --- Revenue by doctor (their actual commission share, not the full record amount) ---
     var byDoctor = {};
-    periodRecords.forEach(function (r) { byDoctor[r.DoctorName] = (byDoctor[r.DoctorName] || 0) + (Number(r.DoctorShare) || 0); });
+    periodRecords.forEach(function (r) { recordDoctorShares_(r).forEach(function (d) { byDoctor[d.name] = (byDoctor[d.name] || 0) + (Number(d.share) || 0); }); });
 
     // --- Revenue by sales (their actual commission share) ---
     var bySales = {};
@@ -3865,6 +4361,12 @@ function seedDemoData(token) {
         return p;
       });
       var activePromos = promos.filter(function (p) { return p.status === 'active'; });
+      // รายการหัตถการ — one per หมวดหัตถการ (the treatment categories above).
+      var procs = cats.treatment.map(function (cat, k) {
+        var p = { id: 'PR' + nextSeq_('PROCEDURE', 4), name: cat + ' - โปรแกรมมาตรฐาน', category: cat, price: 1500 + k * 900 };
+        appendRow_(getSheet_(CONFIG.SHEETS.PROCEDURES), CONFIG.HEADERS.Procedures, { ProcID: p.id, Name: p.name, Category: p.category, Price: p.price, Status: 'active', CreatedAt: nowStr_(), UpdatedAt: nowStr_() });
+        return p;
+      });
 
       // ---- Stock (written at the end with its final Qty) ----
       var stock = [
@@ -3936,7 +4438,8 @@ function seedDemoData(token) {
       var recSheet = getSheet_(CONFIG.SHEETS.RECORDS);
       var payMethods = ['เงินสด', 'บัตรเครดิต', 'โอนเงิน'];
       var perDay = [3, 1, 2, 4, 1, 2, 3, 1, 4, 2, 1, 3, 2, 4, 1, 3];
-      var groups = {}, i = 0;
+      var groups = {}, i = 0, seedDoctorById = {};
+      doctors.forEach(function (d) { seedDoctorById[d.id] = { DoctorID: d.id, Name: d.name, CommissionPct: d.commissionPct }; });
       perDay.forEach(function (count, k) {
         var date = dayStr((perDay.length - 1 - k) * 4);
         for (var j = 0; j < count; j++, i++) {
@@ -3967,20 +4470,23 @@ function seedDemoData(token) {
           var messenger = i % 10 === 6 ? [{ name: medLines.length ? medLines[0].name : meds[0].name, qty: 1, note: 'Kerry TH' + (100000 + i) }] : [];
           // Zone 3: promo / other.
           var promo = activePromos.length && i % 5 === 0 ? activePromos[i % activePromos.length] : null;
-          var promoLine = promo ? { promoId: promo.id, name: promo.name, price: promo.price, doctorSharePct: promo.doctorSharePct, amount: promo.price } : null;
-          var promoAmount = promo ? promo.price : 0, promoDoctorShare = promo ? round2_(promo.price * promo.doctorSharePct / 100) : 0;
+          // The promo goes to the next doctor, so those visits pay two doctors.
+          var promoDoctor = doctors[(i + 1) % doctors.length];
+          var promoLine = promo ? { promoId: promo.id, name: promo.name, price: promo.price, doctorSharePct: promo.doctorSharePct, amount: promo.price, doctorId: promoDoctor.id } : null;
+          var promoAmount = promo ? promo.price : 0;
           var otherAmount = i % 9 === 0 ? 300 : 0;
           var medicineAmount = round2_(medLines.reduce(function (s, x) { return s + x.amount; }, 0));
-          var shares = computeRecordShares_(amount, promoAmount, promoDoctorShare, canulaAmount, { CommissionPct: doctor.commissionPct }, salesP ? { CommissionRate: salesP.commissionRate } : null);
+          var salesPct = salesP ? salesP.commissionRate : 0;
+          var doctorEntries = [{ doctorId: doctor.id, base: amount }];
+          if (promo) doctorEntries.push({ doctorId: promoDoctor.id, extra: promo.price * promo.doctorSharePct / 100 });
           var row = {
             RID: rid, Date: date, PatientID: patient.id, PatientName: patient.name, Phone: patient.phone, ServiceCategory: cat, Detail: cat + ' - โปรแกรมมาตรฐาน',
-            DoctorID: doctor.id, DoctorName: doctor.name, SalesID: salesP ? salesP.id : '', SalesName: salesP ? salesP.name : '',
+            SalesID: salesP ? salesP.id : '', SalesName: salesP ? salesP.name : '',
             PaymentMethod: payMethods[i % payMethods.length], SuppliesJSON: JSON.stringify(supplyLines),
             UseCanula: useCanula ? 'TRUE' : 'FALSE', CanulaAmount: canulaAmount, Amount: amount, Status: status, ReceiptNo: '', Note: '',
             CreatedBy: actor, CreatedAt: nowStr_(), UpdatedAt: nowStr_(), OtherAmount: otherAmount,
-            SalesCommissionPct: shares.salesPct, SalesShare: shares.salesShare, DoctorCommissionPct: shares.doctorPct,
-            DoctorShareRaw: shares.doctorShareRaw, DoctorShare: shares.doctorShareRaw, DoctorShareNote: '', ClinicShare: shares.clinicShareRaw,
-            VisitStatus: j % 2 === 0 ? 'completed' : 'scheduled',
+            SalesCommissionPct: salesPct, SalesShare: round2_(amount * salesPct / 100),
+            VisitStatus: j % 2 === 0 ? 'completed' : 'dispensed',
             UsePromo: promo ? 'TRUE' : 'FALSE', PromoJSON: JSON.stringify(promoLine ? [promoLine] : []), PromoAmount: promoAmount,
             UseMedicine: medLines.length ? 'TRUE' : 'FALSE', MedicineJSON: JSON.stringify(medLines), MedicineAmount: medicineAmount,
             UseOther: otherAmount ? 'TRUE' : 'FALSE', OtherItemsJSON: JSON.stringify(otherAmount ? [{ label: 'ค่าบริการอื่นๆ', amount: otherAmount }] : []),
@@ -3991,19 +4497,25 @@ function seedDemoData(token) {
             UseMessenger: messenger.length ? 'TRUE' : 'FALSE', MessengerJSON: JSON.stringify(messenger),
             StockApplied: 'TRUE'
           };
+          var proc = procs[i % procs.length];
+          row.UseProcedure = 'TRUE';
+          row.ProcedureJSON = JSON.stringify([{ procId: proc.id, name: proc.name, price: proc.price, amount: amount, doctorId: doctor.id }]);
+          applyDoctorShares_(row, buildDoctorShares_(doctorEntries, seedDoctorById));
           appendRow_(recSheet, CONFIG.HEADERS.Records, row);
           // Same effects saveRecord applies, replayed in memory.
-          var eff = recordEffects_(row);
-          Object.keys(eff.stock).forEach(function (id) {
+          var stockEff = recordStockEffects_(row), side = recordDepositSide_(row);
+          Object.keys(stockEff).forEach(function (id) {
             var item = stock.filter(function (s) { return s.id === id; })[0];
-            if (item) move(date, item, 'record', 0, eff.stock[id], label);
+            if (item) move(date, item, 'record', 0, stockEff[id], label);
           });
-          Object.keys(eff.deposit).forEach(function (key) {
-            var itemId = key.split('|')[1], item = stock.filter(function (s) { return s.id === itemId; })[0];
+          var addDeposit = function (itemId, q) {
+            var key = patient.id + '|' + itemId, item = stock.filter(function (s) { return s.id === itemId; })[0];
             var d = deposits[key] = deposits[key] || { patient: patient, itemId: itemId, name: item ? item.name : '', qty: 0, date: date };
-            d.qty = round2_(d.qty + eff.deposit[key]); d.date = date;
-          });
-          if (status !== 'cancelled') groups[doctor.id + '|' + date] = { doctorId: doctor.id, date: date };
+            d.qty = round2_(d.qty + q); d.date = date;
+          };
+          Object.keys(side.deposits).forEach(function (k) { addDeposit(k.split('|')[0], side.deposits[k]); });
+          side.uses.forEach(function (u) { addDeposit(u.itemId, -(Number(u.qty) || 0)); });
+          if (status !== 'cancelled') doctorEntries.forEach(function (e) { groups[e.doctorId + '|' + date] = { doctorId: e.doctorId, date: date }; });
         }
       });
       Object.keys(groups).forEach(function (key) { recomputeDoctorDayShares_(groups[key].doctorId, groups[key].date); });
@@ -4018,9 +4530,10 @@ function seedDemoData(token) {
           appendRow_(wdSheet, CONFIG.HEADERS.MedWithdrawals, {
             WithdrawID: 'WD' + nextSeq_('WITHDRAW', 5), Date: date, PatientID: patient.id, PatientName: patient.name, Phone: patient.phone,
             SalesID: salesP.id, SalesName: salesP.name, ItemID: m.id, ItemName: m.name, Qty: q, UnitCost: m.cost, Amount: q * m.cost,
-            Note: '', CreatedBy: actor, CreatedAt: nowStr_(), BatchID: batch
+            Note: '', CreatedBy: actor, CreatedAt: nowStr_(), BatchID: batch,
+            UnitPrice: seedTierPrice_(m, q), SaleAmount: round2_(q * seedTierPrice_(m, q)), RecordID: ''
           });
-          move(date, m, 'withdraw', 0, q, 'เบิกยาคลีนิค · ' + patient.name + ' · ' + salesP.name);
+          move(date, m, 'withdraw', 0, q, 'จัดยา-เบิกยา · ' + patient.name + ' · ' + salesP.name);
         });
       });
 
@@ -4051,7 +4564,9 @@ function seedDemoData(token) {
       var depSheet = getSheet_(CONFIG.SHEETS.MED_DEPOSITS);
       Object.keys(deposits).forEach(function (key) {
         var d = deposits[key];
-        appendRow_(depSheet, CONFIG.HEADERS.MedDeposits, { DepositID: 'DP' + nextSeq_('DEPOSIT', 5), Date: d.date, PatientID: d.patient.id, PatientName: d.patient.name, ItemName: d.name, QtyRemaining: d.qty, CreatedBy: actor, ItemID: d.itemId, UpdatedAt: nowStr_() });
+        var expiry = new Date(d.date + 'T00:00:00');
+        expiry.setDate(expiry.getDate() + 180);
+        appendRow_(depSheet, CONFIG.HEADERS.MedDeposits, { DepositID: 'DP' + nextSeq_('DEPOSIT', 5), Date: d.date, PatientID: d.patient.id, PatientName: d.patient.name, ItemName: d.name, QtyRemaining: d.qty, CreatedBy: actor, ItemID: d.itemId, UpdatedAt: nowStr_(), ExpiryDate: dateStr_(expiry), QtyDeposited: d.qty });
       });
 
       // ---- Expenses ----
@@ -4172,14 +4687,12 @@ function buildPlainSummaryText_(s, clinicName) {
   (s.medicineItems || []).forEach(function (m) { lines.push((m.name || 'ยา') + ' (' + m.patientName + '): ' + moneyFmt_(m.amount) + ' บาท'); });
   s.otherItems.forEach(function (o) { lines.push((o.name || 'อื่นๆ') + ' (' + o.patientName + '): ' + moneyFmt_(o.amount) + ' บาท'); });
   lines.push('');
-  // Round 19 item 1: ยอดสุทธิ = จำนวนเงินทั้งหมด - ส่วนแบ่งแพทย์ - ส่วนแบ่งเซลล์
-  // - ส่วนแบ่ง Supplier (== s.clinicNet, per the revenue-split identity) —
-  // reverts the Round 18 "totalCollected reframed by recipient" reading.
+  // ยอดสุทธิ = จำนวนเงินทั้งหมด - ส่วนแบ่งแพทย์ - ส่วนแบ่งเซลล์ (== s.clinicNet;
+  // there is no supplier share any more).
   lines.push('ยอดสุทธิ: ' + moneyFmt_(s.clinicNet) + ' บาท');
   lines.push('จำนวนเงินทั้งหมด: ' + moneyFmt_(s.totalCollected) + ' บาท');
   lines.push('- ส่วนแบ่งแพทย์: ' + moneyFmt_(s.doctorTotal) + ' บาท');
   lines.push('- ส่วนแบ่งเซลล์: ' + moneyFmt_(s.salesTotal) + ' บาท');
-  lines.push('- ส่วนแบ่ง Supplier: ' + moneyFmt_(s.supplierPayTotal) + ' บาท');
   return lines.join('\n');
 }
 

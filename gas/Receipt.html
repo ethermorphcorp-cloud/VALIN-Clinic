@@ -84,7 +84,10 @@ if (valid) {
   // records only; the picker itself was removed in round 14) prints as
   // indented, non-monetary sub-lines under this same parent instead of its
   // own table column.
-  items.push({ no: lineNo++, label: (data.serviceCategory || 'รายละเอียดหัตถการ') + (data.detail ? ' (' + data.detail + ')' : ''), amount: Number(data.amount) || 0, sub: false });
+  // Records saved with รายการหัตถการ print one sub-line per procedure under this parent.
+  var procedureItems = data.procedureItems || [];
+  items.push({ no: lineNo++, label: procedureItems.length ? 'รายการหัตถการ' + (data.detail ? ' (' + data.detail + ')' : '') : (data.serviceCategory || 'รายละเอียดหัตถการ') + (data.detail ? ' (' + data.detail + ')' : ''), amount: Number(data.amount) || 0, sub: false });
+  procedureItems.forEach(function (p, i) { items.push({ no: (i + 1), label: p.name, amount: Number(p.amount) || 0, sub: true }); });
   if (data.supplies && data.supplies.length) {
     data.supplies.forEach(function (s, i) { items.push({ no: (i + 1), label: s.name + (Number(s.qty) > 1 ? ' x' + s.qty : ''), amount: null, sub: true }); });
   }
@@ -568,7 +571,7 @@ if (valid) {
 
     <div class="info-row">
       <div class="k">รหัสไข้ (HN)</div>
-      <div class="v"><?= data.patientId ? data.patientId : '-' ?></div>
+      <div class="v"><?= data.hn || data.patientId || '-' ?></div>
       <div class="k">วันที่</div>
       <div class="v"><?= data.date ?></div>
 

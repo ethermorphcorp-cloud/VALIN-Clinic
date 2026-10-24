@@ -150,7 +150,7 @@ doctorGroup.contents = doctorGroup.contents.concat(doctorFootnote);
 
 // Round 19 item 1: item 5 ยอดสุทธิ reverts to meaning the clinic's own net
 // take (ClinicShare sum), per the client's explicit formula ยอดสุทธิ =
-// จำนวนเงินทั้งหมด - ส่วนแบ่งแพทย์ - ส่วนแบ่งเซลล์ - ส่วนแบ่ง Supplier —
+// จำนวนเงินทั้งหมด - ส่วนแบ่งแพทย์ - ส่วนแบ่งเซลล์ (no supplier share any more) —
 // numerically s.clinicNet (see the revenue-split engine's identity). The
 // headline is s.clinicNet itself; the detail rows show the subtraction
 // chain that derives it, replacing Round 18's "same total, reframed by
@@ -164,8 +164,7 @@ var netGroup = {
     flexRow_('ยอดสุทธิ', moneyFmt_(s.clinicNet) + ' บาท', { weight: 'bold', size: 'md', labelColor: netPositive ? '#357552' : '#AC4143', valueColor: netPositive ? '#357552' : '#AC4143' }),
     flexRow_('จำนวนเงินทั้งหมด', moneyFmt_(s.totalCollected) + ' บาท', { margin: 'sm' }),
     flexRow_('− ส่วนแบ่งแพทย์', moneyFmt_(s.doctorTotal) + ' บาท', { margin: 'xs' }),
-    flexRow_('− ส่วนแบ่งเซลล์', moneyFmt_(s.salesTotal) + ' บาท', { margin: 'xs' }),
-    flexRow_('− ส่วนแบ่ง Supplier', moneyFmt_(s.supplierPayTotal) + ' บาท', { margin: 'xs' })
+    flexRow_('− ส่วนแบ่งเซลล์', moneyFmt_(s.salesTotal) + ' บาท', { margin: 'xs' })
   ]
 };
 
