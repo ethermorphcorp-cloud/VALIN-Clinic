@@ -932,6 +932,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (screenId === 'stock') { if (state.stock.type === 'procedure') { if (!state.stock.procedures) loadProcedures(); } else loadStock(); }
     if (screenId === 'withdraw') loadWithdrawals();
     if (screenId === 'board') { loadBoard(); clearQueueAlerts(); pollQueueAlerts(); }
+    else pollQueueAlerts(); // look for newly รอชำระเงิน customers whenever the screen changes
     if (screenId === 'deposits') loadDeposits(); // always fresh: records/withdrawals elsewhere change it
     if (screenId === 'expense' && !state.expense.list) loadExpenses();
     if (screenId === 'promotions' && !state.promotions.list) loadPromotions();
@@ -3036,8 +3037,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       if (state.screen === 'board' && !state.modal) render();
     }, function () { state.board.loading = false; });
   }
-  /* Notification: every 60 seconds (on any screen) ask who is รอชำระเงิน; anyone new since the last look lights the
-   * ระหว่างดำเนินการ menu (a number) and a toast — opening the board clears it. The first look after login is only a baseline. */
+  /* Notification: whenever the screen changes (and at login) ask who is รอชำระเงิน; anyone new since the last look lights the
+   * ระหว่างดำเนินการ menu (a number) and a toast — opening the board clears it. The first look after login is only a baseline.
+   * There is no timer: the only screen that refreshes by itself is ระหว่างดำเนินการ. */
   function pollQueueAlerts() {
     if (!session.token || document.hidden) return;
     call('getQueueAlerts', session.token, gsOpts({ quiet: true })).then(function (res) {
@@ -3054,10 +3056,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       N.known = ids;
     }, function () { /* try again at the next tick */ });
   }
-  setInterval(pollQueueAlerts, 60000);
   function clearQueueAlerts() { if (state.notify.unseen) { state.notify.unseen = 0; render(); } }
-  // The board stays current on its own while it is on screen (several people work from it): every 3 minutes, plus the รีเฟรช button.
-  setInterval(function () { if (session.token && state.screen === 'board' && !state.modal && !state.portal && !document.hidden) loadBoard(); }, 180000);
+  // The board stays current on its own while it is on screen (several people work from it): every 10 minutes, plus the รีเฟรช button.
+  // It is the only screen that refreshes by itself.
+  setInterval(function () { if (session.token && state.screen === 'board' && !state.modal && !state.portal && !document.hidden) loadBoard(); }, 600000);
   function boardCard(c, st) {
     var q = st === 'dispensed' ? null : c.queueDoctor;
     var tag = function (t, color) { return '<span class="tag-badge" style="background:' + color + ';font-size:10.5px;white-space:nowrap">' + esc(t) + '</span>'; };
@@ -3115,7 +3117,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<input type="date" id="boardDate" value="' + esc(B.date) + '" style="' + inputStyle + ';width:auto" data-action-change="board-date">' +
       (B.date !== todayStr() ? '<button class="btn" data-action="board-today">วันนี้</button>' : '') +
       '<button class="btn" data-action="board-refresh"><span class="ms">refresh</span> รีเฟรช</button>' +
-      '<span style="font-size:11.5px;color:var(--muted);margin-left:auto">' + (B.updatedAt ? 'อัปเดต ' + String(B.updatedAt.getHours()).padStart(2, '0') + ':' + String(B.updatedAt.getMinutes()).padStart(2, '0') + ' · รีเฟรชเองทุก 3 นาที' : '') + '</span>' +
+      '<span style="font-size:11.5px;color:var(--muted);margin-left:auto">' + (B.updatedAt ? 'อัปเดต ' + String(B.updatedAt.getHours()).padStart(2, '0') + ':' + String(B.updatedAt.getMinutes()).padStart(2, '0') + ' · รีเฟรชเองทุก 10 นาที' : '') + '</span>' +
     '</div>';
     if (!d) return head + '<div class="empty-state"><span class="spin"></span> กำลังโหลด...</div>';
     var stats = '<div class="board-stats">' + VISIT_FLOW.map(function (st) {
