@@ -123,7 +123,7 @@ if (valid) {
   var itemsHtml = items.map(function (it) {
     if (it.sub) {
       return '<tr><td class="num"></td>' +
-        '<td style="padding-left:26px;color:var(--ink-soft);font-size:11.5px">' + it.no + '. ' + escR_(it.label || '-') + '</td>' +
+        '<td style="padding-left:26px;color:var(--ink-soft);font-size:11.5px">' + escR_(it.label || '-') + '</td>' +
         '<td class="amt" style="color:var(--ink-soft);font-size:11.5px">' + (it.amount === null ? '-' : moneyR_(it.amount)) + '</td></tr>';
     }
     return '<tr><td class="num">' + it.no + '</td>' +
@@ -213,12 +213,17 @@ if (valid) {
 
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* A4 (210 x 297 mm): the same size on screen, in the preview, as a PDF and on paper. */
+    @page { size: A4 portrait; margin: 0; }
     .receipt {
-      max-width: 640px;
+      width: 210mm;
+      min-height: 297mm;
+      max-width: none;
+      font-size: 13.5px;
       margin: 0 auto;
       background: var(--paper);
-      border-radius: 10px;
-      padding: 22px 26px;
+      border-radius: 4px;
+      padding: 16mm 15mm;
       box-shadow: 0 1px 3px rgba(15, 27, 61, 0.10);
       opacity: 0;
       transition: opacity 0.35s ease;
@@ -471,8 +476,9 @@ if (valid) {
 
     /* ---------- Actions ---------- */
     .embedded .actions { display: none; }
+    .capturing { padding: 0; background: #fff; }
     .capturing .actions { display: none; }
-    .capturing .receipt { box-shadow: none; border-radius: 0; opacity: 1; }
+    .capturing .receipt { box-shadow: none; border-radius: 0; opacity: 1; margin: 0; zoom: 1 !important; }
     .actions {
       display: flex;
       gap: 8px;
@@ -523,7 +529,7 @@ if (valid) {
       .actions, #loading { display: none; }
       html, body { background: #fff; }
       body { padding: 0; }
-      .receipt { box-shadow: none; border-radius: 0; max-width: 100%; opacity: 1; }
+      .receipt { box-shadow: none; border-radius: 0; width: 210mm; min-height: 0; margin: 0; opacity: 1; zoom: 1 !important; }
     }
   </style>
 </head>
@@ -649,7 +655,7 @@ if (valid) {
         document.body.classList.add('capturing');
         var done = function () { document.body.classList.remove('capturing'); };
         window.html2pdf().set({
-          margin: [8, 8, 8, 8], filename: 'ใบเสร็จ-<?= data.receiptNo ?>.pdf', image: { type: 'jpeg', quality: 0.96 },
+          margin: 0, filename: 'ใบเสร็จ-<?= data.receiptNo ?>.pdf', image: { type: 'jpeg', quality: 0.96 },
           html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
         }).from(el).save().then(done, done);
       };
@@ -660,8 +666,18 @@ if (valid) {
       s.onerror = function () { alert('โหลดตัวสร้าง PDF ไม่สำเร็จ — ใช้ปุ่มพิมพ์แล้วเลือก "บันทึกเป็น PDF" แทนได้'); };
       document.head.appendChild(s);
     }
+    // A4 is wider than a phone / narrow pane: shrink the sheet to fit (screen only — never in print or the PDF capture).
+    function fitReceipt() {
+      var el = document.getElementById('receipt');
+      if (!el) return;
+      el.style.zoom = '';
+      var avail = document.documentElement.clientWidth - 44, w = el.offsetWidth;
+      if (w > avail && avail > 200) el.style.zoom = String(avail / w);
+    }
+    window.addEventListener('resize', fitReceipt);
     // แสดง loading เล็กน้อยเพื่อความรู้สึก "smooth" แล้วค่อยเผยใบเสร็จ
     window.addEventListener('load', function () {
+      fitReceipt();
       setTimeout(function () {
         document.getElementById('loading').style.opacity = '0';
         document.getElementById('receipt').classList.add('show');

@@ -4787,8 +4787,10 @@ function seedDemoData(token) {
 
       // Treatment records — 16 days (oldest first), 1-4 records a day. Most start
       // as a จัดยา-เบิกยา (the withdrawal, then หัตถการ / โปร / อื่นๆ added to its
-      // record), some also have ยาเบิกเพิ่ม, a few visits pay two doctors, and
-      // every sixth is still a draft in สถานะ จัดยาแล้ว (the rest are เสร็จสิ้น).
+      // record), some also have ยาเบิกเพิ่ม, a few visits pay two doctors. Every visit
+      // before today is finished and paid (a few cancelled); today's two first visits are
+      // treated but not yet paid (รอชำระเงิน). The status pass below gives each its
+      // queue number and doctor, and spreads the จัดยา-เบิกยา-only records over the steps.
       var recSheet = getSheet_(CONFIG.SHEETS.RECORDS), wdSheet = getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS);
       var payMethods = ['เงินสด', 'บัตรเครดิต', 'โอนเงิน'];
       var perDay = [3, 1, 2, 4, 1, 2, 3, 1, 4, 2, 1, 3, 2, 4, 1, 3];
@@ -4815,8 +4817,8 @@ function seedDemoData(token) {
           var fromWd = i % 3 !== 1; // started as a จัดยา-เบิกยา, which always has a sales person
           var salesP = (fromWd || i % 4 !== 0) ? sales[k % sales.length] : null; // one sales person per day, so a day can have several customers for them
           var cat = cats.treatment[i % cats.treatment.length];
-          var draft = i % 6 === 5;
-          var status = draft || i % 11 === 5 ? 'unpaid' : (i % 19 === 7 ? 'cancelled' : 'paid');
+          var draft = false;
+          var status = k === perDay.length - 1 ? (j < 2 ? 'unpaid' : 'paid') : (i % 19 === 7 ? 'cancelled' : 'paid');
           var useCanula = i % 4 === 0, canulaAmount = useCanula ? 500 : 0;
           var rid = 'R' + nextSeq_('RECORD', 6), label = 'บันทึกการรักษา ' + rid + ' · ' + patient.name;
           // 1 เวชภัณฑ์: supplies used.
@@ -4902,9 +4904,10 @@ function seedDemoData(token) {
       });
       Object.keys(groups).forEach(function (key) { recomputeDoctorDayShares_(groups[key].doctorId, groups[key].date); });
 
-      // The latest จัดยา-เบิกยา (a few days back to today): each opened its บันทึกการรักษา, still สถานะ จัดยาแล้ว with
-      // no หัตถการ yet. Yesterday has two customers for the same sales person so รายงานรายเซลล์ shows a stacked day.
-      [[6, 0, 0, [[0, 2], [2, 3]]], [3, 1, 3, [[1, 1]]], [1, 0, 5, [[2, 5], [3, 1]]], [1, 0, 7, [[4, 2]]], [0, 1, 2, [[0, 1]]]].forEach(function (w) {
+      // The latest จัดยา-เบิกยา (yesterday = dispensed in advance, and today): each opened its record, with no
+      // หัตถการ yet. Yesterday has two customers for the same sales person so รายงานรายเซลล์ shows a stacked day.
+      // The status pass below keeps the first two at จัดยาแล้ว, and moves the rest to รอพบแพทย์ / พบแพทย์.
+      [[1, 0, 0, [[0, 2], [2, 3]]], [1, 0, 5, [[2, 5], [3, 1]]], [1, 1, 3, [[1, 1]]], [0, 0, 7, [[4, 2]]], [0, 1, 2, [[0, 1]]], [0, 1, 6, [[3, 2]]]].forEach(function (w) {
         var date = dayStr(w[0]), salesP = sales[w[1]], patient = patients[w[2]];
         var rid = 'R' + nextSeq_('RECORD', 6), batch = 'WB' + nextSeq_('WITHDRAW_BATCH', 5);
         var items = w[3].map(function (pair) {
@@ -4975,21 +4978,34 @@ function seedDemoData(token) {
         i++;
       })();
 
-      // สถานะการรักษา of today's visits: spread over every step, with the day's queue numbers.
+      // สถานะการรักษา — every customer who has arrived has the day's queue number (in order of arrival: those already
+      // treated first, then the ones with a doctor, then the ones still waiting) and the doctor they saw / are seeing.
       (function () {
-        var today = dayStr(0), shownWaiting = 0;
-        getRows_(recSheet).filter(function (r) { return dateStr_(r.Date) === today && r.Status !== 'cancelled'; }).forEach(function (r) {
-          var st = visitStatusOf_(r);
-          var firstShare = recordDoctorShares_(r)[0];
-          var seen = firstShare ? { id: firstShare.doctorId, name: firstShare.name } : { id: doctors[0].id, name: doctors[0].name };
-          if (st === 'dispensed') {
-            if (shownWaiting >= 3) return;
-            shownWaiting++; r.VisitStatus = 'dispensed';
-            applyVisitStatus_(r, shownWaiting === 2 ? 'with_doctor' : 'waiting_doctor', today, false, seen); // the first waits, the second is with a doctor
-          } else { // already treated today: one queue number kept to the end, and the doctor they saw
-            r.QueueDate = today; r.QueueDoctor = nextQueueNo_('D', today); r.VisitDoctorID = seen.id; r.VisitDoctorName = seen.name;
-          }
-          updateRowByIndex_(recSheet, CONFIG.HEADERS.Records, r._row, r);
+        var today = dayStr(0);
+        var docOf = function (r, fallback) { var sh = recordDoctorShares_(r)[0]; return sh ? { id: sh.doctorId, name: sh.name } : fallback; };
+        var rows = getRows_(recSheet).filter(function (r) { return r.Status !== 'cancelled'; });
+        var write = function (r) { updateRowByIndex_(recSheet, CONFIG.HEADERS.Records, r._row, r); };
+        // 1. visits that are already treated (รอชำระเงิน / เสร็จสิ้น), oldest day first
+        rows.filter(function (r) { return visitStatusOf_(r) !== 'dispensed'; })
+          .sort(function (a, b) { return dateStr_(a.Date).localeCompare(dateStr_(b.Date)) || String(a.RID).localeCompare(String(b.RID)); })
+          .forEach(function (r) {
+            var day = dateStr_(r.Date), d = docOf(r, { id: doctors[0].id, name: doctors[0].name });
+            r.QueueDate = day; r.QueueDoctor = nextQueueNo_('D', day); r.VisitDoctorID = d.id; r.VisitDoctorName = d.name;
+            write(r);
+          });
+        // 2. the จัดยา-เบิกยา-only records, in order: two stay จัดยาแล้ว (dispensed in advance), two have arrived (รอพบแพทย์),
+        //    two are with a doctor (different doctors). The ones with a doctor arrived first, so they take the earlier numbers.
+        var onlyDispensed = rows.filter(function (r) { return visitStatusOf_(r) === 'dispensed' && !recordHasContent_(r); })
+          .sort(function (a, b) { return String(a.RID).localeCompare(String(b.RID)); });
+        var plan = [['dispensed'], ['dispensed'], ['waiting_doctor'], ['waiting_doctor'], ['with_doctor', 0], ['with_doctor', 1]];
+        var order = [4, 5, 2, 3];
+        order.forEach(function (idx) {
+          var r = onlyDispensed[idx], step = plan[idx];
+          if (!r) return;
+          var doc = step[1] != null ? { id: doctors[step[1] % doctors.length].id, name: doctors[step[1] % doctors.length].name } : null;
+          r.VisitStatus = 'dispensed';
+          applyVisitStatus_(r, step[0], today, true, doc);
+          write(r);
         });
       })();
 
