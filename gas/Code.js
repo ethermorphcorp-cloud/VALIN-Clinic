@@ -222,12 +222,17 @@ var CONFIG = {
     // {withdrawId, itemId, name, qtyDispensed, qtyUsed, qtyDeposit, expiry} —
     // not charged here (the sales person sells them); only their ยาฝาก part
     // matters to the record.
-    // VisitStatus: 'dispensed' จัดยาแล้ว | 'completed' เสร็จสิ้น; older
-    // ''/'scheduled' read as 'dispensed'.
+    // VisitStatus: 'dispensed' จัดยาแล้ว → 'waiting_doctor' รอพบแพทย์ →
+    // 'with_doctor' พบแพทย์ → 'waiting_payment' รอชำระเงิน → 'completed' เสร็จสิ้น (= paid); older
+    // ''/'scheduled' read as 'dispensed', a stored 'completed' that isn't paid
+    // reads as 'waiting_payment' (see visitStatusOf_). QueueDate/QueueDoctor:
+    // the day's queue number, taken when the customer arrives (รอพบแพทย์) and
+    // kept through the later steps; QueuePay is no longer used. VisitDoctorID/
+    // VisitDoctorName: the doctor chosen when it moved to พบแพทย์.
     // ClinicShare is now everything collected (incl. ยาเบิกเพิ่ม and
     // รายการอื่นๆ) minus the sales and doctor shares — there is no separate
     // supplier share any more (SupplierPayAmount is still written, unused).
-    Records: ['RID', 'Date', 'PatientID', 'PatientName', 'Phone', 'ServiceCategory', 'Detail', 'DoctorID', 'DoctorName', 'SalesID', 'SalesName', 'PaymentMethod', 'SuppliesJSON', 'UseCanula', 'CanulaAmount', 'Amount', 'Status', 'ReceiptNo', 'Note', 'CreatedBy', 'CreatedAt', 'UpdatedAt', 'OtherAmount', 'SalesCommissionPct', 'SalesShare', 'DoctorCommissionPct', 'DoctorShareRaw', 'DoctorShare', 'DoctorShareNote', 'ClinicShare', 'VisitStatus', 'UsePromo', 'PromoJSON', 'PromoAmount', 'UseMedicine', 'MedicineJSON', 'MedicineAmount', 'UseOther', 'OtherItemsJSON', 'SupplierPayAmount', 'OpdImageFileId', 'UseSupplies', 'UseOwnMed', 'OwnMedJSON', 'UseDepositUse', 'DepositUseJSON', 'UseMessenger', 'MessengerJSON', 'StockApplied', 'UseProcedure', 'ProcedureJSON', 'DoctorSharesJSON', 'WithdrawJSON'],
+    Records: ['RID', 'Date', 'PatientID', 'PatientName', 'Phone', 'ServiceCategory', 'Detail', 'DoctorID', 'DoctorName', 'SalesID', 'SalesName', 'PaymentMethod', 'SuppliesJSON', 'UseCanula', 'CanulaAmount', 'Amount', 'Status', 'ReceiptNo', 'Note', 'CreatedBy', 'CreatedAt', 'UpdatedAt', 'OtherAmount', 'SalesCommissionPct', 'SalesShare', 'DoctorCommissionPct', 'DoctorShareRaw', 'DoctorShare', 'DoctorShareNote', 'ClinicShare', 'VisitStatus', 'UsePromo', 'PromoJSON', 'PromoAmount', 'UseMedicine', 'MedicineJSON', 'MedicineAmount', 'UseOther', 'OtherItemsJSON', 'SupplierPayAmount', 'OpdImageFileId', 'UseSupplies', 'UseOwnMed', 'OwnMedJSON', 'UseDepositUse', 'DepositUseJSON', 'UseMessenger', 'MessengerJSON', 'StockApplied', 'UseProcedure', 'ProcedureJSON', 'DoctorSharesJSON', 'WithdrawJSON', 'QueueDate', 'QueueDoctor', 'QueuePay', 'VisitDoctorID', 'VisitDoctorName'],
     // MedDeposits — ยาฝาก, one row per lot: a record's medicine line that is
     // not all used creates a lot (RecordID = that record) with its own
     // ExpiryDate; รายการใช้ยาฝาก takes from the patient's lots, earliest
@@ -2287,7 +2292,9 @@ function mapRecordOut_(r) {
     withdrawItems: parseLineItems_(r.WithdrawJSON),
     estimatedRevenue: grossBase,
     totalCollected: collected,
-    visitStatus: r.VisitStatus === 'completed' ? 'completed' : 'dispensed', // older ''/'scheduled' read as จัดยาแล้ว
+    visitStatus: visitStatusOf_(r), // see visitStatusOf_: older ''/'scheduled' read as จัดยาแล้ว
+    queueDate: r.QueueDate ? dateStr_(r.QueueDate) : '', queueDoctor: Number(r.QueueDoctor) || null, queuePay: null,
+    visitDoctorId: r.VisitDoctorID || '', visitDoctorName: r.VisitDoctorName || '',
     // Round 14 item 1.7 — OPD photo attachment (Drive fileId; fetch its
     // viewable data URI via getPhotoUrl, same as patient/login/logo photos).
     opdImageFileId: r.OpdImageFileId || ''
@@ -2339,6 +2346,59 @@ function round2_(n) {
 function recordCollected_(r) {
   var canula = isTrue_(r.UseCanula) ? (Number(r.CanulaAmount) || 0) : 0;
   return round2_((Number(r.Amount) || 0) + (Number(r.PromoAmount) || 0) + canula + (Number(r.MedicineAmount) || 0) + (Number(r.OtherAmount) || 0));
+}
+
+/* ---------------------------------------------------------------------
+   สถานะการรักษา: จัดยาแล้ว → รอพบแพทย์ → พบแพทย์ → รอชำระเงิน → เสร็จสิ้น.
+   Front moves จัดยาแล้ว → รอพบแพทย์ → พบแพทย์ (choosing the doctor) and takes payment;
+   the doctor moves พบแพทย์ → รอชำระเงิน by saving the treatment record. Back
+   while unpaid; เสร็จสิ้น is only ever reached by payment. Arriving (รอพบแพทย์)
+   takes the day's next queue number, which the customer keeps to the end.
+   --------------------------------------------------------------------- */
+var VISIT_FLOW_ = ['dispensed', 'waiting_doctor', 'with_doctor', 'waiting_payment', 'completed'];
+
+/** The record's step, whatever older rows stored: paid = เสร็จสิ้น; a stored 'completed' that isn't paid is รอชำระเงิน; ''/'scheduled' = จัดยาแล้ว. */
+function visitStatusOf_(r) {
+  if (r.Status === 'paid') return 'completed';
+  var v = String(r.VisitStatus || '');
+  if (v === 'waiting_doctor' || v === 'with_doctor' || v === 'waiting_payment') return v;
+  if (v === 'completed') return r.Status === 'cancelled' ? 'completed' : 'waiting_payment';
+  return 'dispensed';
+}
+
+/** The next queue number of `date` for kind 'D' (พบแพทย์) or 'P' (ชำระเงิน); starts at 1 each day. */
+function nextQueueNo_(kind, date) { return Number(nextSeq_('QUEUE_' + kind + '_' + date, 1)); }
+
+/**
+ * Moves a Records row object (not yet written) to step `to`, assigning the queue number of `day` on arrival.
+ * doctor ({id, name}): who the customer sees, required when going to พบแพทย์ unless the record already has one.
+ * shiftDate: a record dispensed on an earlier day takes `day` as its treatment date when the customer arrives.
+ * Refused once paid, and เสร็จสิ้น itself is never a target (payment does that).
+ */
+function applyVisitStatus_(r, to, day, shiftDate, doctor) {
+  var from = visitStatusOf_(r);
+  if (from === to) return;
+  if (VISIT_FLOW_.indexOf(to) < 0) throw ValidationError_('สถานะการรักษาไม่ถูกต้อง');
+  if (r.Status === 'paid') throw ValidationError_('ชำระเงินแล้ว — เปลี่ยนสถานะไม่ได้ (ยกเลิกการชำระเงินก่อน)');
+  if (to === 'completed') throw ValidationError_('สถานะเสร็จสิ้นเกิดจากการชำระเงินเท่านั้น');
+  if (to === 'with_doctor') {
+    if (doctor) { r.VisitDoctorID = doctor.id; r.VisitDoctorName = doctor.name; }
+    else if (!r.VisitDoctorID) throw ValidationError_('กรุณาเลือกแพทย์ที่จะเข้าพบ');
+  } else if (to === 'dispensed' || to === 'waiting_doctor') {
+    r.VisitDoctorID = ''; r.VisitDoctorName = '';
+  }
+  if (to === 'dispensed') {
+    r.QueueDate = ''; r.QueueDoctor = ''; r.QueuePay = '';
+  } else {
+    // First arrival: the customer takes today as their queue day (and treatment date, when asked) and a doctor-queue number.
+    if (!r.QueueDate) {
+      if (shiftDate && dateStr_(r.Date) !== day) r.Date = day;
+      r.QueueDate = day;
+    }
+    if (!r.QueueDoctor) r.QueueDoctor = nextQueueNo_('D', dateStr_(r.QueueDate));
+    r.QueuePay = '';
+  }
+  r.VisitStatus = to;
 }
 
 /** ส่วนแบ่งคลีนิค = everything collected − ส่วนแบ่งเซลล์ − ส่วนแบ่งแพทย์ (final, after the daily minimum). Read this rather than the ClinicShare column, which older rows wrote without ยา/รายการอื่นๆ. */
@@ -2477,8 +2537,8 @@ function listRecords(token, opts) {
     }
     if (filters.doctorId) rows = rows.filter(function (r) { return recordDoctorShares_(r).some(function (d) { return d.doctorId === filters.doctorId; }); });
     if (filters.status) rows = rows.filter(function (r) { return r.Status === filters.status; });
-    // สถานะการรักษา: anything not completed reads as จัดยาแล้ว (see mapRecordOut_).
-    if (filters.visitStatus) rows = rows.filter(function (r) { return (r.VisitStatus === 'completed' ? 'completed' : 'dispensed') === filters.visitStatus; });
+    if (filters.visitStatus) rows = rows.filter(function (r) { return visitStatusOf_(r) === filters.visitStatus; });
+    if (filters.excludeVisitStatus) rows = rows.filter(function (r) { return visitStatusOf_(r) !== filters.excludeVisitStatus; });
     if (filters.dateFrom) rows = rows.filter(function (r) { return dateStr_(r.Date) >= filters.dateFrom; });
     if (filters.dateTo) rows = rows.filter(function (r) { return dateStr_(r.Date) <= filters.dateTo; });
     // Sort by date descending (latest first) — compare normalized 'yyyy-MM-dd'
@@ -3162,8 +3222,11 @@ function saveRecord(token, record) {
 
       var salesPct = sales ? (Number(sales.CommissionRate) || 0) : 0;
       var doctorShares = buildDoctorShares_(doctorEntries, doctorById);
-      // เสร็จสิ้น only when staff says so (and it stays so); จัดยาแล้ว until then.
-      var visitStatus = record.complete || (!isNew && existing.VisitStatus === 'completed') ? 'completed' : 'dispensed';
+      // สถานะการรักษา: a save keeps the record's step; "บันทึกการรักษา" (record.complete) moves it on to
+      // รอชำระเงิน; a record made by hand (no จัดยา-เบิกยา first) starts at พบแพทย์. Paying makes it เสร็จสิ้น.
+      var visitFields = isNew
+        ? { VisitStatus: 'dispensed', QueueDate: '', QueueDoctor: '', QueuePay: '', VisitDoctorID: '', VisitDoctorName: '' }
+        : { VisitStatus: visitStatusOf_(existing), QueueDate: existing.QueueDate || '', QueueDoctor: existing.QueueDoctor || '', QueuePay: existing.QueuePay || '', VisitDoctorID: existing.VisitDoctorID || '', VisitDoctorName: existing.VisitDoctorName || '' };
 
       var obj = {
         RID: rid,
@@ -3178,7 +3241,7 @@ function saveRecord(token, record) {
         CreatedAt: isNew ? nowStr_() : (existing.CreatedAt || nowStr_()), UpdatedAt: nowStr_(),
         OtherAmount: otherAmount,
         SalesCommissionPct: salesPct, SalesShare: round2_(amount * salesPct / 100),
-        VisitStatus: visitStatus,
+        VisitStatus: visitFields.VisitStatus, QueueDate: visitFields.QueueDate, QueueDoctor: visitFields.QueueDoctor, QueuePay: visitFields.QueuePay, VisitDoctorID: visitFields.VisitDoctorID, VisitDoctorName: visitFields.VisitDoctorName,
         UsePromo: record.usePromo ? 'TRUE' : 'FALSE', PromoJSON: JSON.stringify(promoOut), PromoAmount: promoAmount,
         UseMedicine: record.useMedicine ? 'TRUE' : 'FALSE', MedicineJSON: JSON.stringify(medicineGroup.items), MedicineAmount: medicineGroup.total,
         UseOther: record.useOther ? 'TRUE' : 'FALSE', OtherItemsJSON: JSON.stringify(otherGroup.items),
@@ -3196,6 +3259,13 @@ function saveRecord(token, record) {
         WithdrawJSON: JSON.stringify(withdrawItems)
       };
       applyDoctorShares_(obj, doctorShares); // DoctorID/DoctorName/shares/ClinicShare
+      if (isNew) {
+        // Made by hand: the customer is already with the doctor of its first หัตถการ/โปร line (if any).
+        var firstDoctor = doctorEntries.length ? doctorById[doctorEntries[0].doctorId] : null;
+        applyVisitStatus_(obj, 'with_doctor', record.date, false, firstDoctor ? { id: firstDoctor.DoctorID, name: firstDoctor.Name } : { id: '', name: '' });
+      }
+      if (record.complete && visitStatusOf_(obj) !== 'completed') applyVisitStatus_(obj, 'waiting_payment', todayStr_(), false);
+      obj.VisitStatus = visitStatusOf_(obj);
 
       // ยาฝาก + Stock before the record itself: both throw before writing
       // anything if a deposit lot would go negative / an item is missing.
@@ -3362,6 +3432,9 @@ function payRecord(token, rid, payload) {
       if (!record) throw ValidationError_('ไม่พบข้อมูลการรักษา');
       var oldStatus = record.Status || 'unpaid';
       var updated = Object.assign({}, record, { Status: status, PaymentMethod: payload.paymentMethod || record.PaymentMethod || '', UpdatedAt: nowStr_() });
+      // Paid = เสร็จสิ้น; taking a payment back puts it at รอชำระเงิน again.
+      if (status === 'paid') updated.VisitStatus = 'completed';
+      else if (status === 'unpaid' && String(record.VisitStatus || '') === 'completed') updated.VisitStatus = 'waiting_payment';
       updateRowByIndex_(sheet, CONFIG.HEADERS.Records, record._row, updated);
       if ((oldStatus === 'cancelled') !== (status === 'cancelled')) recomputeRecordDoctors_(null, updated);
       writeAudit_(session, 'PAY', 'Record', rid, status + ' ' + (updated.PaymentMethod || ''));
@@ -3508,6 +3581,7 @@ function listMedWithdrawals(token, opts) {
           String(hnById[r.PatientID] || '').toLowerCase().indexOf(q) > -1;
       });
     }
+    if (filters.salesId) rows = rows.filter(function (r) { return r.SalesID === filters.salesId; });
     var showCost = session.level === 'admin';
     var stockById = {};
     getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { stockById[s.ItemID] = s; });
@@ -3516,7 +3590,7 @@ function listMedWithdrawals(token, opts) {
     // and pages by these groups so a save never splits across pages.
     var groups = {}, order = [];
     var recStatus = {};
-    getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).forEach(function (rr) { recStatus[rr.RID] = rr.VisitStatus === 'completed' ? 'completed' : 'dispensed'; });
+    getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).forEach(function (rr) { recStatus[rr.RID] = visitStatusOf_(rr); });
     rows.sort(function (a, b) { return String(a.CreatedAt).localeCompare(String(b.CreatedAt)) || String(a.WithdrawID).localeCompare(String(b.WithdrawID)); });
     rows.forEach(function (r) {
       var key = r.BatchID || (dateStr_(r.Date) + '|' + r.PatientID + '|' + r.SalesID);
@@ -3533,11 +3607,106 @@ function listMedWithdrawals(token, opts) {
       if (!g.photoIds && out.photoIds.length) g.photoIds = out.photoIds; // รูปยาที่เบิก, kept on every line of the save
     });
     order.forEach(function (g) { g.photoIds = g.photoIds || []; });
-    // สถานะ (filter): a group is เสร็จสิ้น once every line's record is, else จัดยาแล้ว.
-    order.forEach(function (g) { g.visitStatus = g.lines.every(function (l) { return l.recordStatus === 'completed'; }) ? 'completed' : 'dispensed'; });
+    // สถานะ (filter): the step of the group's record(s) — the earliest one if its lines sit on different records.
+    order.forEach(function (g) {
+      g.visitStatus = g.lines.reduce(function (min, l) { return VISIT_FLOW_.indexOf(l.recordStatus) < VISIT_FLOW_.indexOf(min) ? l.recordStatus : min; }, 'completed');
+    });
     if (filters.visitStatus) order = order.filter(function (g) { return g.visitStatus === filters.visitStatus; });
     order.sort(function (a, b) { return b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt); });
     return { ok: true, data: paginate_(order, opts.page, opts.pageSize) };
+  });
+}
+
+/**
+ * Moves a treatment record to another step: to = 'dispensed' | 'waiting_doctor' | 'with_doctor' | 'waiting_payment'.
+ * Arriving (รอพบแพทย์) takes today's next queue number, and a record dispensed on an earlier day takes today as its
+ * treatment date; พบแพทย์ needs the doctor (doctorId) the customer goes in to see.
+ */
+function setVisitStatus(token, rid, to, doctorId) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'staff');
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var sheet = getSheet_(CONFIG.SHEETS.RECORDS);
+      var row = getRows_(sheet).filter(function (r) { return r.RID === rid; })[0];
+      if (!row) throw ValidationError_('ไม่พบข้อมูลการรักษา');
+      var obj = Object.assign({}, row);
+      var doctor = null;
+      if (doctorId) {
+        var d = getRows_(getSheet_(CONFIG.SHEETS.DOCTORS)).filter(function (x) { return x.DoctorID === doctorId; })[0];
+        if (!d) throw ValidationError_('ไม่พบข้อมูลแพทย์ที่เลือก');
+        doctor = { id: d.DoctorID, name: d.Name };
+      }
+      applyVisitStatus_(obj, to, todayStr_(), true, doctor);
+      obj.UpdatedAt = nowStr_();
+      updateRowByIndex_(sheet, CONFIG.HEADERS.Records, row._row, obj);
+      if (dateStr_(row.Date) !== dateStr_(obj.Date)) recomputeRecordDoctors_(row, obj);
+      writeAudit_(session, 'STATUS', 'Record', rid, visitStatusOf_(row) + ' → ' + to);
+      bumpDashboardCacheVersion_();
+      return { ok: true, data: mapRecordOut_(obj) };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+/**
+ * The customers waiting to pay right now ({id, queue, patientName}) — polled by every open screen so the board's menu can
+ * flag a customer who has just moved from พบแพทย์ to รอชำระเงิน.
+ */
+function getQueueAlerts(token) {
+  return safeCall_(function () {
+    requireAuth_(token, 'staff');
+    var list = [];
+    getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).forEach(function (r) {
+      if (r.Status === 'cancelled' || visitStatusOf_(r) !== 'waiting_payment') return;
+      list.push({ id: r.RID, queue: Number(r.QueueDoctor) || null, patientName: r.PatientName });
+    });
+    return { ok: true, data: { waitingPayment: list } };
+  });
+}
+
+/**
+ * The "ระหว่างดำเนินการ" board for one day (default today): five columns by สถานะการรักษา with counts.
+ * จัดยาแล้ว lists everything still waiting for its customer (any date — dispensing is often the day before);
+ * the other columns hold that day's queue (รอพบแพทย์ / พบแพทย์ / รอชำระเงิน carried over from earlier days show on today's board, flagged).
+ */
+function getQueueBoard(token, date) {
+  return safeCall_(function () {
+    requireAuth_(token, 'staff');
+    var today = todayStr_(), day = date || today;
+    requireDateStr_(day, 'วันที่');
+    var hnById = patientHnById_();
+    var cols = { dispensed: [], waiting_doctor: [], with_doctor: [], waiting_payment: [], completed: [] };
+    getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).forEach(function (r) {
+      if (r.Status === 'cancelled') return;
+      var st = visitStatusOf_(r), d = dateStr_(r.QueueDate || r.Date), carry = false;
+      if (st !== 'dispensed' && d !== day) {
+        if (st !== 'completed' && day === today && d < today) carry = true; else return;
+      }
+      var wd = parseLineItems_(r.WithdrawJSON);
+      var docs = {};
+      recordDoctorShares_(r).forEach(function (x) { if (x.name) docs[x.name] = true; });
+      cols[st].push({
+        id: r.RID, patientId: r.PatientID, patientName: r.PatientName, hn: hnById[r.PatientID] || '', phone: r.Phone,
+        date: dateStr_(r.Date), queueDate: r.QueueDate ? dateStr_(r.QueueDate) : '', carryover: carry,
+        queueDoctor: Number(r.QueueDoctor) || null,
+        visitDoctorId: r.VisitDoctorID || '', visitDoctorName: r.VisitDoctorName || '',
+        salesName: r.SalesName || '', doctors: st === 'dispensed' || st === 'waiting_doctor' ? [] : Object.keys(docs), // no treatment record before พบแพทย์
+        items: wd.slice(0, 3).map(function (l) { return l.name + ' ×' + l.qtyDispensed; }), moreItems: Math.max(0, wd.length - 3),
+        total: st === 'waiting_payment' || st === 'completed' ? recordCollected_(r) : null,
+        paymentMethod: r.PaymentMethod || '', createdAt: String(r.CreatedAt)
+      });
+    });
+    var num = function (v) { return v == null ? 1e9 : v; };
+    cols.dispensed.sort(function (a, b) { return a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt); });
+    ['waiting_doctor', 'with_doctor'].forEach(function (k) {
+      cols[k].sort(function (a, b) { return a.queueDate.localeCompare(b.queueDate) || num(a.queueDoctor) - num(b.queueDoctor) || a.createdAt.localeCompare(b.createdAt); });
+    });
+    cols.waiting_payment.sort(function (a, b) { return a.queueDate.localeCompare(b.queueDate) || num(a.queueDoctor) - num(b.queueDoctor) || a.createdAt.localeCompare(b.createdAt); });
+    cols.completed.sort(function (a, b) { return num(a.queueDoctor) - num(b.queueDoctor) || a.createdAt.localeCompare(b.createdAt); });
+    return { ok: true, data: { date: day, columns: cols, counts: { dispensed: cols.dispensed.length, waiting_doctor: cols.waiting_doctor.length, with_doctor: cols.with_doctor.length, waiting_payment: cols.waiting_payment.length, completed: cols.completed.length } } };
   });
 }
 
@@ -3657,7 +3826,7 @@ function deleteMedWithdrawal(token, id) {
       var rec = row.RecordID ? getRows_(recSheet).filter(function (r) { return r.RID === row.RecordID; })[0] : null;
       var recUpdate = null;
       if (rec) {
-        if (rec.VisitStatus === 'completed') throw ValidationError_('บันทึกการรักษา ' + rec.RID + ' เสร็จสิ้นแล้ว — ลบรายการยานี้ออกจากบันทึกการรักษานั้นก่อน');
+        if (visitStatusOf_(rec) === 'waiting_payment' || visitStatusOf_(rec) === 'completed') throw ValidationError_('บันทึกการรักษา ' + rec.RID + ' อยู่ในขั้นรอชำระเงิน/เสร็จสิ้นแล้ว — ลบรายการยานี้ออกจากบันทึกการรักษานั้นก่อน');
         var items = parseLineItems_(rec.WithdrawJSON);
         var mine = items.filter(function (l) { return l.withdrawId === id; })[0];
         if (mine && Number(mine.qtyDeposit) > 0) throw ValidationError_('รายการนี้มียาฝากในบันทึกการรักษา ' + rec.RID + ' — แก้ที่บันทึกการรักษาก่อน');
@@ -4804,6 +4973,24 @@ function seedDemoData(token) {
         });
         [dA.id, dB.id].forEach(function (id) { recomputeDoctorDayShares_(id, date); });
         i++;
+      })();
+
+      // สถานะการรักษา of today's visits: spread over every step, with the day's queue numbers.
+      (function () {
+        var today = dayStr(0), shownWaiting = 0;
+        getRows_(recSheet).filter(function (r) { return dateStr_(r.Date) === today && r.Status !== 'cancelled'; }).forEach(function (r) {
+          var st = visitStatusOf_(r);
+          var firstShare = recordDoctorShares_(r)[0];
+          var seen = firstShare ? { id: firstShare.doctorId, name: firstShare.name } : { id: doctors[0].id, name: doctors[0].name };
+          if (st === 'dispensed') {
+            if (shownWaiting >= 3) return;
+            shownWaiting++; r.VisitStatus = 'dispensed';
+            applyVisitStatus_(r, shownWaiting === 2 ? 'with_doctor' : 'waiting_doctor', today, false, seen); // the first waits, the second is with a doctor
+          } else { // already treated today: one queue number kept to the end, and the doctor they saw
+            r.QueueDate = today; r.QueueDoctor = nextQueueNo_('D', today); r.VisitDoctorID = seen.id; r.VisitDoctorName = seen.name;
+          }
+          updateRowByIndex_(recSheet, CONFIG.HEADERS.Records, r._row, r);
+        });
       })();
 
       events.sort(function (a, b) { return a.date < b.date ? -1 : a.date > b.date ? 1 : a.idx - b.idx; });

@@ -178,6 +178,10 @@ button,input,textarea,select{font-family:inherit}
 .bar-fill{height:100%;border-radius:6px}
 .chart-grid{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(300px,1fr);gap:16px;align-items:stretch}
 .chart-row{border-top:1px solid var(--border);padding-top:22px}
+.nav-badge{margin-left:auto;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:var(--red-dark,#C0504D);color:#fff;font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;animation:navPulse 1.6s ease-in-out infinite}
+@keyframes navPulse{0%,100%{box-shadow:0 0 0 0 rgba(192,80,77,.5)}50%{box-shadow:0 0 0 6px rgba(192,80,77,0)}}
+.board-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
+.board-cols{display:grid;grid-template-columns:repeat(5,minmax(220px,1fr));gap:12px;align-items:start;overflow-x:auto}
 .chart-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .chart-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 
@@ -230,6 +234,8 @@ button,input,textarea,select{font-family:inherit}
   .chart-3{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media (max-width:720px){
+  .board-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .board-cols{grid-template-columns:1fr}
   .chart-grid,.chart-2,.chart-3{grid-template-columns:1fr}
   .header{padding:14px 14px}
   .content{padding:16px 14px 40px}
@@ -497,9 +503,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   // post-login landing screen (afterLogin) — see goNav()'s guard too.
   var NAV = [
     { id: 'dash', label: 'Dashboard', icon: 'space_dashboard', sub: 'ภาพรวมรายได้ ค่าใช้จ่าย และกำไรของคลินิก', adminOnly: true },
-    // Flow: ข้อมูลคนไข้ > จัดยา-เบิกยา > บันทึกการรักษา > ชำระเงิน (last step, from the record).
+    // Flow: ข้อมูลคนไข้ > จัดยา-เบิกยา (จัดยาแล้ว) > รอพบแพทย์ > รอชำระเงิน > เสร็จสิ้น — moved on the ระหว่างดำเนินการ board or from the lists.
     { id: 'patients', label: 'ข้อมูลคนไข้', icon: 'groups', sub: 'ฐานข้อมูลลูกค้า เลข HN และประวัติการรักษา' },
     { id: 'withdraw', label: 'จัดยา-เบิกยา', icon: 'medication', sub: 'จัดยาและเบิกยาจากสต๊อกให้คนไข้ ก่อนบันทึกการรักษา' },
+    { id: 'board', label: 'ระหว่างดำเนินการ', icon: 'view_kanban', sub: 'คิวของวันนี้: จัดยาแล้ว → รอพบแพทย์ → รอชำระเงิน → เสร็จสิ้น' },
     { id: 'records', label: 'บันทึกการรักษา', icon: 'medical_services', sub: 'บันทึกเวชภัณฑ์ หัตถการ ยา รายการอื่นๆ และชำระเงิน' },
     { id: 'deposits', label: 'รายการยาฝาก', icon: 'vaccines', sub: 'ยาฝากของคนไข้ จำนวนคงเหลือ และวันหมดอายุ' },
     { id: 'reports', label: 'รายงาน', icon: 'assessment', sub: 'รายงานรายวัน และรายงานรายเซลล์', adminOnly: true },
@@ -523,7 +530,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // below) — typing only populates these; the table itself only reloads
     // once a suggestion is picked.
     patients: { list: null, page: 1, q: '', panel: null, photoProgress: null, searchSuggest: [] },
-    records: { list: null, page: 1, q: '', doctorId: '', visitStatus: 'dispensed', view: 'list', calYear: new Date().getFullYear(), calMonth: new Date().getMonth() + 1, calData: null, panel: null, dayPanel: null, opdPhotoUrl: null, opdPhotoProgress: null, searchSuggest: [], reloading: false },
+    records: { list: null, page: 1, q: '', doctorId: '', visitStatus: '', view: 'list', calYear: new Date().getFullYear(), calMonth: new Date().getMonth() + 1, calData: null, panel: null, dayPanel: null, opdPhotoUrl: null, opdPhotoProgress: null, searchSuggest: [], reloading: false },
     // `type` is the active tab: 'supply' (รายการเวชภัณฑ์) | 'medicine' (รายการยา) | 'procedure' (รายการหัตถการ).
     // `panel` is the open history side panel: {item, log} (log null while loading).
     // `procedures` is the รายการหัตถการ tab's full list (filtered/paged client-side).
@@ -535,7 +542,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // flight — see the dd-* action handlers and the loadX() functions below.
     expense: { tab: 'expense', list: null, page: 1, q: '', category: '', orders: null, orderPanel: null, orderPage: 1, orderQ: '', orderCategory: '', searchSuggest: [], orderSearchSuggest: [], reloading: false, orderReloading: false },
     promotions: { list: null, q: '' },
-    withdraw: { list: null, page: 1, q: '', visitStatus: 'dispensed', reloading: false, photoUrls: {}, photoProgress: null },
+    board: { data: null, date: '', updatedAt: null, loading: false },
+    notify: { known: null, unseen: 0, timer: null },
+    withdraw: { list: null, page: 1, q: '', visitStatus: 'dispensed', salesId: '', reloading: false, photoUrls: {}, photoProgress: null },
     // รายงาน: `tab` 'daily' | 'sales'; `data` stays null until "ดูรายงาน" is pressed
     // (and is cleared when the tab changes); `preview` is the open PDF preview.
     report: { tab: 'daily', salesId: '', from: todayStr().slice(0, 8) + '01', to: todayStr(), data: null, dataTab: null, loading: false, page: 1, preview: null },
@@ -738,8 +747,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function shellTemplate() {
     var nav = allowedNav().map(function (n) {
       var activeCls = state.screen === n.id ? ' active' : '';
+      var badge = n.id === 'board' && state.notify.unseen > 0 ? '<span class="nav-badge" title="มีคนไข้รอชำระเงินใหม่">' + state.notify.unseen + '</span>' : '';
       return '<button class="nav-item' + activeCls + '" data-action="nav" data-arg="' + n.id + '">' +
-        '<span class="ms">' + n.icon + '</span><span>' + esc(n.label) + '</span></button>';
+        '<span class="ms">' + n.icon + '</span><span>' + esc(n.label) + '</span>' + badge + '</button>';
     }).join('');
     var currentNav = NAV.filter(function (n) { return n.id === state.screen; })[0] || NAV[0];
 
@@ -782,6 +792,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'records': return recordsTemplate();
       case 'stock': return stockTemplate();
       case 'withdraw': return withdrawTemplate();
+      case 'board': return boardTemplate();
       case 'deposits': return depositsTemplate();
       case 'reports': return reportsTemplate();
       case 'expense': return expenseTemplate();
@@ -852,9 +863,12 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // rather than hardcoded, so this stays correct if the admin-only set
     // ever changes).
     state.screen = isAdmin() ? 'dash' : allowedNav()[0].id;
+    // บันทึกการรักษา opens on the doctor's list for staff (พบแพทย์), on everything for admin.
+    state.records.visitStatus = isAdmin() ? '' : 'with_doctor';
     call('getMasterData', session.token, gsOpts({ quiet: true })).then(function (res) {
       if (res.ok) state.master = res.data;
       render();
+      pollQueueAlerts();
       if (state.screen === 'dash') loadDash();
       // Clinic logo (Settings > ข้อมูลบริษัท) shows in the sidebar brand
       // mark once fetched — fire-and-render separately so it never blocks
@@ -917,6 +931,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (screenId === 'records') { loadRecords(); if (state.records.view === 'calendar') loadCalendar(); }
     if (screenId === 'stock') { if (state.stock.type === 'procedure') { if (!state.stock.procedures) loadProcedures(); } else loadStock(); }
     if (screenId === 'withdraw') loadWithdrawals();
+    if (screenId === 'board') { loadBoard(); clearQueueAlerts(); pollQueueAlerts(); }
     if (screenId === 'deposits') loadDeposits(); // always fresh: records/withdrawals elsewhere change it
     if (screenId === 'expense' && !state.expense.list) loadExpenses();
     if (screenId === 'promotions' && !state.promotions.list) loadPromotions();
@@ -1424,8 +1439,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (state.patients.panel && state.patients.panel.id === id) { closePatientPanel(); return; }
     openPatientPanel(id);
   }
-  function openPatientPanel(id) {
-    state.patients.panel = { loading: true, id: id, patient: null, visitCount: 0, totalSpent: 0, records: [], photoUrl: null };
+  function openPatientPanel(id, ctx) {
+    // ctx: opened from a row of บันทึกการรักษา ({recordId, status}) — decides whether เพิ่มบันทึกการรักษา is offered
+    state.patients.panel = { loading: true, id: id, patient: null, visitCount: 0, totalSpent: 0, records: [], photoUrl: null, ctx: ctx || null };
     renderPatientPanel();
     render(); // also refresh the patients list so the clicked row shows as active/highlighted
     call('getPatientProfile', session.token, id, gsOpts({ quiet: true })).then(function (res) {
@@ -1441,7 +1457,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         // Guard against a stale response if the user closed/reopened a
         // different patient's panel while this one was still in flight.
         if (!state.patients.panel || state.patients.panel.id !== id) return;
-        state.patients.panel = Object.assign({ loading: false, id: id, photoUrl: photoUrl }, data);
+        state.patients.panel = Object.assign({ loading: false, id: id, photoUrl: photoUrl, ctx: ctx || null }, data);
         renderPatientPanel();
       });
     }, function () { state.patients.panel = null; renderPatientPanel(); });
@@ -1467,7 +1483,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
               '<td style="padding:8px 10px;font-size:12.5px">' + esc(r.date) + '</td>' +
               '<td style="font-size:12.5px">' + (r.doctorName ? esc(r.doctorName) : '<span style="color:var(--muted)">-</span>') + '</td>' +
               '<td style="font-size:12.5px">' + money(r.totalCollected != null ? r.totalCollected : r.amount) + '</td>' +
-              '<td>' + statusBadge(r.status) + '</td>' +
+              '<td>' + visitStatusBadge(r.visitStatus, r) + '</td>' +
             '</tr>';
           }).join('') + '</tbody></table>' + localPagerHtml(recPg, 'patientRecords');
     // ยาฝาก the patient still holds at the clinic (MedDeposits balances > 0).
@@ -1501,7 +1517,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:18px">' + depositRows + '</div>' +
         '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">' +
           '<div style="font-size:13px;font-weight:700">ประวัติการรักษา</div>' +
-          '<button class="btn btn-primary" data-action="patient-panel-add-record"><span class="ms">add</span> เพิ่มรายการ</button>' +
+          (!st.ctx ? '<button class="btn btn-primary" data-action="patient-panel-add-record"><span class="ms">add</span> เพิ่มรายการ</button>'
+            : (visitStatusKey(st.ctx.status) === 'with_doctor' ? '<button class="btn btn-primary" data-action="patient-panel-treat" data-arg="' + esc(st.ctx.recordId) + '"><span class="ms">add</span> เพิ่มบันทึกการรักษา</button>' : '')) +
         '</div>' +
         '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">' + rows + '</div>' +
       '</div>' +
@@ -1529,7 +1546,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       date: todayStr(), patientId: patient.id, patientName: patient.firstName + ' ' + patient.lastName, phone: patient.phone,
       patientNickname: patient.nickname || '',
       serviceCategory: '', detail: '', salesId: '', useCanula: false, canulaAmount: 0,
-      amount: 0, otherAmount: 0, status: 'unpaid', visitStatus: 'dispensed', note: '', receiptNo: '',
+      amount: 0, otherAmount: 0, status: 'unpaid', visitStatus: 'with_doctor', note: '', receiptNo: '',
       opdImageFileId: '',
       _patientQuery: patient.firstName + ' ' + patient.lastName, _patientSuggest: []
     }, emptyLineItemGroups()));
@@ -1687,7 +1704,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* RECORDS — บันทึกการรักษา + นัดหมาย + ใบเสร็จ                          */
   /* ================================================================== */
   function loadRecords() {
-    call('listRecords', session.token, { page: state.records.page, filters: { q: state.records.q, doctorId: state.records.doctorId, visitStatus: state.records.visitStatus } })
+    call('listRecords', session.token, { page: state.records.page, filters: { q: state.records.q, doctorId: state.records.doctorId, visitStatus: state.records.visitStatus, excludeVisitStatus: 'dispensed' } })
       .then(function (res) { state.records.list = res.data; state.records.reloading = false; render(); });
   }
   function loadCalendar() {
@@ -1701,18 +1718,60 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function statusBadge(s) { return '<span class="tag-badge" style="background:' + (STATUS_COLOR[s] || '#eee') + ';white-space:nowrap">' + esc(STATUS_LABEL[s] || s) + '</span>'; }
   // VisitStatus is a separate workflow marker from the payment Status above —
   // it never affects revenue gating, calendar coloring, or receipt issuance.
-  // Set by the server: 'dispensed' จัดยาแล้ว until staff save it as
-  // บันทึกการรักษาเสร็จสิ้น, then 'completed' เสร็จสิ้น.
-  var VISIT_STATUS_LABEL = { dispensed: 'จัดยาแล้ว', completed: 'เสร็จสิ้น' };
-  var VISIT_STATUS_COLOR = { dispensed: 'var(--amber-soft)', completed: 'var(--green-soft)' };
-  function visitStatusBadge(s) {
-    s = s === 'completed' ? 'completed' : 'dispensed'; // older ''/'scheduled' records too
-    return '<span class="tag-badge" style="background:' + VISIT_STATUS_COLOR[s] + ';white-space:nowrap">' + esc(VISIT_STATUS_LABEL[s]) + '</span>';
+  // Set by the server: จัดยาแล้ว → รอพบแพทย์ → รอชำระเงิน → เสร็จสิ้น (= paid); see visitStatusOf_ in Code.js.
+  var VISIT_STATUS_LABEL = { dispensed: 'จัดยาแล้ว', waiting_doctor: 'รอพบแพทย์', with_doctor: 'พบแพทย์', waiting_payment: 'รอชำระเงิน', completed: 'เสร็จสิ้น' };
+  var VISIT_STATUS_COLOR = { dispensed: 'var(--amber-soft)', waiting_doctor: 'var(--accent-soft)', with_doctor: 'var(--gold-soft)', waiting_payment: 'var(--pink-soft)', completed: 'var(--green-soft)' };
+  var VISIT_FLOW = ['dispensed', 'waiting_doctor', 'with_doctor', 'waiting_payment', 'completed'];
+  /** The treatment form (บันทึกการรักษา) opens from พบแพทย์ on — before that the record has no treatment content yet. */
+  function canEditVisit(s) { s = visitStatusKey(s); return s === 'with_doctor' || s === 'waiting_payment'; }
+  function visitStatusKey(s) { return VISIT_STATUS_LABEL[s] ? s : 'dispensed'; } // older ''/'scheduled' records too
+  /** The badge; `r` (a record or card with queueDoctor / queuePay) adds its queue number to รอพบแพทย์ / รอชำระเงิน. */
+  function visitStatusBadge(s, r) {
+    s = visitStatusKey(s);
+    var q = r && s !== 'dispensed' ? r.queueDoctor : null; // the queue number is taken at รอพบแพทย์ and kept to the end
+    return '<span class="tag-badge" style="background:' + VISIT_STATUS_COLOR[s] + ';white-space:nowrap">' + esc(VISIT_STATUS_LABEL[s]) + (q ? ' · คิว ' + esc(q) : '') + '</span>';
+  }
+  /** Moves a record one step (to: dispensed | waiting_doctor | waiting_payment) and refreshes what is on screen. */
+  function moveVisit(rid, to, from) {
+    // Going in to see the doctor (from รอพบแพทย์): pick which doctor first.
+    if (to === 'with_doctor' && from === 'waiting_doctor') return pickDoctor().then(function (doctorId) { return doctorId ? doMove(rid, to, doctorId) : null; });
+    return doMove(rid, to);
+  }
+  function doMove(rid, to, doctorId) {
+    return call('setVisitStatus', session.token, rid, to, doctorId || '').then(function (res) {
+      if (to === 'waiting_payment' && state.notify.known) state.notify.known[rid] = true;
+      toast('success', 'เปลี่ยนสถานะเป็น ' + VISIT_STATUS_LABEL[to] + (to === 'waiting_doctor' && res.data.queueDoctor ? ' · คิว ' + res.data.queueDoctor : '') + (to === 'with_doctor' && res.data.visitDoctorName ? ' · ' + res.data.visitDoctorName : ''));
+      afterRecordWrite();
+      return res;
+    });
+  }
+  /** Asks which doctor the customer is going in to see; resolves the doctor id, or '' if cancelled. */
+  function pickDoctor() {
+    var docs = (state.master.doctors || []).filter(function (d) { return d.status !== 'inactive'; });
+    if (!docs.length) { toast('error', 'ยังไม่มีรายชื่อแพทย์ (ตั้งค่าคลินิก)'); return Promise.resolve(''); }
+    var inputOptions = {};
+    docs.forEach(function (d) { inputOptions[d.id] = d.name; });
+    return Swal.fire({
+      title: 'เลือกแพทย์ที่จะเข้าพบ', input: 'select', inputOptions: inputOptions, inputPlaceholder: '— เลือกแพทย์ —',
+      showCancelButton: true, confirmButtonText: 'ตกลง', cancelButtonText: 'ยกเลิก',
+      inputValidator: function (v) { return v ? null : 'กรุณาเลือกแพทย์'; }
+    }).then(function (r) { return r.isConfirmed ? r.value : ''; });
+  }
+  /** Menu entries that move a record along (or back, while unpaid): [{value:'move:<to>', ...}]. */
+  function visitMoveActions(status, paid) {
+    var acts = [];
+    status = visitStatusKey(status);
+    if (paid) return acts;
+    if (status === 'dispensed') acts.push({ value: 'move:waiting_doctor', label: 'รอพบแพทย์ (จัดคิว)', icon: 'arrow_forward' });
+    if (status === 'waiting_doctor') acts.push({ value: 'move:with_doctor', label: 'พบแพทย์', icon: 'arrow_forward' }, { value: 'move:dispensed', label: 'ย้อนไปจัดยาแล้ว', icon: 'undo' });
+    if (status === 'with_doctor') acts.push({ value: 'move:waiting_payment', label: 'ส่งชำระเงิน (จัดคิว)', icon: 'arrow_forward' }, { value: 'move:waiting_doctor', label: 'ย้อนไปรอพบแพทย์', icon: 'undo' });
+    if (status === 'waiting_payment') acts.push({ value: 'move:with_doctor', label: 'ย้อนไปพบแพทย์', icon: 'undo' });
+    return acts;
   }
 
   function recordsTemplate() {
     var doctorOpts = [{ value: '', label: 'แพทย์ทั้งหมด' }].concat((state.master.doctors || []).map(function (d) { return { value: d.id, label: d.name }; }));
-    var statusOpts = statusFilterOptions();
+    var statusOpts = recordsStatusOptions();
     var toolbar = '' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center">' +
         searchScopeBoxHtml('records', '240px') +
@@ -1733,12 +1792,17 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (!r) return;
     var triggerId = 'recAct_' + id;
     if (state.portal && state.portal.triggerId === triggerId) { closePortal(); return; } // second click closes
-    var opts = [];
-    if (r.status === 'unpaid') opts.push({ value: 'pay', label: 'ชำระเงิน', icon: 'payments' });
-    opts.push({ value: 'receipt', label: 'พิมพ์ใบเสร็จ', icon: 'print' }, { value: 'edit', label: 'แก้ไข', icon: 'edit' });
-    if (isAdmin()) opts.push({ value: 'delete', label: 'ลบ', icon: 'delete', danger: true });
+    // The menu follows the step: รอพบแพทย์ = history only; พบแพทย์ = write the treatment / send back; รอชำระเงิน = receipt, edit, delete; เสร็จสิ้น = receipt, delete.
+    var st = visitStatusKey(r.visitStatus), opts = [];
+    if (st === 'with_doctor') opts.push({ value: 'edit', label: 'สร้างบันทึกการรักษา', icon: 'edit_note' }, { value: 'move:waiting_doctor', label: 'ย้อนไปรอพบแพทย์', icon: 'undo' });
+    else if (st === 'waiting_payment' || st === 'completed') {
+      opts.push({ value: 'receipt', label: 'พิมพ์ใบเสร็จ', icon: 'print' });
+      if (st === 'waiting_payment') opts.push({ value: 'edit', label: 'แก้ไข', icon: 'edit' });
+      if (isAdmin()) opts.push({ value: 'delete', label: 'ลบ', icon: 'delete', danger: true });
+    } else opts.push({ value: 'history', label: 'ดูประวัติการรักษา', icon: 'history' });
     openPortal(triggerId, opts, function (v) {
-      if (v === 'pay') payRecordAction(id);
+      if (v.indexOf('move:') === 0) moveVisit(id, v.slice(5), visitStatusKey(r.visitStatus));
+      else if (v === 'history') openPatientPanel(r.patientId, { recordId: r.id, status: r.visitStatus });
       else if (v === 'receipt') issueReceiptAction(id);
       else if (v === 'edit') editRecordModal(id);
       else if (v === 'delete') deleteRecordConfirm(id);
@@ -1750,13 +1814,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       (!L.items.length ? '<tr><td colspan="7" class="empty-state">ไม่พบรายการ</td></tr>' :
       L.items.map(function (r) {
         // The whole row opens the record's details in the right-hand panel; the จัดการ button has its own action.
-        return '<tr data-action="view-record" data-arg="' + esc(r.id) + '" style="cursor:pointer' + (openId === r.id ? ';background:var(--hover-bg)' : '') + '">' +
+        return '<tr data-action="records-row" data-arg="' + esc(r.id) + '" style="cursor:pointer' + (openId === r.id ? ';background:var(--hover-bg)' : '') + '">' +
           '<td style="padding:10px 12px;white-space:nowrap">' + esc(r.date) + '</td>' +
           '<td style="white-space:nowrap">' + (r.hn ? esc(r.hn) : '<span style="color:var(--muted)">-</span>') + '</td>' +
           '<td><span style="color:var(--accent);font-weight:600">' + esc(r.patientName) + '</span>' + patientNicknameSuffix(r.patientId) + '</td>' +
           '<td>' + (r.doctorName ? esc(r.doctorName) : '<span style="color:var(--muted)">-</span>') + '</td>' +
           '<td style="white-space:nowrap">' + money(r.totalCollected != null ? r.totalCollected : r.amount) + '</td>' +
-          '<td>' + visitStatusBadge(r.visitStatus) + '</td>' +
+          '<td>' + visitStatusBadge(r.visitStatus, r) + '</td>' +
           '<td style="text-align:right;white-space:nowrap"><button id="recAct_' + esc(r.id) + '" class="btn" data-action="dd-record-actions" data-arg="' + esc(r.id) + '">จัดการ <span class="ms">expand_more</span></button></td></tr>';
       }).join(''));
     return listCardWrap(
@@ -1777,13 +1841,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     for (var i = 0; i < startDow; i++) cells += '<div class="cal-cell" style="min-height:80px;border:1px solid var(--border-lighter)"></div>';
     for (var d = 1; d <= daysInMonth; d++) {
       var dateStr = y + '-' + String(m).padStart(2, '0') + '-' + String(d).padStart(2, '0');
-      var events = data[dateStr] || [];
+      var events = (data[dateStr] || []).filter(function (e) { return visitStatusKey(e.visitStatus) !== 'dispensed'; });
       // Round 12 item 1.2: these were individually clickable (data-action="view-record")
       // opening the record panel directly; now they're plain, non-interactive
       // labels — clicking anywhere in the day cell (including on one of these)
       // only opens the day-summary panel via the cell's own "view-day" action.
       var evHtml = events.slice(0, 3).map(function (e) {
-        return '<div style="font-size:10px;padding:2px 4px;border-radius:4px;background:' + VISIT_STATUS_COLOR[e.visitStatus === 'completed' ? 'completed' : 'dispensed'] + ';margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(e.patientName) + '</div>';
+        return '<div style="font-size:10px;padding:2px 4px;border-radius:4px;background:' + VISIT_STATUS_COLOR[visitStatusKey(e.visitStatus)] + ';margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(e.patientName) + '</div>';
       }).join('');
       cells += '<div class="cal-cell" data-action="view-day" data-arg="' + dateStr + '" style="min-height:80px;border:1px solid var(--border-lighter);padding:5px;font-size:11px;cursor:pointer" title="ดูสรุปยอดวันที่ ' + dateStr + '">' +
         '<div style="color:var(--muted);margin-bottom:3px">' + d + '</div>' + evHtml +
@@ -1819,7 +1883,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     openModal('record', Object.assign({
       date: todayStr(), patientId: '', patientName: '', phone: '', patientNickname: '', serviceCategory: '', detail: '',
       salesId: '', useCanula: false, canulaAmount: 0,
-      amount: 0, otherAmount: 0, status: 'unpaid', visitStatus: 'dispensed', note: '', receiptNo: '',
+      amount: 0, otherAmount: 0, status: 'unpaid', visitStatus: 'with_doctor', note: '', receiptNo: '',
       opdImageFileId: '',
       _patientQuery: '', _patientSuggest: []
     }, emptyLineItemGroups()));
@@ -2007,7 +2071,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<button data-action="close-record-panel" style="border:none;background:none;cursor:pointer;color:#fff"><span class="ms">close</span></button>' +
       '</div>' +
       '<div style="padding:14px 22px 0;display:flex;gap:6px;flex-wrap:wrap;flex:none">' +
-        statusBadge(r.status) + visitStatusBadge(r.visitStatus) +
+        (r.status === 'cancelled' ? statusBadge(r.status) : '') + visitStatusBadge(r.visitStatus, r) +
       '</div>' +
       '<div style="flex:1;overflow-y:auto;padding:14px 22px 18px">' +
         '<div class="day-summary-section">' +
@@ -2038,8 +2102,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;flex:none">' +
         '<button class="btn" data-action="close-record-panel">ปิด</button>' +
         '<button class="btn" data-action="record-panel-receipt" data-arg="' + esc(r.id) + '"><span class="ms">print</span> ออกใบเสร็จ</button>' +
-        '<button class="btn' + (r.status === 'unpaid' ? '' : ' btn-primary') + '" data-action="record-panel-edit" data-arg="' + esc(r.id) + '">แก้ไข</button>' +
-        '<button class="btn' + (r.status === 'unpaid' ? ' btn-primary' : '') + '" data-action="pay-record" data-arg="' + esc(r.id) + '"><span class="ms">payments</span> ชำระเงิน</button>' +
+        (canEditVisit(r.visitStatus) ? '<button class="btn' + (r.status === 'unpaid' ? '' : ' btn-primary') + '" data-action="record-panel-edit" data-arg="' + esc(r.id) + '">แก้ไข</button>' : '') +
+        (r.status === 'unpaid' && visitStatusKey(r.visitStatus) !== 'waiting_payment' ? '' : '<button class="btn' + (r.status === 'unpaid' ? ' btn-primary' : '') + '" data-action="pay-record" data-arg="' + esc(r.id) + '"><span class="ms">payments</span> ชำระเงิน</button>') +
       '</div>';
     return body;
   }
@@ -2276,7 +2340,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /** A new หัตถการ/โปร line starts with the doctor of the last line that has one. */
   function defaultLineDoctor(d) {
     var lines = (d.procedureItems || []).concat(d.promoItems || []).filter(function (l) { return l.doctorId; });
-    return lines.length ? lines[lines.length - 1].doctorId : '';
+    return lines.length ? lines[lines.length - 1].doctorId : (d.visitDoctorId || '');
   }
   function newProcedureLine(d) { return { procId: '', name: '', price: 0, amount: 0, doctorId: defaultLineDoctor(d) }; }
   function newPromoLine(d) { return { promoId: '', name: '', price: 0, doctorSharePct: 0, amount: 0, doctorId: defaultLineDoctor(d) }; }
@@ -2828,7 +2892,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
 
     var header = '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">' +
         '<div><div style="font-size:16px;font-weight:700">' + esc(d.id ? 'แก้ไขบันทึกการรักษา' : 'บันทึกการรักษาใหม่') + '</div>' +
-        '<div style="font-size:12px;color:var(--muted);margin-top:4px;display:flex;gap:6px;align-items:center">' + statusBadge(d.status || 'unpaid') + visitStatusBadge(d.visitStatus) + (d.receiptNo ? 'เลขที่ใบเสร็จ ' + esc(d.receiptNo) : 'ยังไม่ออกใบเสร็จ') + '</div></div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:4px;display:flex;gap:6px;align-items:center">' + (d.status === 'cancelled' ? statusBadge(d.status) : '') + visitStatusBadge(d.visitStatus, d) + (d.receiptNo ? 'เลขที่ใบเสร็จ ' + esc(d.receiptNo) : 'ยังไม่ออกใบเสร็จ') + '</div></div>' +
         '<button data-action="close-modal" style="border:none;background:none;cursor:pointer"><span class="ms">close</span></button></div>';
 
     var sharePreview = '<div id="sharePreviewBox" style="background:var(--hover-bg);border-radius:var(--r-sm);padding:12px 14px;margin-bottom:14px;font-size:12.5px;display:flex;flex-direction:column;gap:5px">' +
@@ -2917,31 +2981,31 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
 
   /**
-   * บันทึก (draft — stays จัดยาแล้ว) or บันทึกการรักษาเสร็จสิ้น; a
-   * completed record just has บันทึก. While unpaid, the primary button also
-   * goes straight on to ชำระเงิน (the next step of the flow).
+   * The record modal's buttons follow its step. บันทึก keeps the step; "บันทึกการรักษา" (done with the doctor)
+   * moves it to รอชำระเงิน; ชำระเงิน saves and opens the payment (paying makes it เสร็จสิ้น). Paid records just have บันทึก.
    */
   function recordFooter(d) {
-    var paid = d.id && d.status !== 'unpaid', completed = d.visitStatus === 'completed';
-    return '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:18px;gap:8px;flex-wrap:wrap">' +
-      (d.id ? '<button class="btn" data-action="issue-receipt" data-arg="' + esc(d.id) + '"><span class="ms">print</span> พิมพ์ใบเสร็จ</button>' : '<span></span>') +
+    var st = visitStatusKey(d.visitStatus);
+    var receipt = d.id && st !== 'with_doctor' ? '<button class="btn" data-action="issue-receipt" data-arg="' + esc(d.id) + '"><span class="ms">print</span> พิมพ์ใบเสร็จ</button>' : '<span></span>';
+    return '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:18px;gap:8px;flex-wrap:wrap">' + receipt +
       '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
         '<button class="btn" data-action="close-modal">ยกเลิก</button>' +
-        (completed
-          ? '<button class="btn' + (paid ? ' btn-primary' : '') + '" data-action="save-modal">บันทึก</button>'
-          : '<button class="btn" data-action="save-modal">บันทึกร่าง</button>' +
-            '<button class="btn' + (paid ? ' btn-primary' : '') + '" data-action="save-record-complete"><span class="ms">task_alt</span> บันทึกการรักษาเสร็จสิ้น</button>') +
-        (paid ? '' : '<button class="btn btn-primary" data-action="save-record-pay"><span class="ms">payments</span> ' + (completed ? 'บันทึกและชำระเงิน' : 'เสร็จสิ้นและชำระเงิน') + '</button>') +
+        // With the doctor, adding the treatment IS the step to รอชำระเงิน; afterwards a save just keeps the step.
+        (st === 'with_doctor'
+          ? '<button class="btn btn-primary" data-action="save-record-complete"><span class="ms">task_alt</span> บันทึกการรักษา → รอชำระเงิน</button>'
+          : '<button class="btn' + (st === 'waiting_payment' ? '' : ' btn-primary') + '" data-action="save-modal">บันทึก</button>' +
+            (st === 'waiting_payment' ? '<button class="btn btn-primary" data-action="save-record-pay"><span class="ms">payments</span> บันทึกและชำระเงิน</button>' : '')) +
       '</div>' +
     '</div>';
   }
 
-  /** complete: save as บันทึกการรักษาเสร็จสิ้น. thenPay: open ชำระเงิน afterwards. */
+  /** complete: save and move to รอชำระเงิน. thenPay: open ชำระเงิน afterwards. */
   function saveRecordModal(thenPay, complete) {
     if (!state.draft.patientId) { toast('error', 'กรุณาเลือกคนไข้'); return; }
     var payload = Object.assign({}, state.draft, { complete: !!complete });
     Object.keys(payload).forEach(function (k) { if (k.charAt(0) === '_') delete payload[k]; }); // client-only (_patientQuery, _deposits, ...)
     call('saveRecord', session.token, payload).then(function (res) {
+      if (complete && res.data && state.notify.known) state.notify.known[res.data.id] = true; // our own move to รอชำระเงิน is not news to us
       toast('success', 'บันทึกข้อมูลการรักษาแล้ว'); closeModal(); refreshStockSuggestCache();
       // Round 12 item 1.3: refresh whichever Records view is on screen — the
       // table load above alone left a stale calendar (state.records.calData)
@@ -2955,9 +3019,118 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /** Refreshes everything a record save/payment can change that is on screen. */
   function afterRecordWrite() {
     loadRecords();
+    if (state.board.data) loadBoard();
     if (state.records.calData) loadCalendar();
     if (state.withdraw.list) loadWithdrawals();
     if (state.screen === 'deposits') loadDeposits();
+  }
+
+  /* ================================================================== */
+  /* ระหว่างดำเนินการ — kanban of the day's visits by สถานะการรักษา        */
+  /* ================================================================== */
+  function loadBoard() {
+    if (!state.board.date) state.board.date = todayStr();
+    state.board.loading = true;
+    call('getQueueBoard', session.token, state.board.date, gsOpts({ quiet: true })).then(function (res) {
+      state.board.data = res.data; state.board.updatedAt = new Date(); state.board.loading = false;
+      if (state.screen === 'board' && !state.modal) render();
+    }, function () { state.board.loading = false; });
+  }
+  /* Notification: every 60 seconds (on any screen) ask who is รอชำระเงิน; anyone new since the last look lights the
+   * ระหว่างดำเนินการ menu (a number) and a toast — opening the board clears it. The first look after login is only a baseline. */
+  function pollQueueAlerts() {
+    if (!session.token || document.hidden) return;
+    call('getQueueAlerts', session.token, gsOpts({ quiet: true })).then(function (res) {
+      var list = (res.data && res.data.waitingPayment) || [], N = state.notify;
+      var ids = {}; list.forEach(function (x) { ids[x.id] = true; });
+      if (N.known) {
+        var fresh = list.filter(function (x) { return !N.known[x.id]; });
+        if (fresh.length && state.screen !== 'board') {
+          N.unseen += fresh.length;
+          toast('success', 'รอชำระเงิน: ' + fresh.map(function (x) { return (x.queue ? 'คิว ' + x.queue + ' ' : '') + x.patientName; }).join(', '));
+          render();
+        }
+      }
+      N.known = ids;
+    }, function () { /* try again at the next tick */ });
+  }
+  setInterval(pollQueueAlerts, 60000);
+  function clearQueueAlerts() { if (state.notify.unseen) { state.notify.unseen = 0; render(); } }
+  // The board stays current on its own while it is on screen (several people work from it): every 3 minutes, plus the รีเฟรช button.
+  setInterval(function () { if (session.token && state.screen === 'board' && !state.modal && !state.portal && !document.hidden) loadBoard(); }, 180000);
+  function boardCard(c, st) {
+    var q = st === 'dispensed' ? null : c.queueDoctor;
+    var tag = function (t, color) { return '<span class="tag-badge" style="background:' + color + ';font-size:10.5px;white-space:nowrap">' + esc(t) + '</span>'; };
+    var today = todayStr();
+    var tags = c.carryover && st !== 'waiting_payment' ? tag('ค้างจาก ' + (c.queueDate || c.date), 'var(--red-soft)') : ''; // จัดยาแล้ว and รอชำระเงิน cards carry no date
+    var btn = function (label, icon, action, arg, primary) {
+      return '<button class="btn' + (primary ? ' btn-primary' : '') + '" data-action="' + action + '" data-arg="' + esc(arg) + '" style="padding:5px 9px;font-size:12px"><span class="ms" style="font-size:16px">' + icon + '</span> ' + esc(label) + '</button>';
+    };
+    var buttons = '';
+    // Front works the board: จัดยาแล้ว → รอพบแพทย์ → พบแพทย์ and รอชำระเงิน → เสร็จสิ้น; the doctor takes พบแพทย์ → รอชำระเงิน
+    // by saving the treatment record (บันทึกการรักษา page), so there is no treatment button here.
+    if (st === 'dispensed') buttons = btn('รอพบแพทย์', 'arrow_forward', 'board-move', c.id + '|waiting_doctor|dispensed', true);
+    else if (st === 'waiting_doctor') buttons = btn('ย้อน', 'undo', 'board-move', c.id + '|dispensed|waiting_doctor') + btn('พบแพทย์', 'arrow_forward', 'board-move', c.id + '|with_doctor|waiting_doctor', true);
+    else if (st === 'with_doctor') buttons = btn('ย้อน', 'undo', 'board-move', c.id + '|waiting_doctor|with_doctor');
+    else if (st === 'waiting_payment') buttons = btn('ย้อน', 'undo', 'board-move', c.id + '|with_doctor|waiting_payment') + btn('ชำระเงิน', 'payments', 'board-pay', c.id, true);
+    else buttons = btn('ใบเสร็จ', 'print', 'issue-receipt', c.id);
+    return '<div class="card" data-action="view-record" data-arg="' + esc(c.id) + '" style="border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 12px;cursor:pointer;background:var(--surface)">' +
+      '<div style="display:flex;gap:10px;align-items:flex-start">' +
+        (q ? '<div style="flex:none;min-width:38px;height:38px;border-radius:10px;background:var(--accent);color:#fff;display:flex;flex-direction:column;align-items:center;justify-content:center;line-height:1"><span style="font-size:8.5px;opacity:.8">คิว</span><span style="font-size:16px;font-weight:700">' + esc(q) + '</span></div>' : '') +
+        '<div style="min-width:0;flex:1"><div style="font-weight:700;font-size:13.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(c.patientName) + '</div>' +
+        '<div style="font-size:11.5px;color:var(--muted)">' + (c.hn ? 'HN ' + esc(c.hn) + ' · ' : '') + esc(c.phone) + '</div></div>' +
+        (c.total != null ? '<div style="font-weight:700;font-size:13px;white-space:nowrap">' + money(c.total) + '</div>' : '') +
+      '</div>' +
+      (c.items.length ? '<div style="font-size:11.5px;color:var(--text-2);margin-top:7px;line-height:1.45">' + c.items.map(esc).join('<br>') + (c.moreItems ? '<br>+' + c.moreItems + ' รายการ' : '') + '</div>' : '') +
+      '<div style="font-size:11px;color:var(--muted);margin-top:6px;line-height:1.5">' +
+        (c.doctors.length ? '<div>แพทย์ ' + c.doctors.map(esc).join(', ') + '</div>' : '') +
+        (c.salesName ? '<div>เซลล์ ' + esc(c.salesName) + '</div>' : '') +
+        (st === 'completed' && c.paymentMethod ? '<div>ชำระ ' + esc(c.paymentMethod) + '</div>' : '') + '</div>' +
+      (tags ? '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:6px">' + tags + '</div>' : '') +
+      '<div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;margin-top:9px">' + buttons + '</div>' +
+    '</div>';
+  }
+  /** A column's cards; พบแพทย์ is split by the doctor each customer is seeing. */
+  function boardColumnBody(cards, st) {
+    if (st !== 'with_doctor') return cards.map(function (c) { return boardCard(c, st); }).join('');
+    var groups = {}, order = [];
+    cards.forEach(function (c) {
+      var k = c.visitDoctorName || 'ไม่ระบุแพทย์';
+      if (!groups[k]) { groups[k] = []; order.push(k); }
+      groups[k].push(c);
+    });
+    order.sort(function (a, b) { return a.localeCompare(b, 'th'); });
+    return order.map(function (k) {
+      return '<div style="display:flex;align-items:center;gap:6px;margin:4px 2px 0;font-size:12px;font-weight:700;color:var(--text-2)"><span class="ms" style="font-size:16px">stethoscope</span>' + esc(k) +
+        '<span class="tag-badge" style="background:var(--surface)">' + groups[k].length + '</span></div>' +
+        groups[k].map(function (c) { return boardCard(c, st); }).join('');
+    }).join('');
+  }
+  function boardTemplate() {
+    var B = state.board, d = B.data;
+    if (!B.date) B.date = todayStr();
+    var hint = { dispensed: 'รอลูกค้ามา (ทุกวัน)', waiting_doctor: 'ตามลำดับคิวพบแพทย์', with_doctor: 'กำลังพบแพทย์', waiting_payment: 'ตามลำดับคิวชำระเงิน', completed: 'ชำระเงินแล้ว' };
+    var icon = { dispensed: 'medication', waiting_doctor: 'schedule', with_doctor: 'stethoscope', waiting_payment: 'payments', completed: 'task_alt' };
+    var head = '<div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">' +
+      '<input type="date" id="boardDate" value="' + esc(B.date) + '" style="' + inputStyle + ';width:auto" data-action-change="board-date">' +
+      (B.date !== todayStr() ? '<button class="btn" data-action="board-today">วันนี้</button>' : '') +
+      '<button class="btn" data-action="board-refresh"><span class="ms">refresh</span> รีเฟรช</button>' +
+      '<span style="font-size:11.5px;color:var(--muted);margin-left:auto">' + (B.updatedAt ? 'อัปเดต ' + String(B.updatedAt.getHours()).padStart(2, '0') + ':' + String(B.updatedAt.getMinutes()).padStart(2, '0') + ' · รีเฟรชเองทุก 3 นาที' : '') + '</span>' +
+    '</div>';
+    if (!d) return head + '<div class="empty-state"><span class="spin"></span> กำลังโหลด...</div>';
+    var stats = '<div class="board-stats">' + VISIT_FLOW.map(function (st) {
+      return '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;display:flex;align-items:center;gap:12px">' +
+        '<div style="width:44px;height:44px;border-radius:13px;background:' + VISIT_STATUS_COLOR[st] + ';display:flex;align-items:center;justify-content:center;flex:none"><span class="ms">' + icon[st] + '</span></div>' +
+        '<div><div style="font-size:12.5px;color:var(--muted)">' + esc(VISIT_STATUS_LABEL[st]) + '</div><div style="font-size:24px;font-weight:700;line-height:1.1">' + d.counts[st] + ' <span style="font-size:12px;font-weight:500;color:var(--muted)">ราย</span></div></div></div>';
+    }).join('') + '</div>';
+    var cols = '<div class="board-cols">' + VISIT_FLOW.map(function (st) {
+      var cards = d.columns[st];
+      return '<div style="background:var(--hover-bg);border-radius:var(--r);padding:10px;min-width:0">' +
+        '<div style="display:flex;align-items:center;gap:8px;margin:2px 4px 10px"><span style="width:10px;height:10px;border-radius:3px;background:' + VISIT_STATUS_COLOR[st] + ';border:1px solid var(--border)"></span><b style="font-size:13px">' + esc(VISIT_STATUS_LABEL[st]) + '</b>' +
+        '<span class="tag-badge" style="background:var(--surface)">' + cards.length + '</span><span style="font-size:11px;color:var(--muted);margin-left:auto">' + hint[st] + '</span></div>' +
+        '<div style="display:flex;flex-direction:column;gap:8px">' + (cards.length ? boardColumnBody(cards, st) : '<div style="text-align:center;color:var(--muted);font-size:12px;padding:18px 0">ไม่มีรายการ</div>') + '</div></div>';
+    }).join('') + '</div>';
+    return head + stats + '<div style="height:14px"></div>' + cols;
   }
 
   /* ---- ชำระเงิน: the last step of a treatment record ---- */
@@ -3521,7 +3694,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* ================================================================== */
   function loadWithdrawals() {
     var q = state.withdraw.q;
-    call('listMedWithdrawals', session.token, { page: state.withdraw.page, filters: { q: q, visitStatus: state.withdraw.visitStatus } }).then(function (res) {
+    call('listMedWithdrawals', session.token, { page: state.withdraw.page, filters: { q: q, visitStatus: state.withdraw.visitStatus, salesId: state.withdraw.salesId } }).then(function (res) {
       if (q !== state.withdraw.q) return; // a newer search is already on its way
       state.withdraw.list = res.data; state.withdraw.reloading = false; render();
     });
@@ -3532,12 +3705,14 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /** The จัดการ menu of a withdrawal group: go to its record (or start one), and (admin) delete a line. */
   function wdGroupActions(g) {
     var acts = [];
+    var firstRec = g.lines[0] && g.lines[0].recordId;
+    if (firstRec && g.lines.every(function (w) { return w.recordId === firstRec; })) visitMoveActions(g.visitStatus, g.visitStatus === 'completed').forEach(function (a) { acts.push(Object.assign({}, a, { value: a.value + ':' + firstRec })); });
     var openLine = g.lines.filter(function (w) { return w.recordId && w.recordStatus !== 'completed'; })[0];
-    if (openLine) acts.push({ value: 'edit:' + openLine.recordId, label: 'ไปที่บันทึกการรักษา', icon: 'medical_services' });
+    if (openLine && canEditVisit(openLine.recordStatus)) acts.push({ value: 'edit:' + openLine.recordId, label: 'ไปที่บันทึกการรักษา', icon: 'medical_services' });
     else if (g.lines.some(function (w) { return !w.recordId; })) acts.push({ value: 'new', label: 'บันทึกการรักษา', icon: 'medical_services' });
     else if (g.lines[0] && g.lines[0].recordId) acts.push({ value: 'view:' + g.lines[0].recordId, label: 'ดูบันทึกการรักษา', icon: 'visibility' });
     acts.push({ value: 'photos', label: 'รูปยาที่เบิก' + ((g.photoIds || []).length ? ' (' + g.photoIds.length + ')' : ''), icon: 'photo_camera' });
-    if (isAdmin()) g.lines.filter(function (w) { return w.recordStatus !== 'completed'; }).forEach(function (w) {
+    if (isAdmin()) g.lines.filter(function (w) { return w.recordStatus === 'dispensed' || w.recordStatus === 'waiting_doctor'; }).forEach(function (w) {
       acts.push({ value: 'del:' + w.id, label: 'ลบ ' + w.itemName + ' ×' + w.qty, icon: 'delete', danger: true });
     });
     return acts;
@@ -3548,7 +3723,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var triggerId = 'wdAct_' + id;
     if (state.portal && state.portal.triggerId === triggerId) { closePortal(); return; } // second click closes
     openPortal(triggerId, wdGroupActions(g), function (v) {
-      if (v === 'photos') openWdPhotos(g);
+      if (v.indexOf('move:') === 0) { var mv = v.split(':'); moveVisit(mv[2], mv[1], g.visitStatus); }
+      else if (v === 'photos') openWdPhotos(g);
       else if (v === 'new') withdrawToRecord(g.patientId);
       else if (v.indexOf('edit:') === 0) editRecordModal(v.slice(5));
       else if (v.indexOf('view:') === 0) openRecordPanel(v.slice(5));
@@ -3560,7 +3736,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var cols = admin ? 10 : 8;
     var statusOpts = statusFilterOptions();
     var rows = !L ? '<tr><td colspan="' + cols + '" class="empty-state"><span class="spin"></span> กำลังโหลด...</td></tr>' :
-      (!L.items.length ? '<tr><td colspan="' + cols + '" class="empty-state">' + (state.withdraw.q || state.withdraw.visitStatus ? 'ไม่พบรายการที่ค้นหา' : 'ยังไม่มีรายการเบิกยา') + '</td></tr>' :
+      (!L.items.length ? '<tr><td colspan="' + cols + '" class="empty-state">' + (state.withdraw.q || state.withdraw.visitStatus || state.withdraw.salesId ? 'ไม่พบรายการที่ค้นหา' : 'ยังไม่มีรายการเบิกยา') + '</td></tr>' :
       L.items.map(function (g) {
         // One group per save: วันที่ / HN / คนไข้ / เซลล์ / สถานะ / จัดการ once
         // (rowspan), and a row per ยา for the item, qty and price columns.
@@ -3598,6 +3774,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return '' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center">' +
         searchInputHtml('wdSearch', state.withdraw.q, 'ค้นหาชื่อคนไข้ / เบอร์โทร / HN', 'window.__valin.onWithdrawSearch(this.value)', 'width:280px') +
+        '<button id="ddWdSales" class="btn" data-action="dd-wd-sales">' + esc((wdSalesOptions().filter(function (o) { return o.value === state.withdraw.salesId; })[0] || {}).label || 'เซลล์ทั้งหมด') + ' <span class="ms">expand_more</span></button>' +
         '<button id="ddWdStatus" class="btn" data-action="dd-wd-status">' + esc((statusOpts.filter(function (o) { return o.value === state.withdraw.visitStatus; })[0] || {}).label || 'สถานะการรักษาทั้งหมด') + ' <span class="ms">expand_more</span></button>' +
         '<button class="btn btn-primary" style="margin-left:auto" data-action="new-withdraw"><span class="ms">add</span> เบิกยา</button>' +
       '</div>' +
@@ -4990,7 +5167,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* ---------------------------------------------------------------- */
   var doctorFilterOptions = function () { return [{ value: '', label: 'แพทย์ทั้งหมด' }].concat((state.master.doctors || []).map(function (d) { return { value: d.id, label: d.name }; })); };
   // Records list filter: สถานะการรักษา (VisitStatus), not the payment status.
-  var statusFilterOptions = function () { return [{ value: '', label: 'สถานะการรักษาทั้งหมด' }, { value: 'dispensed', label: VISIT_STATUS_LABEL.dispensed }, { value: 'completed', label: VISIT_STATUS_LABEL.completed }]; };
+  var wdSalesOptions = function () { return [{ value: '', label: 'เซลล์ทั้งหมด' }].concat((state.master.sales || []).map(function (x) { return { value: x.id, label: x.name }; })); };
+  // บันทึกการรักษา lists the customers who have arrived (รอพบแพทย์ onwards); จัดยาแล้ว belongs to จัดยา-เบิกยา / the board.
+  var recordsStatusOptions = function () { return [{ value: '', label: 'สถานะการรักษาทั้งหมด' }].concat(VISIT_FLOW.slice(1).map(function (v) { return { value: v, label: VISIT_STATUS_LABEL[v] }; })); };
+  var statusFilterOptions = function () { return [{ value: '', label: 'สถานะการรักษาทั้งหมด' }].concat(VISIT_FLOW.map(function (v) { return { value: v, label: VISIT_STATUS_LABEL[v] }; })); };
   var stockCatFilterOptions = function () { return [{ value: '', label: 'หมวดหมู่ทั้งหมด' }].concat((state.master.stockCategories || []).map(function (c) { return { value: c.name, label: c.name }; })); };
 
   document.addEventListener('click', function (ev) {
@@ -5075,6 +5255,16 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'delete-record': deleteRecordConfirm(arg); break;
       case 'issue-receipt': issueReceiptAction(arg); break;
       case 'view-record': openRecordPanel(arg); break;
+      case 'records-row': { // a row of บันทึกการรักษา opens the customer's history (with เพิ่มบันทึกการรักษา while they are with the doctor)
+        var rr = ((state.records.list && state.records.list.items) || []).filter(function (x) { return x.id === arg; })[0];
+        if (rr) openPatientPanel(rr.patientId, { recordId: rr.id, status: rr.visitStatus });
+        break;
+      }
+      case 'patient-panel-treat': { var treatId = arg; closePatientPanel(); editRecordModal(treatId); break; }
+      case 'board-move': { var bm = arg.split('|'); moveVisit(bm[0], bm[1], bm[2]); break; }
+      case 'board-pay': payRecordAction(arg); break;
+      case 'board-refresh': loadBoard(); break;
+      case 'board-today': state.board.date = todayStr(); state.board.data = null; render(); loadBoard(); break;
       case 'close-receipt-preview': case 'close-receipt-preview-bg': if (ev.target === el || action === 'close-receipt-preview') closeReceiptPreview(); break;
       case 'receipt-preview-print': receiptFrameCall('print'); break;
       case 'receipt-preview-pdf': receiptFrameCall('saveReceiptPdf'); break;
@@ -5101,6 +5291,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       // expenseTabView/orderTabView) — a smoother "in flight" transition
       // that clears itself in loadRecords()/loadStock()/loadExpenses()/
       // loadOrders() once the new data actually lands.
+      case 'dd-wd-sales': openPortal('ddWdSales', wdSalesOptions(), function (v) { state.withdraw.salesId = v; state.withdraw.page = 1; state.withdraw.reloading = true; render(); loadWithdrawals(); }, state.withdraw.salesId); break;
       case 'dd-wd-status': openPortal('ddWdStatus', statusFilterOptions(), function (v) { state.withdraw.visitStatus = v; state.withdraw.page = 1; state.withdraw.reloading = true; render(); loadWithdrawals(); }, state.withdraw.visitStatus); break;
       case 'dd-wd-actions': openWithdrawActions(arg); break;
       case 'dd-record-actions': openRecordActions(arg); break;
@@ -5108,7 +5299,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'close-deposit-panel': case 'close-deposit-panel-bg': if (ev.target === el || action === 'close-deposit-panel') closeDepositPanel(); break;
       case 'report-block': openReportPdfPreview(arg); break;
       case 'dd-doctor': openPortal('ddDoctor', doctorFilterOptions(), function (v) { state.records.doctorId = v; state.records.page = 1; state.records.reloading = true; render(); loadRecords(); }, state.records.doctorId); break;
-      case 'dd-status': openPortal('ddStatus', statusFilterOptions(), function (v) { state.records.visitStatus = v; state.records.page = 1; state.records.reloading = true; render(); loadRecords(); }, state.records.visitStatus); break;
+      case 'dd-status': openPortal('ddStatus', recordsStatusOptions(), function (v) { state.records.visitStatus = v; state.records.page = 1; state.records.reloading = true; render(); loadRecords(); }, state.records.visitStatus); break;
       case 'dd-stockcat': openPortal('ddStockCat', stockCatFilterOptions(), function (v) { state.stock.category = v; state.stock.page = 1; state.stock.reloading = true; render(); loadStock(); }, state.stock.category); break;
       case 'dd-expensecat': openPortal('ddExpenseCat', expenseCatFilterOptions(), function (v) { state.expense.category = v; state.expense.page = 1; state.expense.reloading = true; render(); loadExpenses(); }, state.expense.category); break;
       case 'dd-ordercat': openPortal('ddOrderCat', orderCatFilterOptions(), function (v) { state.expense.orderCategory = v; state.expense.orderPage = 1; state.expense.orderReloading = true; render(); loadOrders(); }, state.expense.orderCategory); break;
@@ -5218,6 +5409,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   document.addEventListener('change', function (ev) {
     var el = ev.target.closest('[data-action-change]');
     if (el && el.getAttribute('data-action-change') === 'dash-range') onDashRangeChange();
+    if (el && el.getAttribute('data-action-change') === 'board-date') { state.board.date = el.value || todayStr(); state.board.data = null; render(); loadBoard(); }
   });
 
   // Fields whose live value feeds a computed on-screen preview (the record
