@@ -89,7 +89,7 @@ if (valid) {
   // Records saved with รายการหัตถการ print one sub-line per procedure under this parent.
   var procedureItems = data.procedureItems || [];
   items.push({ no: lineNo++, label: procedureItems.length ? 'รายการหัตถการ' + (data.detail ? ' (' + data.detail + ')' : '') : (data.serviceCategory || 'รายละเอียดหัตถการ') + (data.detail ? ' (' + data.detail + ')' : ''), amount: Number(data.amount) || 0, sub: false });
-  procedureItems.forEach(function (p, i) { items.push({ no: (i + 1), label: p.name, amount: Number(p.amount) || 0, sub: true }); });
+  procedureItems.forEach(function (p, i) { items.push({ no: (i + 1), label: p.name + (p.detail ? ' — ' + p.detail : ''), amount: Number(p.amount) || 0, sub: true }); });
   if (data.supplies && data.supplies.length) {
     data.supplies.forEach(function (s, i) { items.push({ no: (i + 1), label: s.name + (Number(s.qty) > 1 ? ' x' + s.qty : ''), amount: null, sub: true }); });
   }
@@ -102,13 +102,20 @@ if (valid) {
 
   // 2. รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค — the shape explicitly requested.
   if (data.medicineItems && data.medicineItems.length && Number(data.medicineAmount) > 0) { // ยาเบิกเพิ่ม is not charged; only older records carry an amount
-    items.push({ no: lineNo++, label: 'รายการซื้อเพิ่มสินค้า/เบิกยาหน้าคลีนิค', amount: Number(data.medicineAmount) || 0, sub: false });
+    items.push({ no: lineNo++, label: 'รายการซื้อยาเพิ่มหน้าคลีนิค', amount: Number(data.medicineAmount) || 0, sub: false });
     data.medicineItems.forEach(function (m, i) { items.push({ no: (i + 1), label: (m.name || 'ยา/สินค้า') + (m.qtyDispensed ? ' × ' + m.qtyDispensed : ''), amount: Number(m.amount) || 0, sub: true }); });
+  }
+
+  // รายการจ่ายยาทาน
+  if (data.oralMedItems && data.oralMedItems.length && Number(data.oralMedAmount) > 0) {
+    items.push({ no: lineNo++, label: 'รายการจ่ายยาทาน', amount: Number(data.oralMedAmount) || 0, sub: false });
+    data.oralMedItems.forEach(function (m, i) { items.push({ no: (i + 1), label: (m.name || 'ยาทาน') + ' × ' + m.qty + (m.unit ? ' ' + m.unit : ''), amount: Number(m.amount) || 0, sub: true }); });
   }
 
   // 3. ใช้ canula (เข็มทู่)
   if (data.useCanula) {
     items.push({ no: lineNo++, label: 'ใช้ canula (เข็มทู่)', amount: Number(data.canulaAmount) || 0, sub: false });
+    (data.canulaItems || []).forEach(function (c, i) { items.push({ no: (i + 1), label: (c.name || 'Canula') + (Number(c.qty) > 1 ? ' × ' + c.qty : ''), amount: Number(c.amount) || 0, sub: true }); });
   }
 
   // รายการอื่นๆ (not in the client's list this round — kept, see note above).
