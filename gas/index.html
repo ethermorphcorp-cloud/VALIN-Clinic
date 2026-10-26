@@ -251,6 +251,10 @@ button,input,textarea,select{font-family:inherit}
 .spin{display:inline-block;width:16px;height:16px;border-radius:50%;border:2.5px solid rgba(30,58,114,.20);border-top-color:var(--accent);animation:gs-spin .7s linear infinite;vertical-align:middle}
 .btn .spin{border-color:rgba(255,255,255,.35);border-top-color:#fff;margin-right:6px}
 @keyframes gs-spin{to{transform:rotate(360deg)}}
+/* A button whose save/delete/... is still running (see busyKeys): spinner instead of its icon, no second click. */
+.btn-busy{opacity:.75;cursor:progress!important}
+.btn-busy>.ms{display:none}
+.btn-busy::before{content:'';display:inline-block;flex:none;width:13px;height:13px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:gs-spin .7s linear infinite;vertical-align:-2px}
 .portal-dd{position:fixed;z-index:5000;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);box-shadow:0 12px 30px rgba(15,27,61,.16);max-height:260px;overflow:auto;min-width:180px;display:none}
 .portal-dd.open{display:block}
 .portal-dd .opt{padding:9px 12px;font-size:13px;cursor:pointer;display:flex;justify-content:space-between;gap:8px}
@@ -277,6 +281,39 @@ button,input,textarea,select{font-family:inherit}
 .side-panel{width:440px;max-width:92vw;height:100%;background:var(--surface);box-shadow:-10px 0 34px rgba(15,27,61,.18);display:flex;flex-direction:column;animation:side-panel-in .22s ease}
 @keyframes side-panel-in{from{transform:translateX(100%)}to{transform:translateX(0)}}
 .swal2-container{z-index:9500 !important}
+/* ---- Dialogs (Swal.fire, themed by themeSwalOpts): the app's card, buttons and inputs; a soft icon tile instead of the big outlined one ---- */
+.swal2-container.swal2-center.swal2-backdrop-show{background:rgba(15,27,61,.42)!important;backdrop-filter:blur(2px)} /* dialogs only — a toast's container stays clear */
+.swal2-popup.vc-swal{width:min(420px,calc(100vw - 32px))!important;padding:26px 24px 22px!important;border-radius:18px!important;background:var(--surface)!important;box-shadow:0 24px 64px rgba(15,27,61,.24)!important;font-family:'Noto Sans Thai',system-ui,sans-serif!important;color:var(--text)}
+.vc-swal .swal2-title{font-size:18px!important;font-weight:700!important;color:var(--text)!important;padding:2px 4px 0!important;line-height:1.4}
+.vc-swal .swal2-html-container{font-size:13.5px!important;color:var(--muted-2)!important;margin:8px 4px 0!important;line-height:1.6}
+.vc-swal .swal2-actions{width:100%;gap:10px;margin:22px 0 0!important;flex-wrap:nowrap}
+.vc-swal .swal2-actions .btn{flex:1 1 0;justify-content:center;margin:0!important;padding:11px 16px;font-size:13.5px;font-weight:600;min-width:0}
+.vc-swal .swal2-actions .btn:focus-visible{outline:none;box-shadow:0 0 0 3px var(--accent-soft)}
+.vc-swal .btn-cancel{background:var(--hover-bg);color:var(--text-2)}
+.vc-swal .btn-cancel:hover{background:var(--hover-bg2)}
+.vc-swal .btn-danger{background:var(--red-dark);color:#fff}
+.vc-swal .btn-danger:hover{background:#933637}
+.vc-swal .swal2-input,.vc-swal .swal2-select{width:100%!important;height:44px!important;margin:18px 0 0!important;padding:0 12px!important;border:1px solid var(--input-border)!important;border-radius:var(--r-sm)!important;background:var(--input-bg)!important;box-shadow:none!important;font-size:14px!important;color:var(--text)!important;font-family:inherit!important}
+.vc-swal .swal2-input:focus,.vc-swal .swal2-select:focus{border-color:var(--accent)!important;box-shadow:0 0 0 3px var(--accent-soft)!important;outline:none}
+.vc-swal .swal2-validation-message{margin:12px 0 0!important;padding:8px 12px!important;border-radius:var(--r-sm);background:var(--red-soft)!important;color:var(--red-dark)!important;font-size:12.5px!important;justify-content:flex-start}
+.vc-swal .swal2-validation-message::before{background:var(--red-dark)!important;width:1.2em!important;min-width:1.2em!important;height:1.2em!important;font-size:.8em}
+.swal2-icon.vc-swal-icon{width:56px!important;height:56px!important;margin:2px auto 12px!important;border:none!important;border-radius:16px;display:flex!important;align-items:center;justify-content:center}
+.swal2-icon.vc-swal-icon .swal2-icon-content{display:flex;align-items:center;justify-content:center}
+.swal2-icon.vc-swal-icon .ms{font-size:30px!important;font-variation-settings:'FILL' 1}
+.vc-icon-success{background:var(--green-soft)!important;color:var(--green-dark)!important}
+.vc-icon-error,.vc-icon-danger{background:var(--red-soft)!important;color:var(--red-dark)!important}
+.vc-icon-warning{background:var(--amber-soft)!important;color:var(--amber-dark)!important}
+.vc-icon-info,.vc-icon-question{background:var(--accent-soft)!important;color:var(--accent)!important}
+/* ---- Toasts (toast()): a small white card top-right, coloured icon tile, thin timer line in the same colour ---- */
+.swal2-popup.vc-toast{width:auto!important;min-width:280px;max-width:min(420px,calc(100vw - 24px));padding:10px 16px 10px 10px!important;border-radius:14px!important;background:var(--surface)!important;border:1px solid var(--border)!important;box-shadow:0 12px 32px rgba(15,27,61,.16)!important;font-family:'Noto Sans Thai',system-ui,sans-serif!important;overflow:hidden;align-items:center!important}
+.vc-toast .swal2-title{margin:0 0 0 12px!important;padding:0!important;font-size:13.5px!important;font-weight:600!important;color:var(--text)!important;line-height:1.45;text-align:left}
+.vc-toast .swal2-icon.vc-swal-icon{width:34px!important;height:34px!important;min-width:34px;margin:0!important;border-radius:10px}
+.vc-toast .swal2-icon.vc-swal-icon .ms{font-size:20px!important}
+.vc-toast .swal2-timer-progress-bar-container{left:0;right:0;bottom:0;height:3px}
+.vc-toast .swal2-timer-progress-bar{height:3px;background:var(--accent)!important;opacity:.55}
+.vc-toast.vc-toast-success .swal2-timer-progress-bar{background:var(--green)!important}
+.vc-toast.vc-toast-error .swal2-timer-progress-bar{background:var(--red)!important}
+.vc-toast.vc-toast-warning .swal2-timer-progress-bar{background:var(--amber-dark)!important}
 /* Segmented pill toggle (e.g. record modal's "สถานะ" นัดหมาย/เสร็จสิ้น field) */
 .pill-group{display:inline-flex;border:1px solid var(--border);border-radius:999px;padding:3px;gap:2px;background:var(--hover-bg)}
 .pill-group button{border:none;background:none;padding:7px 16px;border-radius:999px;font-size:12.5px;font-weight:600;cursor:pointer;color:var(--text-2);font-family:inherit}
@@ -342,6 +379,102 @@ button,input,textarea,select{font-family:inherit}
 /* Stock table: cells never wrap; the wrapper scrolls sideways instead (รายการยา has 11-12 columns). */
 .stock-table th,.stock-table td{white-space:nowrap;padding-left:12px;padding-right:12px}
 .vmid th,.vmid td{vertical-align:middle}
+
+/* ===================== Glass theme — modern · minimal · glassmorphism =====================
+   Same navy / gold palette as before: the page gets a soft tinted background, and every surface (cards, header, panels,
+   modals, menus, dialogs, toasts) becomes frosted glass — translucent white, blurred backdrop, hairline light border, soft
+   shadow. The tokens below also drive the many inline styles (var(--surface), var(--border), var(--hover-bg) ...). */
+:root{
+  --glass:rgba(255,255,255,.62); --glass-strong:rgba(255,255,255,.84); --glass-border:rgba(255,255,255,.72);
+  --glass-shadow:0 8px 30px rgba(30,58,114,.08), inset 0 1px 0 rgba(255,255,255,.75);
+  --blur:blur(18px) saturate(150%);
+  --surface:rgba(255,255,255,.66);
+  --border:rgba(30,58,114,.10); --border-soft:rgba(30,58,114,.07); --border-lighter:rgba(30,58,114,.05); --input-border:rgba(30,58,114,.15);
+  --input-bg:rgba(255,255,255,.6); --hover-bg:rgba(30,58,114,.045); --hover-bg2:rgba(30,58,114,.08);
+  --r:16px; --r-sm:10px; --r-lg:22px;
+}
+html{background:#EEF1F9}
+body{background:transparent;background-image:
+  radial-gradient(900px 620px at 6% -6%,rgba(30,58,114,.17),transparent 62%),
+  radial-gradient(820px 560px at 100% -4%,rgba(201,169,97,.22),transparent 58%),
+  radial-gradient(900px 700px at 72% 108%,rgba(192,112,154,.11),transparent 62%),
+  radial-gradient(760px 520px at -4% 104%,rgba(78,157,110,.09),transparent 62%);
+  background-attachment:fixed}
+.app-shell,.login-shell{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(30,58,114,.22);border:3px solid transparent;background-clip:padding-box}
+::-webkit-scrollbar-track{background:transparent}
+
+/* Sidebar: a floating dark-glass rail */
+.sidebar{margin:12px 0 12px 12px;height:calc(100vh - 24px);top:12px;border-radius:24px;border:1px solid rgba(255,255,255,.09);
+  background:linear-gradient(180deg,rgba(18,32,72,.93),rgba(11,21,48,.95));backdrop-filter:blur(22px) saturate(140%);-webkit-backdrop-filter:blur(22px) saturate(140%);
+  box-shadow:0 24px 56px rgba(15,27,61,.28), inset 0 1px 0 rgba(255,255,255,.08)}
+.nav-item{transition:background .18s ease,color .18s ease}
+.nav-item.active,.preview-item.active{background:rgba(255,255,255,.12);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+.brand-mark{box-shadow:0 8px 20px rgba(201,169,97,.35)}
+.user-card{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.1);backdrop-filter:blur(10px)}
+
+/* Header + content */
+.header{background:rgba(255,255,255,.5);backdrop-filter:blur(18px) saturate(150%);-webkit-backdrop-filter:blur(18px) saturate(150%);border-bottom:1px solid var(--glass-border)}
+.page-title{letter-spacing:-.1px}
+
+/* Glass surfaces */
+.card,.panel,.side-panel{background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--glass-border);box-shadow:var(--glass-shadow)}
+.card{border-radius:var(--r)}
+.card .card,.board-cols .card{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(255,255,255,.74);box-shadow:0 2px 10px rgba(30,58,114,.06), inset 0 1px 0 rgba(255,255,255,.8)}
+.card,.board-cols .card{transition:box-shadow .2s ease,transform .2s ease}
+.board-cols .card:hover{box-shadow:0 10px 26px rgba(30,58,114,.12), inset 0 1px 0 rgba(255,255,255,.8);transform:translateY(-1px)}
+.side-panel,.panel{background:var(--glass-strong);backdrop-filter:blur(28px) saturate(160%);-webkit-backdrop-filter:blur(28px) saturate(160%);border-radius:22px 0 0 22px;border-right:none;box-shadow:-18px 0 50px rgba(15,27,61,.16)}
+.panel-head,.panel-foot,.modal-foot{background:rgba(255,255,255,.4)}
+.side-panel-backdrop,.overlay,.overlay.center{background:rgba(15,27,61,.26);backdrop-filter:blur(5px);-webkit-backdrop-filter:blur(5px)}
+.modal-backdrop{background:rgba(15,27,61,.28)!important;backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px)}
+.modal{background:var(--glass-strong)!important;backdrop-filter:blur(28px) saturate(160%);-webkit-backdrop-filter:blur(28px) saturate(160%);border:1px solid var(--glass-border);border-radius:24px!important;box-shadow:0 32px 90px rgba(15,27,61,.28), inset 0 1px 0 rgba(255,255,255,.85)}
+.dropdown-panel,.portal-dd,.user-menu{background:var(--glass-strong);backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);border:1px solid var(--glass-border);border-radius:14px;box-shadow:0 18px 44px rgba(15,27,61,.18)}
+.portal-dd .opt{border-radius:8px;margin:3px 4px}
+.gs-loading-overlay{background:rgba(238,241,249,.55);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+.donut-hole{background:var(--glass-strong)}
+
+/* Buttons: soft gradient primary, glass secondary */
+.btn{transition:background .18s ease,box-shadow .18s ease,transform .12s ease,border-color .18s ease}
+.btn:active{transform:translateY(1px)}
+.btn-primary{background:linear-gradient(135deg,#27488F,#1B3468);border-color:rgba(255,255,255,.14);box-shadow:0 6px 16px rgba(30,58,114,.28), inset 0 1px 0 rgba(255,255,255,.16)}
+.btn-primary:hover{background:linear-gradient(135deg,#2C4F9B,#1E3A72);box-shadow:0 8px 20px rgba(30,58,114,.34), inset 0 1px 0 rgba(255,255,255,.18)}
+.btn:not(.btn-primary):not(.btn-danger):not(.btn-cancel){background:rgba(255,255,255,.58);border:1px solid rgba(30,58,114,.12);color:var(--text-2);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.btn:not(.btn-primary):not(.btn-danger):not(.btn-cancel):hover{background:rgba(255,255,255,.88);border-color:rgba(30,58,114,.2)}
+.vc-swal .btn-cancel{background:rgba(30,58,114,.06)}
+.icon-btn,.icon-square,.header-chip,.pager-btn,.pager button{background:rgba(255,255,255,.58);backdrop-filter:blur(8px)}
+.pager button.active,.pager-btn.active{background:var(--accent)}
+
+/* Inputs */
+input,select,textarea{transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}
+input:focus,select:focus,textarea:focus,.input:focus{outline:none;border-color:var(--accent)!important;box-shadow:0 0 0 3px rgba(30,58,114,.12);background:rgba(255,255,255,.9)}
+.input-wrap:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(30,58,114,.12)}
+
+/* Tables */
+.table thead tr{background:transparent}
+.table th{font-weight:600;letter-spacing:.2px}
+.table tbody tr{transition:background .15s ease}
+.table tbody tr:hover{background:rgba(30,58,114,.04)}
+.pill-group,.pill-toggle{background:rgba(255,255,255,.5);backdrop-filter:blur(8px)}
+.tab-item.active::after{height:3px;border-radius:3px 3px 0 0}
+.upload-drop{background:rgba(255,255,255,.35)}
+.day-summary-section{background:rgba(255,255,255,.4)}
+
+/* Dialogs + toasts (SweetAlert2) */
+.swal2-container.swal2-center.swal2-backdrop-show{background:rgba(15,27,61,.3)!important;backdrop-filter:blur(7px);-webkit-backdrop-filter:blur(7px)}
+.swal2-popup.vc-swal{background:var(--glass-strong)!important;backdrop-filter:blur(28px) saturate(160%);-webkit-backdrop-filter:blur(28px) saturate(160%);border:1px solid var(--glass-border)!important;border-radius:24px!important;box-shadow:0 32px 90px rgba(15,27,61,.28), inset 0 1px 0 rgba(255,255,255,.85)!important}
+.swal2-popup.vc-toast{background:var(--glass-strong)!important;backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);border:1px solid var(--glass-border)!important;box-shadow:0 14px 36px rgba(15,27,61,.16), inset 0 1px 0 rgba(255,255,255,.85)!important}
+
+/* No blur support / reduced transparency: fall back to near-solid surfaces */
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){
+  :root{--glass:rgba(255,255,255,.94); --glass-strong:rgba(255,255,255,.98); --surface:rgba(255,255,255,.96)}
+}
+@media (prefers-reduced-transparency:reduce){
+  :root{--glass:rgba(255,255,255,.95); --glass-strong:#fff; --surface:rgba(255,255,255,.96)}
+}
+@media print{
+  body{background:#fff!important}
+  .card,.panel,.side-panel,.modal{backdrop-filter:none!important;background:#fff!important;box-shadow:none!important}
+}
 </style>
 </head>
 <body>
@@ -432,36 +565,122 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     else loadingBar.classList.remove('on');
   }
 
+  /* ---- SweetAlert2 in the app's look: every Swal.fire (dialogs and toasts) goes through themeSwalOpts. The buttons are
+   * the app's .btn styles (ยกเลิก on the left); a dialog that asks for confirmButtonColor — the ลบ...? confirmations —
+   * gets the red button and a red icon tile; the big outlined icons become a soft tile with a Material Symbol. ---- */
+  var SWAL_ICONS = { success: 'check_circle', error: 'error', warning: 'warning', info: 'info', question: 'help', danger: 'delete' };
+  function themeSwalOpts(o) {
+    o = Object.assign({}, o);
+    if (o.imageUrl) return o; // the photo lightbox keeps its own transparent frame
+    var danger = /^#C0/i.test(String(o.confirmButtonColor || '')); // '#C08585' = a ลบ confirmation
+    delete o.confirmButtonColor; delete o.cancelButtonColor;
+    var kind = danger && o.icon === 'warning' ? 'danger' : o.icon;
+    var cc = Object.assign({}, o.customClass || {});
+    o.buttonsStyling = false;
+    o.customClass = Object.assign({
+      popup: o.toast ? 'vc-toast vc-toast-' + (o.icon || 'info') : 'vc-swal',
+      confirmButton: 'btn ' + (danger ? 'btn-danger' : 'btn-primary'),
+      cancelButton: 'btn btn-cancel', denyButton: 'btn btn-outline'
+    }, cc);
+    if (kind && SWAL_ICONS[kind]) {
+      if (!o.iconHtml) o.iconHtml = '<span class="ms">' + SWAL_ICONS[kind] + '</span>';
+      o.customClass.icon = 'vc-swal-icon vc-icon-' + kind;
+    }
+    if (!o.toast && o.reverseButtons === undefined) o.reverseButtons = true;
+    return o;
+  }
+  if (typeof Swal !== 'undefined' && !Swal.__vcThemed) {
+    var swalFire = Swal.fire.bind(Swal);
+    Swal.fire = function (o) { return swalFire(o && typeof o === 'object' ? themeSwalOpts(o) : o); };
+    Swal.__vcThemed = true;
+  }
+
   function toast(icon, title) {
     // Defensive: if SweetAlert2's CDN failed to load for any reason, a cosmetic
     // notification failure must never abort the caller's subsequent logic
     // (closeModal(), list reloads, etc. run in the same .then() chain as this).
     try {
       if (typeof Swal === 'undefined') { console.warn('[toast]', icon, title); return; }
-      Swal.mixin({ toast: true, position: 'top-end', showConfirmButton: false, timer: 2600, timerProgressBar: true })
-        .fire({ icon: icon, title: title });
+      Swal.fire({ toast: true, position: 'top-end', showConfirmButton: false, timer: 2600, timerProgressBar: true, icon: icon, title: title,
+        didOpen: function (el) { el.addEventListener('mouseenter', Swal.stopTimer); el.addEventListener('mouseleave', Swal.resumeTimer); } });
     } catch (e) { console.warn('[toast failed]', icon, title, e); }
   }
+
+  /* ---- Buttons that must not be pressed twice ----
+   * A server write (any function but list/get/search, plus getReceiptHtml, which takes a receipt number) started by a
+   * click makes that button busy — disabled, with a spinner — until the write is done, and a click on a busy button is
+   * ignored. A write that starts after a confirmation dialog (ลบ…?, เลือกแพทย์) belongs to the button that opened the
+   * dialog; a dropdown menu's pick belongs to its trigger (key "id:<trigger id>"). Besides, the very same write (same
+   * function and arguments) is never sent again while the first is still on its way. */
+  var WRITE_GETS = { getReceiptHtml: 1 };
+  var NO_DEDUPE = { login: 1, startResumableUpload: 1, uploadFileChunk: 1 };
+  function isWriteFn(fn) { return !/^(list|get|search)/.test(fn) || !!WRITE_GETS[fn]; }
+  var busyKeys = {}, clickKey = null, armedKey = null, inflightWrites = {};
+  function isBusy(key) { return !!busyKeys[key]; }
+  function busyStart(key) { busyKeys[key] = (busyKeys[key] || 0) + 1; applyBusyButtons(); }
+  function busyEnd(key) { if (busyKeys[key] && !--busyKeys[key]) delete busyKeys[key]; applyBusyButtons(); }
+  function elBusyKey(el) {
+    if (el.id && isBusy('id:' + el.id)) return 'id:' + el.id;
+    return el.getAttribute('data-action') + '|' + (el.getAttribute('data-arg') || '');
+  }
+  /** Marks every on-screen button of a busy key (they are redrawn often, so this runs after each redraw too). */
+  function applyBusyButtons() {
+    var any = Object.keys(busyKeys).length > 0;
+    document.querySelectorAll(any ? 'button[data-action], .btn[data-action], .btn-busy' : '.btn-busy').forEach(function (el) {
+      var on = any && el.hasAttribute('data-action') && isBusy(elBusyKey(el));
+      if (on === el.classList.contains('btn-busy')) return;
+      el.classList.toggle('btn-busy', on);
+      if (on) { el.setAttribute('aria-busy', 'true'); if (el.tagName === 'BUTTON' && !el.disabled) { el.disabled = true; el.setAttribute('data-busy-disabled', '1'); } }
+      else { el.removeAttribute('aria-busy'); if (el.hasAttribute('data-busy-disabled')) { el.disabled = false; el.removeAttribute('data-busy-disabled'); } }
+    });
+  }
+  /** A confirmation / choice dialog is open (not a toast). */
+  function confirmOpen() {
+    try { return typeof Swal !== 'undefined' && Swal.isVisible() && !Swal.getPopup().classList.contains('swal2-toast'); } catch (e) { return false; }
+  }
+  /** Called right after a click's handler ran: a write it started has taken clickKey; if it opened a dialog, the write that follows belongs to it. */
+  function endClick(key) {
+    setTimeout(function () { if (clickKey === key) clickKey = null; if (confirmOpen()) armedKey = key; }, 0);
+  }
+  // Redraws (render, side panels, previews) put fresh buttons on screen: mark the busy ones again; a dialog that closed
+  // without a write (ยกเลิก) disarms.
+  new MutationObserver(function () {
+    if (Object.keys(busyKeys).length) applyBusyButtons();
+    if (armedKey && !confirmOpen()) { var k = armedKey; setTimeout(function () { if (armedKey === k && !confirmOpen()) armedKey = null; }, 400); }
+  }).observe(document.body, { childList: true, subtree: true });
 
   /**
    * Calls a server-side function in Code.gs by name. Every wrapped call shows
    * the top loading bar; failures show a toast automatically unless opts.quiet.
+   * A write is tied to the button that started it (see busyKeys) and is never sent twice at once.
    */
   function call(fnName) {
     var args = Array.prototype.slice.call(arguments, 1);
     var opts = {};
     if (args.length && args[args.length - 1] && args[args.length - 1].__gsOpts) opts = args.pop();
+    var write = isWriteFn(fnName), sig = null, key = null;
+    if (write) {
+      if (!NO_DEDUPE[fnName]) {
+        sig = fnName + '|' + JSON.stringify(args);
+        if (inflightWrites[sig]) return new Promise(function () {}); // the same write is already on its way — drop this one
+        inflightWrites[sig] = true;
+      }
+      key = clickKey || armedKey;
+      armedKey = null;
+      if (key) busyStart(key);
+    }
+    var settle = function () { if (sig) delete inflightWrites[sig]; if (key) busyEnd(key); };
     setLoading(true);
     return new Promise(function (resolve, reject) {
       if (!window.google || !window.google.script || !window.google.script.run) {
         // Local dev / preview fallback so this file can be opened outside GAS for a quick visual check.
-        setLoading(false);
+        setLoading(false); settle();
         reject(new Error('google.script.run ไม่พร้อมใช้งาน (ต้องรันผ่าน Apps Script Web App)'));
         return;
       }
       var runner = google.script.run
-        .withSuccessHandler(function (res) { setLoading(false); resolve(res); })
-        .withFailureHandler(function (err) { setLoading(false); reject(err); });
+        .withSuccessHandler(function (res) { setLoading(false); settle(); resolve(res); })
+        .withFailureHandler(function (err) { setLoading(false); settle(); reject(err); });
       runner[fnName].apply(runner, args);
     }).then(function (res) {
       if (res && res.ok === false) {
@@ -842,7 +1061,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function doLogin() {
     var u = document.getElementById('loginUsername').value.trim();
     var p = document.getElementById('loginPassword').value;
-    if (!u || !p) return;
+    if (!u || !p || state.loginBusy) return;
     state.loginBusy = true; state.loginError = ''; render();
     call('login', u, p, gsOpts({ quiet: true })).then(function (res) {
       state.loginBusy = false;
@@ -1757,7 +1976,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var inputOptions = {};
     docs.forEach(function (d) { inputOptions[d.id] = d.name; });
     return Swal.fire({
-      title: 'เลือกแพทย์ที่จะเข้าพบ', input: 'select', inputOptions: inputOptions, inputPlaceholder: '— เลือกแพทย์ —',
+      title: 'เลือกแพทย์ที่จะเข้าพบ', icon: 'info', iconHtml: '<span class="ms">stethoscope</span>', input: 'select', inputOptions: inputOptions, inputPlaceholder: '— เลือกแพทย์ —',
       showCancelButton: true, confirmButtonText: 'ตกลง', cancelButtonText: 'ยกเลิก',
       inputValidator: function (v) { return v ? null : 'กรุณาเลือกแพทย์'; }
     }).then(function (r) { return r.isConfirmed ? r.value : ''; });
@@ -4615,7 +4834,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   document.addEventListener('keydown', function (ev) { if (ev.key === 'Escape' && state.report.preview) closePdfPreview(); });
   function downloadReportPdf() {
     var p = state.report.preview;
-    if (!p) return;
+    if (!p || isBusy('report-pdf-download|')) return;
+    busyStart('report-pdf-download|');
+    var finish = function () { busyEnd('report-pdf-download|'); };
     setLoading(true);
     Promise.all([loadHtml2Pdf(), ensureClinicLogo()]).then(function () {
       // Off-screen but laid out (html2canvas can't capture display:none).
@@ -4623,7 +4844,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       holder.style.cssText = 'position:fixed;left:-10000px;top:0;z-index:-1';
       holder.innerHTML = reportPdfHtml(p.kind, p.data, p.scope);
       document.body.appendChild(holder);
-      var done = function () { holder.remove(); setLoading(false); closePdfPreview(); };
+      var done = function () { holder.remove(); setLoading(false); finish(); closePdfPreview(); };
       return window.html2pdf().set({
         // A4 in mm; the page is scaled to the paper width.
         margin: [0, 0, 8, 0], filename: p.filename,
@@ -4633,7 +4854,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         // Table rows are never split across pages.
         pagebreak: { mode: ['css', 'legacy'], avoid: ['tr'] }
       }).from(holder.firstChild).save().then(done, function (e) { holder.remove(); setLoading(false); throw e; });
-    }).catch(function (e) { setLoading(false); toast('error', (e && e.message) || 'สร้าง PDF ไม่สำเร็จ'); });
+    }).catch(function (e) { setLoading(false); finish(); toast('error', (e && e.message) || 'สร้าง PDF ไม่สำเร็จ'); });
   }
 
   /* ================================================================== */
@@ -5406,7 +5627,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       var val = portalOpt.getAttribute('data-portal-pick');
       var p = state.portal;
       closePortal();
-      if (p && p.onPick) p.onPick(val);
+      if (p && p.onPick) {
+        var pickKey = 'id:' + p.triggerId; // a write from a dropdown menu shows on (and blocks) its trigger button
+        if (isBusy(pickKey)) return;
+        armedKey = null; clickKey = pickKey;
+        p.onPick(val);
+        endClick(pickKey);
+      }
       return;
     }
     // Clicking a stock-name input (re)opens its picker; the portal-closing rule below must not eat that click.
@@ -5430,6 +5657,12 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var action = el.getAttribute('data-action');
     var arg = el.getAttribute('data-arg');
     var idx = el.getAttribute('data-idx');
+
+    // Still saving / deleting from this button: ignore the click (see busyKeys).
+    var clickBusyKey = action + '|' + (arg || '');
+    if (isBusy(clickBusyKey) || (el.id && isBusy('id:' + el.id))) { ev.preventDefault(); return; }
+    armedKey = null; clickKey = clickBusyKey;
+    endClick(clickBusyKey);
 
     switch (action) {
       case 'nav': goNav(arg); break;
