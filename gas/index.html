@@ -1952,8 +1952,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /** The badge; `r` (a record or card with queueDoctor / queuePay) adds its queue number to รอพบแพทย์ / รอชำระเงิน. */
   function visitStatusBadge(s, r) {
     s = visitStatusKey(s);
-    var q = r && s !== 'dispensed' ? r.queueDoctor : null; // the queue number is taken at รอพบแพทย์ and kept to the end
-    return '<span class="tag-badge" style="background:' + VISIT_STATUS_COLOR[s] + ';white-space:nowrap">' + esc(VISIT_STATUS_LABEL[s]) + (q ? ' · คิว ' + esc(q) : '') + '</span>';
+    var q = null; // queue numbers are not shown; // the queue number is taken at รอพบแพทย์ and kept to the end
+    return '<span class="tag-badge" style="background:' + VISIT_STATUS_COLOR[s] + ';white-space:nowrap">' + esc(VISIT_STATUS_LABEL[s]) + '' + '</span>';
   }
   /** Moves a record one step (to: dispensed | waiting_doctor | waiting_payment) and refreshes what is on screen. */
   function moveVisit(rid, to, from) {
@@ -1964,7 +1964,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function doMove(rid, to, doctorId) {
     return call('setVisitStatus', session.token, rid, to, doctorId || '').then(function (res) {
       if (to === 'waiting_payment' && state.notify.known) state.notify.known[rid] = true;
-      toast('success', 'เปลี่ยนสถานะเป็น ' + VISIT_STATUS_LABEL[to] + (to === 'waiting_doctor' && res.data.queueDoctor ? ' · คิว ' + res.data.queueDoctor : '') + (to === 'with_doctor' && res.data.visitDoctorName ? ' · ' + res.data.visitDoctorName : ''));
+      toast('success', 'เปลี่ยนสถานะเป็น ' + VISIT_STATUS_LABEL[to] + '' + (to === 'with_doctor' && res.data.visitDoctorName ? ' · ' + res.data.visitDoctorName : ''));
       afterRecordWrite();
       return res;
     });
@@ -3435,7 +3435,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         var fresh = list.filter(function (x) { return !N.known[x.id]; });
         if (fresh.length && state.screen !== 'board') {
           N.unseen += fresh.length;
-          toast('success', 'รอชำระเงิน: ' + fresh.map(function (x) { return (x.queue ? 'คิว ' + x.queue + ' ' : '') + x.patientName; }).join(', '));
+          toast('success', 'รอชำระเงิน: ' + fresh.map(function (x) { return x.patientName; }).join(', '));
           render();
         }
       }
@@ -3447,7 +3447,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   // It is the only screen that refreshes by itself.
   setInterval(function () { if (session.token && state.screen === 'board' && !state.modal && !state.portal && !document.hidden) loadBoard(); }, 600000);
   function boardCard(c, st) {
-    var q = st === 'dispensed' ? null : c.queueDoctor;
+    var q = null; // queue numbers are not shown
     var tag = function (t, color) { return '<span class="tag-badge" style="background:' + color + ';font-size:10.5px;white-space:nowrap">' + esc(t) + '</span>'; };
     var today = todayStr();
     var tags = c.carryover && st !== 'waiting_payment' ? tag('ค้างจาก ' + (c.queueDate || c.date), 'var(--red-soft)') : ''; // จัดยาแล้ว and รอชำระเงิน cards carry no date
