@@ -765,6 +765,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // flight — see the dd-* action handlers and the loadX() functions below.
     expense: { tab: 'expense', list: null, page: 1, q: '', category: '', orders: null, orderPanel: null, orderPage: 1, orderQ: '', orderCategory: '', searchSuggest: [], orderSearchSuggest: [], reloading: false, orderReloading: false },
     promotions: { list: null, q: '' },
+    backup: { cutoff: '', preview: null, previewing: false, list: null, selected: '' },
     board: { data: null, date: '', updatedAt: null, loading: false, q: '' },
     notify: { known: null, unseen: 0, timer: null },
     withdraw: { list: null, page: 1, q: '', visitStatus: 'dispensed', salesId: '', reloading: false, photoUrls: {}, photoProgress: null },
@@ -5201,7 +5202,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
 
   function settingsTemplate() {
     var tabDefs = [{ id: 'doctors', label: 'แพทย์ / เซลล์' }, { id: 'categories', label: 'หมวดหมู่' }, { id: 'clinic', label: 'ข้อมูลบริษัท' }];
-    if (isAdmin()) tabDefs.push({ id: 'staff', label: 'ตั้งค่าพนักงาน' });
+    if (isAdmin()) tabDefs.push({ id: 'staff', label: 'ตั้งค่าพนักงาน' }, { id: 'backup', label: 'สำรองข้อมูล' });
     var bar = tabBar(tabDefs, state.settings.tab, 'set-tab');
     var body;
     switch (state.settings.tab) {
@@ -5209,6 +5210,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'categories': body = settingsCategoriesView(); break;
       case 'clinic': body = settingsClinicView(); break;
       case 'staff': body = settingsStaffView(); break;
+      case 'backup': body = isAdmin() ? settingsBackupView() : ''; break;
       default: body = '';
     }
     return bar + body;
@@ -5230,6 +5232,107 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (tab === 'categories' && !settingsData.categories) loadCategoriesTab();
     if (tab === 'clinic' && !settingsData.clinicInfo) loadClinicInfo();
     if (tab === 'staff' && !state.settings.staff && isAdmin()) loadStaff();
+    if (tab === 'backup' && isAdmin()) loadBackups();
+  }
+
+  /* ---- สำรองข้อมูล: move the finished data to a new spreadsheet in the Drive folder "back up data" ---- */
+  var BACKUP_KINDS = [
+    ['Records', 'บันทึกการรักษา (ชำระแล้ว / ยกเลิก)'], ['MedWithdrawals', 'รายการจัดยา-เบิกยา'], ['StockLog', 'ประวัติการเคลื่อนไหวสต๊อก'],
+    ['Expenses', 'ค่าใช้จ่าย'], ['Orders', 'ใบสั่งซื้อ'], ['OrderLines', 'รายการในใบสั่งซื้อ'], ['AuditLog', 'ประวัติการใช้งานระบบ (Audit)']
+  ];
+  function defaultBackupCutoff() { var d = new Date(); d.setDate(d.getDate() - 90); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+  function loadBackups() {
+    var B = state.backup;
+    if (!B.cutoff) B.cutoff = defaultBackupCutoff();
+    call('listBackups', session.token, gsOpts({ quiet: true })).then(function (res) {
+      B.list = res.data || [];
+      if (!B.selected || !B.list.some(function (x) { return x.id === B.selected; })) B.selected = B.list.length ? B.list[0].id : '';
+      render();
+    });
+  }
+  function backupPreview() {
+    var B = state.backup;
+    if (!B.cutoff) return;
+    B.previewing = true; B.preview = null; render();
+    call('getBackupPreview', session.token, B.cutoff).then(function (res) { B.preview = res.data; B.previewing = false; render(); }, function () { B.previewing = false; render(); });
+  }
+  function settingsBackupView() {
+    var B = state.backup;
+    if (!B.cutoff) B.cutoff = defaultBackupCutoff();
+    var pv = B.preview, total = 0;
+    if (pv) BACKUP_KINDS.forEach(function (k) { total += pv.counts[k[0]].move; });
+    var th = 'padding:9px 12px;font-size:11.5px;color:var(--muted);text-align:right;font-weight:600';
+    var previewHtml = B.previewing ? '<div class="empty-state"><span class="spin"></span> กำลังตรวจสอบ...</div>' : (!pv ? '' :
+      '<div style="margin-top:16px"><div style="font-size:12.5px;font-weight:700;margin-bottom:8px">ข้อมูลที่จบแล้ว ก่อนวันที่ ' + esc(pv.cutoff) + (pv.from ? ' <span style="font-weight:400;color:var(--muted)">(ช่วง ' + esc(pv.from) + ' ถึง ' + esc(pv.to) + ')</span>' : '') + '</div>' +
+      '<table class="table" style="width:100%;border-collapse:collapse"><thead><tr><th style="' + th + ';text-align:left">ข้อมูล</th><th style="' + th + '">ย้ายไปไฟล์ backup</th><th style="' + th + '">คงอยู่ในชีตหลัก</th></tr></thead><tbody>' +
+      BACKUP_KINDS.map(function (k) {
+        var c = pv.counts[k[0]];
+        return '<tr><td style="padding:9px 12px">' + esc(k[1]) + '</td><td style="text-align:right;font-weight:600;color:' + (c.move ? 'var(--accent)' : 'var(--muted)') + '">' + c.move + '</td><td style="text-align:right;color:var(--muted)">' + c.keep + '</td></tr>';
+      }).join('') + '</tbody></table>' +
+      '<div style="font-size:12px;color:var(--muted);margin-top:8px">บันทึกการรักษาที่ยังไม่จบ (ยังไม่ชำระ / ระหว่างดำเนินการ) <b>' + pv.counts.RecordsUnfinished + '</b> รายการ จะไม่ถูกย้าย · คนไข้ สต๊อกคงเหลือ ยาฝาก และการตั้งค่า ไม่ถูกย้าย</div>' +
+      '<div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">' +
+        '<button class="btn btn-primary" data-action="backup-run"' + (total ? '' : ' disabled') + '><span class="ms">backup</span> Backup ข้อมูล</button>' +
+        (total ? '' : '<span style="font-size:12.5px;color:var(--muted)">ไม่มีข้อมูลที่จบแล้วก่อนวันที่นี้</span>') +
+      '</div></div>');
+    var steps = '<div style="font-size:12.5px;color:var(--text-2);line-height:1.8;margin:6px 0 14px">' +
+      '1. สร้างไฟล์ Google Sheets ใหม่ในโฟลเดอร์ <b>back up data</b> (ชื่อ "ข้อมูลตั้งแต่ … - …") แล้วตรวจว่าคัดลอกครบ<br>' +
+      '2. เก็บสรุปรายวันที่ Dashboard ต้องใช้ไว้ในชีตเดิม (แท็บ DailySummary) — Dashboard ยังแสดงยอดของช่วงที่ย้ายไปได้<br>' +
+      '3. ลบข้อมูลที่ย้ายแล้วออกจากชีตหลัก เพื่อให้ระบบกลับมาเร็ว<br>' +
+      '<span style="color:var(--amber-dark)">หลัง backup รายงานรายวัน/รายเซลล์ และประวัติการรักษาในระบบจะแสดงเฉพาะข้อมูลที่ยังอยู่ — ข้อมูลเต็มของช่วงที่ย้ายดูได้ในไฟล์ backup · ควรทำนอกเวลาทำการ (ระหว่างทำ ระบบจะรอสักครู่)</span></div>';
+    var run = '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;margin-bottom:16px">' +
+      '<div style="font-size:15px;font-weight:700;margin-bottom:4px">Backup ข้อมูล</div>' + steps +
+      '<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap"><div style="min-width:220px"><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">ย้ายข้อมูลที่จบแล้วก่อนวันที่</label>' +
+        '<input type="date" id="backupCutoff" value="' + esc(B.cutoff) + '" max="' + esc(todayStr()) + '" data-action-change="backup-cutoff" style="' + inputStyle + '"></div>' +
+        '<button class="btn" data-action="backup-preview"' + (B.previewing ? ' disabled' : '') + '><span class="ms">fact_check</span> ตรวจสอบข้อมูลที่จะย้าย</button></div>' +
+      previewHtml + '</div>';
+    var list = B.list;
+    var sel = list && list.filter(function (x) { return x.id === B.selected; })[0];
+    var opts = (list || []).map(function (x) { return '<option value="' + esc(x.id) + '"' + (x.id === B.selected ? ' selected' : '') + '>' + esc(x.fileName) + '</option>'; }).join('');
+    var detail = !sel ? '' :
+      '<div style="margin-top:14px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px 18px;font-size:12.5px">' +
+        '<div><div style="color:var(--muted);font-size:11px">ช่วงข้อมูล</div><b>' + esc(sel.from) + ' ถึง ' + esc(sel.to) + '</b></div>' +
+        '<div><div style="color:var(--muted);font-size:11px">ทำเมื่อ / โดย</div><b>' + esc(sel.createdAt) + ' · ' + esc(sel.createdBy) + '</b></div>' +
+        '<div style="grid-column:1/-1"><div style="color:var(--muted);font-size:11px">Sheet ID</div>' +
+          '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code style="font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--hover-bg);padding:6px 10px;border-radius:8px;word-break:break-all">' + esc(sel.spreadsheetId) + '</code>' +
+          '<button class="btn" data-action="backup-copy" data-arg="' + esc(sel.spreadsheetId) + '"><span class="ms">content_copy</span> คัดลอก</button>' +
+          '<button class="btn" data-action="backup-open" data-arg="' + esc(sel.url) + '"><span class="ms">open_in_new</span> เปิดไฟล์</button></div></div>' +
+        '<div style="grid-column:1/-1;color:var(--text-2)">' + BACKUP_KINDS.filter(function (k) { return sel.counts[k[0]] && sel.counts[k[0]].move; }).map(function (k) { return esc(k[1]) + ' <b>' + sel.counts[k[0]].move + '</b>'; }).join(' · ') + '</div>' +
+        (sel.status !== 'เสร็จสิ้น' ? '<div style="grid-column:1/-1;color:var(--red-dark)">สถานะ: ' + esc(sel.status) + '</div>' : '') +
+      '</div>';
+    var files = '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);padding:18px 20px">' +
+      '<div style="font-size:15px;font-weight:700;margin-bottom:10px">ไฟล์ที่ backup ไว้</div>' +
+      (!list ? '<div class="empty-state"><span class="spin"></span> กำลังโหลด...</div>' :
+        (!list.length ? '<div style="font-size:13px;color:var(--muted)">ยังไม่เคย backup</div>' :
+          '<select id="backupSelect" data-action-change="backup-select" style="' + inputStyle + '">' + opts + '</select>' + detail)) +
+      '</div>';
+    return run + files;
+  }
+  /** The confirmation step: the logged-in admin types username + password again, then the backup runs. */
+  function backupRun() {
+    var B = state.backup, pv = B.preview;
+    if (!pv) return;
+    Swal.fire({
+      icon: 'warning', title: 'ยืนยันการ Backup',
+      html: '<div style="font-size:13px;text-align:left;line-height:1.7">ย้ายข้อมูลที่จบแล้วก่อนวันที่ <b>' + esc(pv.cutoff) + '</b> ไปไฟล์ใหม่ แล้วลบออกจากชีตหลัก<br>กรอกชื่อผู้ใช้และรหัสผ่านของคุณอีกครั้งเพื่อยืนยัน</div>' +
+        '<input id="bkUser" class="swal2-input" placeholder="ชื่อผู้ใช้" autocomplete="username" value="">' +
+        '<input id="bkPass" class="swal2-input" type="password" placeholder="รหัสผ่าน" autocomplete="current-password">',
+      showCancelButton: true, confirmButtonText: 'Backup เลย', cancelButtonText: 'ยกเลิก', focusConfirm: false,
+      didOpen: function () { var u = document.getElementById('bkUser'); if (u) u.focus(); },
+      preConfirm: function () {
+        var u = document.getElementById('bkUser').value.trim(), p = document.getElementById('bkPass').value;
+        if (!u || !p) { Swal.showValidationMessage('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน'); return false; }
+        return { username: u, password: p };
+      }
+    }).then(function (r) {
+      if (!r.isConfirmed) return;
+      call('backupData', session.token, { cutoff: pv.cutoff, username: r.value.username, password: r.value.password }).then(function (res) {
+        B.preview = null; B.selected = res.data.id;
+        // everything the screens held is out of date now
+        state.records.list = null; state.withdraw.list = null; state.stock.list = null; state.expense.list = null; state.expense.orders = null; state.report.data = null; state.board.data = null; state.records.calData = null;
+        loadBackups();
+        Swal.fire({ icon: 'success', title: 'Backup เสร็จแล้ว', text: res.data.fileName + ' (Sheet ID ' + res.data.spreadsheetId + ')' });
+      });
+    });
   }
 
   function loadDoctorsSales() {
@@ -5856,6 +5959,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'add-order-line': addOrderLine(); break;
       case 'remove-order-line': removeOrderLine(Number(arg)); break;
       case 'set-tab': setTab(arg); break;
+      case 'backup-preview': backupPreview(); break;
+      case 'backup-run': backupRun(); break;
+      case 'backup-copy': try { navigator.clipboard.writeText(arg).then(function () { toast('success', 'คัดลอก Sheet ID แล้ว'); }, function () { toast('error', 'คัดลอกไม่สำเร็จ'); }); } catch (e) { toast('error', 'คัดลอกไม่สำเร็จ'); } break;
+      case 'backup-open': window.open(arg, '_blank', 'noopener'); break;
       case 'new-doctor': newDoctorModal(); break;
       case 'edit-doctor': editDoctorModal(arg); break;
       case 'delete-doctor': deleteDoctorConfirm(arg); break;
@@ -5896,6 +6003,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   document.addEventListener('change', function (ev) {
     var el = ev.target.closest('[data-action-change]');
     if (el && el.getAttribute('data-action-change') === 'dash-range') onDashRangeChange();
+    if (el && el.getAttribute('data-action-change') === 'backup-cutoff') { state.backup.cutoff = el.value; state.backup.preview = null; render(); }
+    if (el && el.getAttribute('data-action-change') === 'backup-select') { state.backup.selected = el.value; render(); }
     if (el && el.getAttribute('data-action-change') === 'board-date') { state.board.date = el.value || todayStr(); state.board.data = null; render(); loadBoard(); }
   });
 
