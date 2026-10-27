@@ -409,12 +409,14 @@ body{background:transparent;background-image:
   background:linear-gradient(180deg,rgba(18,32,72,.93),rgba(11,21,48,.95));backdrop-filter:blur(22px) saturate(140%);-webkit-backdrop-filter:blur(22px) saturate(140%);
   box-shadow:0 24px 56px rgba(15,27,61,.28), inset 0 1px 0 rgba(255,255,255,.08)}
 .nav-item{transition:background .18s ease,color .18s ease}
+.nav-sep{height:1px;margin:8px 12px;background:rgba(255,255,255,.1)}
 .nav-item.active,.preview-item.active{background:rgba(255,255,255,.12);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
 .brand-mark{box-shadow:0 8px 20px rgba(201,169,97,.35)}
 .user-card{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.1);backdrop-filter:blur(10px)}
 
 /* Header + content */
-.header{background:rgba(255,255,255,.5);backdrop-filter:blur(18px) saturate(150%);-webkit-backdrop-filter:blur(18px) saturate(150%);border-bottom:1px solid var(--glass-border)}
+.header{margin:12px 26px 0;top:12px!important;border:1px solid var(--glass-border)!important;border-radius:20px;padding:14px 22px!important;background:var(--glass);backdrop-filter:blur(18px) saturate(150%);-webkit-backdrop-filter:blur(18px) saturate(150%);box-shadow:var(--glass-shadow)} /* a floating glass bar, like the sidebar */
+@media (max-width:720px){.header{margin:8px 12px 0;border-radius:16px}}
 .page-title{letter-spacing:-.1px}
 
 /* Glass surfaces */
@@ -734,6 +736,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     { id: 'promotions', label: 'จัดการโปรโมชันหน้าคลินิก', icon: 'local_offer', sub: 'รายการโปรโมชันและส่วนแบ่งแพทย์/คลินิก' },
     { id: 'settings', label: 'ตั้งค่าคลินิก', icon: 'settings', sub: 'แพทย์ หมวดหมู่ ข้อมูลคลินิก และผู้ใช้งาน', adminOnly: true }
   ];
+  // Sidebar zones, separated by a thin line: [Dashboard, คนไข้] [จัดยา, ระหว่างดำเนินการ, บันทึกการรักษา] [รายการยาฝาก, รายงาน] [สินค้า, จัดซื้อ, โปรโมชัน] [ตั้งค่า]
+  var NAV_ZONE = { dash: 1, patients: 1, withdraw: 2, board: 2, records: 2, deposits: 3, reports: 3, stock: 4, expense: 4, promotions: 4, settings: 5 };
   function allowedNav() { return NAV.filter(function (n) { return isAdmin() || !n.adminOnly; }); }
 
   var state = {
@@ -964,10 +968,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
 
   function shellTemplate() {
+    var prevZone = null;
     var nav = allowedNav().map(function (n) {
+      var sep = prevZone !== null && NAV_ZONE[n.id] !== prevZone ? '<div class="nav-sep"></div>' : '';
+      prevZone = NAV_ZONE[n.id];
       var activeCls = state.screen === n.id ? ' active' : '';
       var badge = n.id === 'board' && state.notify.unseen > 0 ? '<span class="nav-badge" title="มีคนไข้รอชำระเงินใหม่">' + state.notify.unseen + '</span>' : '';
-      return '<button class="nav-item' + activeCls + '" data-action="nav" data-arg="' + n.id + '">' +
+      return sep + '<button class="nav-item' + activeCls + '" data-action="nav" data-arg="' + n.id + '">' +
         '<span class="ms">' + n.icon + '</span><span>' + esc(n.label) + '</span>' + badge + '</button>';
     }).join('');
     var currentNav = NAV.filter(function (n) { return n.id === state.screen; })[0] || NAV[0];
@@ -992,7 +999,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<main class="main">' +
           '<header class="header" style="display:flex;justify-content:space-between;align-items:center;padding:18px 26px;border-bottom:1px solid var(--border)">' +
             '<div><div class="page-title" style="font-size:18px;font-weight:700">' + esc(currentNav.label) + '</div><div class="page-sub" style="font-size:12.5px;color:var(--muted)">' + esc(currentNav.sub) + '</div></div>' +
-            '<div class="header-chip" style="font-size:12px;color:var(--muted)">' + esc(todayStr()) + '</div>' +
+            '<div style="display:flex;align-items:center;gap:10px"><div class="header-chip" style="font-size:12px;color:var(--muted)">' + esc(todayStr()) + '</div>' +
+              '<button class="btn" id="refreshScreenBtn" data-action="refresh-screen" title="รีเฟรชข้อมูลหน้านี้" aria-label="รีเฟรช" style="padding:8px 10px"><span class="ms" style="font-size:18px">refresh</span></button></div>' +
           '</header>' +
           '<div class="content" style="padding:22px 26px 60px">' + screenBody() + '</div>' +
         '</main>' +
@@ -1161,6 +1169,18 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* ---------------------------------------------------------------- */
   /* Generic modal shell                                                 */
   /* ---------------------------------------------------------------- */
+  /** The รีเฟรช button beside the date: reloads what the current page shows from the server. */
+  function refreshScreen() {
+    var id = state.screen;
+    if (id === 'login') return;
+    var icon = document.querySelector('#refreshScreenBtn .ms');
+    if (icon) { icon.style.transition = 'transform .6s ease'; icon.style.transform = 'rotate(360deg)'; setTimeout(function () { icon.style.transition = 'none'; icon.style.transform = ''; }, 650); }
+    if (id === 'patients') loadPatients();
+    else if (id === 'expense') { loadExpenses(); if (state.expense.tab === 'order') loadOrders(); }
+    else if (id === 'reports') { if (state.report.data) runReport(); }
+    else goNav(id); // dashboard, board, records, withdrawals, deposits, stock, promotions, settings reload on entering
+    if (id !== 'board') refreshMaster();
+  }
   function openModal(type, draft) {
     state.modal = { type: type };
     state.draft = draft || {};
@@ -4637,13 +4657,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           });
         });
         // Subtotal for this (วันที่, เซลล์) — also the spot to open its preview / PDF.
-        return html + '<tr' + click + ' style="cursor:pointer;background:var(--hover-bg)"><td colspan="6" style="padding:9px 12px;text-align:right;font-weight:700">รวม ' + esc(b.salesName) + ' · ' + esc(b.date) + '</td>' +
+        return html + '<tr' + click + ' style="cursor:pointer;background:var(--hover-bg)"><td colspan="6" style="padding:9px 12px;text-align:left;font-weight:700">รวม ' + esc(b.salesName) + ' · ' + esc(b.date) + '</td>' +
           '<td style="text-align:right;font-weight:700;color:var(--green-dark)">' + money(b.cost) + '</td>' +
           '<td style="text-align:right;font-weight:700;color:var(--red-dark)">' + (b.refund > 0 ? money(b.refund) : '') + '</td>' +
           '<td style="color:var(--accent);font-size:12px"><span class="ms" style="font-size:16px;vertical-align:middle">picture_as_pdf</span> ดูตัวอย่าง / ดาวน์โหลด</td></tr>';
       }).join('');
     var foot = !D.rows.length ? '' :
-      '<tr style="background:var(--accent-soft);font-weight:700;border-top:2px solid var(--border)"><td colspan="6" style="padding:10px 12px;text-align:right">รวมทั้งหมด</td><td style="text-align:right;color:var(--green-dark)">' + money(D.totalCost) + '</td><td style="text-align:right;color:var(--red-dark)">' + (D.totalRefund > 0 ? money(D.totalRefund) : '') + '</td><td></td></tr>';
+      '<tr style="background:var(--accent-soft);font-weight:700;border-top:2px solid var(--border)"><td colspan="6" style="padding:10px 12px;text-align:left">รวมทั้งหมด</td><td style="text-align:right;color:var(--green-dark)">' + money(D.totalCost) + '</td><td style="text-align:right;color:var(--red-dark)">' + (D.totalRefund > 0 ? money(D.totalRefund) : '') + '</td><td></td></tr>';
     // ยอดที่คลินิกเก็บจากแต่ละเซลล์ (ราคาทุน) — shown when the report covers more than one.
     var perSales = (D.bySales || []).length > 1
       ? '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;margin-top:12px"><div style="font-size:12.5px;font-weight:700;margin-bottom:6px">ยอดที่คลินิกเก็บจากแต่ละเซลล์ (ราคาทุน)</div>' +
@@ -4735,7 +4755,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
               firstRow = false;
             });
           });
-          return out + '<tr style="background:' + soft + ';border-top:1px solid ' + line + ';font-weight:700"><td colspan="6" style="padding:7px 8px;text-align:right">รวม ' + esc(b.salesName) + ' · ' + esc(b.date) + '</td>' + '<td style="padding:7px 8px;text-align:right;color:#2E7D5B">' + baht(b.cost) + '</td><td style="padding:7px 8px;text-align:right;color:#C0392B">' + (b.refund > 0 ? baht(b.refund) : '') + '</td><td></td></tr>';
+          return out + '<tr style="background:' + soft + ';border-top:1px solid ' + line + ';font-weight:700"><td colspan="6" style="padding:7px 8px;text-align:left">รวม ' + esc(b.salesName) + ' · ' + esc(b.date) + '</td>' + '<td style="padding:7px 8px;text-align:right;color:#2E7D5B">' + baht(b.cost) + '</td><td style="padding:7px 8px;text-align:right;color:#C0392B">' + (b.refund > 0 ? baht(b.refund) : '') + '</td><td></td></tr>';
         }).join('') + '</tbody>';
       // ยอดที่เก็บจากแต่ละเซลล์ (when the report covers several), then the grand total.
       totals = ((D.bySales || []).length > 1 ? D.bySales.map(function (b) { return ['เก็บจาก ' + b.salesName, b.cost]; }) : []).concat(D.totalRefund > 0 ? [['ส่วนต่างคืนเซลล์รวม (บาท)', D.totalRefund]] : []).concat([['ยอดรวมที่คลินิกเก็บจากเซลล์ (บาท)', D.totalCost]]);
@@ -5666,6 +5686,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
 
     switch (action) {
       case 'nav': goNav(arg); break;
+      case 'refresh-screen': refreshScreen(); break;
       case 'toggle-login-password': {
         var pwInput = document.getElementById('loginPassword');
         if (pwInput) {
