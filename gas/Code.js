@@ -5711,7 +5711,7 @@ function buildStockOverviewMessage_(items, clinicName, url) {
         { type: 'box', layout: 'horizontal', spacing: 'sm', contents: [tile('ยา', count('medicine'), '#E9EDF7', '#1E3A72'), tile('ยาทาน', count('oral'), '#E9EDF7', '#1E3A72'), tile('เวชภัณฑ์', count('supply'), '#E9EDF7', '#1E3A72')] },
         { type: 'box', layout: 'horizontal', spacing: 'sm', contents: [tile('ต่ำกว่าขั้นต่ำ', low + ' รายการ', '#FBF1DE', '#B4791E'), tile('หมดแล้ว', out + ' รายการ', '#FBEBEB', '#AC4143')] },
         lineText_('ค้นหาเฉพาะรายการ: พิมพ์ "สต๊อก <ชื่อยา>" เช่น สต๊อก โบท็อกซ์', { size: 'xs', color: '#8891AC' })
-      ] } }, stockLinkFooter_(url, [{ type: 'button', style: 'primary', color: '#1E3A72', height: 'sm', action: { type: 'message', label: 'เช็ค stock ใกล้หมด', text: 'เช็ค stock ใกล้หมด' } }]))
+      ] } }, stockLinkFooter_(url, [{ type: 'button', style: 'primary', color: '#1E3A72', height: 'sm', action: { type: 'message', label: 'ดูรายการใกล้หมด', text: 'เช็ค stock ใกล้หมด' } }]))
   };
 }
 
@@ -5967,7 +5967,8 @@ function handleLineWebhookEvent_(event) {
   var isLowStockCmd = /^(เช็ค|เช็ก|check)?(stock|สต๊อก|สต็อก|สต็อค|สต๊อค)ใกล้หมด$/.test(text.replace(/\s+/g, '').toLowerCase());
   // "สต๊อกทั้งหมด" -> the overview card; "สต๊อก <ชื่อ>" -> a search (both accept สต็อก / stock, any spacing)
   var squeezed = text.replace(/\s+/g, ' ').trim();
-  var isStockAllCmd = /^(ดู|เช็ค|เช็ก)?\s*(สต๊อก|สต็อก|สต็อค|สต๊อค|stock)\s*ทั้งหมด$/i.test(squeezed);
+  // "เช็คสต๊อก" (the rich menu button) and a bare "สต๊อก" open the same overview, which offers ใกล้หมด / ทั้งหมด
+  var isStockAllCmd = /^(ดู|เช็ค|เช็ก)?\s*(สต๊อก|สต็อก|สต็อค|สต๊อค|stock)\s*(ทั้งหมด)?$/i.test(squeezed);
   var stockQuery = (isLowStockCmd || isStockAllCmd) ? null : (squeezed.match(/^(?:เช็ค|เช็ก)?\s*(?:สต๊อก|สต็อก|สต็อค|สต๊อค|stock)\s+(.+)$/i) || [])[1] || null;
   var isTodayCmd = text === 'สรุปยอดวันนี้';
   var isOtherDayCmd = text === 'สรุปยอดวันอื่น' || text.indexOf('สรุปยอดวันอื่น ') === 0;

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>VALIN CLINIC · LINE rich menu (2500×1686)</title>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500&family=Noto+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* LINE rich menu, large (2500 × 1686), template "A + B C D": A is the whole top half (2500 × 843), B / C / D split the
+   bottom half in three (833 × 843). Every card sits fully inside its own tap area.
+   A = โลโก้ + สรุปยอดวันนี้ · B = สรุปยอดวันอื่น · C = เช็คสต๊อก · D = LINE ID ของฉัน */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:2500px;height:1686px;overflow:hidden}
+body{position:relative;font-family:'Noto Sans Thai',sans-serif;
+  background:radial-gradient(1500px 900px at 50% 0%,#F7F2EC 0%,rgba(247,242,236,0) 70%),linear-gradient(180deg,#EEE6DE 0%,#E8DFD5 100%)}
+.card{position:absolute;overflow:hidden;
+  background:linear-gradient(150deg,#F8F4EF 0%,#F1EAE2 60%,#EDE4DA 100%);
+  box-shadow:22px 24px 48px rgba(140,112,86,.26),-16px -16px 36px rgba(255,255,255,.95),inset 2px 2px 0 rgba(255,255,255,.85),inset -2px -2px 0 rgba(176,150,124,.12)}
+/* soft page-curl in the bottom-right corner */
+.card::after{content:'';position:absolute;right:0;bottom:0;width:190px;height:190px;
+  background:linear-gradient(315deg,rgba(0,0,0,0) 46%,#E3D8CC 47%,#F6F1EB 64%,#EFE7DE 100%);
+  border-top-left-radius:150px 150px;box-shadow:-10px -10px 26px rgba(140,112,86,.12)}
+/* A — the logo banner, tapping it gives สรุปยอดวันนี้ */
+.a{left:66px;top:48px;width:2368px;height:748px;border-radius:72px}
+.logo{position:absolute;top:70px;left:0;right:0;text-align:center;color:#6E5847}
+.logo .v{font-family:'Cormorant Garamond',serif;font-weight:500;font-size:230px;letter-spacing:60px;line-height:1;padding-left:60px}
+.logo .cl{font-family:'Noto Sans Thai',sans-serif;font-weight:500;font-size:50px;letter-spacing:30px;margin-top:10px;padding-left:30px;color:#7D6858}
+.a .hr{position:absolute;top:440px;left:520px;right:520px;height:3px;background:linear-gradient(90deg,rgba(176,150,124,0),#CDBFB1 18%,#CDBFB1 82%,rgba(176,150,124,0))}
+.a .row{position:absolute;top:478px;left:0;right:0;display:flex;align-items:center;justify-content:center;gap:44px}
+.a .row svg{width:220px;height:220px;flex:none}
+.a .row .t{font-size:104px;font-weight:600;color:#5A4434;letter-spacing:1px}
+/* B C D */
+.b,.c,.d{top:878px;width:700px;height:740px;border-radius:64px}
+.b{left:66px}.c{left:900px}.d{left:1734px}
+.cell .t{position:absolute;top:74px;left:0;right:0;text-align:center;font-size:74px;font-weight:600;color:#5A4434}
+.cell .hr{position:absolute;top:206px;left:76px;right:76px;height:3px;background:linear-gradient(90deg,rgba(176,150,124,0),#CDBFB1 18%,#CDBFB1 82%,rgba(176,150,124,0))}
+.cell .ic{position:absolute;top:266px;left:50%;width:380px;height:380px;margin-left:-190px}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#C9A77A"/><stop offset="1" stop-color="#A47E55"/></linearGradient>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#D6B98E"/><stop offset="1" stop-color="#A9835A"/></linearGradient>
+    <filter id="emboss" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="2.2" dy="2.6" stdDeviation="1.6" flood-color="#8C6E50" flood-opacity=".32"/>
+      <feDropShadow dx="-1.6" dy="-1.6" stdDeviation="1.2" flood-color="#FFFFFF" flood-opacity=".9"/>
+    </filter>
+  </defs>
+</svg>
+
+<!-- A: logo + สรุปยอดวันนี้ -->
+<div class="card a">
+  <div class="logo"><div class="v">VALIN</div><div class="cl">CLINIC</div></div>
+  <div class="hr"></div>
+  <div class="row">
+    <svg viewBox="0 0 120 120"><g fill="none" stroke="url(#gold)" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round" filter="url(#emboss)">
+      <rect x="22" y="17" width="62" height="86" rx="7"/><rect x="40" y="11" width="26" height="12" rx="4"/>
+      <path d="M34 42h38M34 56h38M34 70h26M34 84h16"/>
+      <circle cx="82" cy="85" r="17" fill="#F6F0E9"/><path d="M74 85l6 6 11-12"/></g></svg>
+    <div class="t">สรุปยอดวันนี้</div>
+  </div>
+</div>
+
+<!-- B: สรุปยอดวันอื่น -->
+<div class="card cell b"><div class="t">สรุปยอดวันอื่น</div><div class="hr"></div>
+  <svg class="ic" viewBox="0 0 120 120"><g fill="none" stroke="url(#gold)" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round" filter="url(#emboss)">
+    <rect x="14" y="22" width="92" height="82" rx="10"/><path d="M14 42h92M38 13v18M82 13v18"/>
+    <rect x="27" y="54" width="11" height="11" rx="2.5"/><rect x="47" y="54" width="11" height="11" rx="2.5"/><rect x="67" y="54" width="11" height="11" rx="2.5"/><rect x="85" y="54" width="9" height="11" rx="2.5"/>
+    <rect x="27" y="76" width="11" height="11" rx="2.5"/><rect x="47" y="76" width="11" height="11" rx="2.5"/>
+    <rect x="65" y="72" width="18" height="18" rx="4" fill="url(#gold)" stroke="none"/><path d="M69 81l3.5 3.5 7-7.5" stroke="#FFFFFF" stroke-width="3.4"/></g></svg></div>
+
+<!-- C: เช็คสต๊อก (stacked boxes + a check list badge) -->
+<div class="card cell c"><div class="t">เช็คสต๊อก</div><div class="hr"></div>
+  <svg class="ic" viewBox="0 0 120 120"><g fill="none" stroke="url(#gold)" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round" filter="url(#emboss)">
+    <rect x="12" y="62" width="40" height="38" rx="5"/><rect x="60" y="62" width="40" height="38" rx="5"/><rect x="36" y="20" width="40" height="38" rx="5"/>
+    <path d="M26 62v10h12V62M74 62v10h12V62M50 20v10h12V20"/><path d="M6 104h92"/>
+    <circle cx="94" cy="34" r="17" fill="#F6F0E9"/><circle cx="92" cy="32" r="7.5"/><path d="M97.5 37.5l6 6"/></g></svg></div>
+
+<!-- D: LINE ID ของฉัน (chat bubble on a gold tile) -->
+<div class="card cell d"><div class="t">LINE ID ของฉัน</div><div class="hr"></div>
+  <svg class="ic" viewBox="0 0 120 120"><g filter="url(#emboss)">
+    <rect x="16" y="16" width="88" height="88" rx="22" fill="url(#tile)"/>
+    <path d="M60 33c-19.3 0-35 11.8-35 26.3 0 13 12.5 23.8 29.4 25.9 1.1.2 2.7.8 3.1 1.8.4.9.2 2.3.1 3.2l-.5 3c-.2.9-.7 3.4 3 1.8 3.7-1.5 19.9-11.7 27.1-20.1 5-5.5 7.8-11.1 7.8-15.6C95 44.8 79.3 33 60 33z" fill="#FBF7F2"/>
+    <text x="60" y="66" text-anchor="middle" font-family="Arial Rounded MT Bold,Arial,sans-serif" font-weight="700" font-size="17" fill="#A9835A" letter-spacing=".5">LINE</text></g></svg></div>
+</body>
+</html>
