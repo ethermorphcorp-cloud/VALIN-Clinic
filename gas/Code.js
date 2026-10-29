@@ -355,7 +355,11 @@ var CONFIG = {
     // row that has its own LineID filled in, via getLineAdminTargets_()
     // below, instead of one shared Script Property. Only the channel
     // access token is still needed as a Script Property.
-    LINE_CHANNEL_ACCESS_TOKEN: 'LINE_CHANNEL_ACCESS_TOKEN'
+    LINE_CHANNEL_ACCESS_TOKEN: 'LINE_CHANNEL_ACCESS_TOKEN',
+    // หน้าสต๊อกมือถือ: the key that signs its 24-hour links (made on first use), and optionally the web app /exec URL the
+    // links should use (otherwise the URL of the deployment that makes the link).
+    STOCK_LINK_SECRET: 'STOCK_LINK_SECRET',
+    APP_URL: 'APP_URL'
   },
   CACHE: {
     MASTER_DATA_KEY: 'MASTER_DATA_V2', // V2: carries `procedures`
@@ -389,6 +393,9 @@ function doGet(e) {
   var page = (e && e.parameter && e.parameter.page) || 'app';
   if (page === 'receipt') {
     return renderReceiptPage_(e.parameter.ticket);
+  }
+  if (page === 'stock') {
+    return renderStockPage_(e.parameter.t, e.parameter.q);
   }
   var tpl = HtmlService.createTemplateFromFile('index');
   tpl.loginImageUrl = getLoginImageUrl_();
@@ -2019,6 +2026,7 @@ function adjustStock(token, payload) {
     if (['in', 'out', 'set'].indexOf(payload.kind) === -1) throw ValidationError_('ประเภทการปรับไม่ถูกต้อง');
     var qty = requireNumber_(payload.qty, 'จำนวน', { min: 0 });
 
+    var notice = null;
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     try {
@@ -2038,9 +2046,12 @@ function adjustStock(token, payload) {
       resyncStockQtyFromLog_(item.ItemID);
       writeAudit_(session, 'ADJUST', 'StockLog', logId, item.Name + ' ' + payload.kind + ' ' + qty);
       invalidateStockLiteCache_();
+      var kindTh = { 'in': 'รับเข้า', out: 'เบิกออก', set: 'ปรับยอดคงเหลือ (นับจริง)' }[payload.kind];
+      notice = { title: 'ปรับสต๊อก · ' + kindTh, sub: payload.note || '', date: payload.date, by: session, moves: [stockMove_(item, current, remaining)] };
       return { ok: true, data: { logId: logId, qtyRemaining: remaining } };
     } finally {
       lock.releaseLock();
+      if (notice) notifyStockChange_(notice);
     }
   });
 }
@@ -2217,14 +2228,16 @@ function saveStockUpdate(token, payload) {
       requireNumber_(it.qtyRemaining, 'จำนวนคงเหลือ (บรรทัดที่ ' + (i + 1) + ')', { min: 0 });
     });
 
+    var notice = null;
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     try {
       var logSheet = getSheet_(CONFIG.SHEETS.STOCK_LOG);
-      var createdIds = [];
+      var createdIds = [], before = {}, order = [];
       items.forEach(function (it) {
         var logId = 'SL' + nextSeq_('STOCKLOG', 5);
         var item = stockById[it.itemId];
+        if (!(it.itemId in before)) { before[it.itemId] = Number(item.Qty) || 0; order.push(it.itemId); }
         var qtyIn = Number(it.qtyIn) || 0, remaining = Number(it.qtyRemaining);
         // จำนวนออก = whatever left between the previous count (+ this receipt) and the new count.
         var qtyOut = Math.max(0, (Number(item.Qty) || 0) + qtyIn - remaining);
@@ -2237,9 +2250,12 @@ function saveStockUpdate(token, payload) {
       Object.keys(touchedIds).forEach(resyncStockQtyFromLog_);
       writeAudit_(session, 'CREATE', 'StockLog', createdIds.join(','), payload.date + ' x' + items.length + ' รายการ');
       invalidateStockLiteCache_();
+      notice = { title: 'อัพเดตสต๊อก', sub: payload.note || '', date: payload.date, by: session,
+        moves: order.map(function (id) { return stockMove_(stockById[id], before[id], Number(stockById[id].Qty) || 0); }) };
       return { ok: true, data: { logIds: createdIds } };
     } finally {
       lock.releaseLock();
+      if (notice) notifyStockChange_(notice);
     }
   });
 }
@@ -3048,7 +3064,7 @@ function recordStockEffects_(r) {
 function applyStockEffects_(session, oldEff, newEff, label, logKind) {
   var stockDelta = {}; // + = more taken out of stock
   Object.keys(oldEff).concat(Object.keys(newEff)).forEach(function (k) { var d = round2_((newEff[k] || 0) - (oldEff[k] || 0)); if (d) stockDelta[k] = d; });
-  if (!Object.keys(stockDelta).length) return;
+  if (!Object.keys(stockDelta).length) return [];
   var stockById = {};
   getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (r) { stockById[r.ItemID] = r; });
   Object.keys(stockDelta).forEach(function (id) {
@@ -3056,9 +3072,11 @@ function applyStockEffects_(session, oldEff, newEff, label, logKind) {
   });
   var logSheet = getSheet_(CONFIG.SHEETS.STOCK_LOG);
   var movedIds = Object.keys(stockDelta).filter(function (id) { return stockById[id]; });
+  var moves = []; // returned: what changed, for the LINE stock notice
   movedIds.forEach(function (id) {
     var item = stockById[id], d = stockDelta[id], cur = Number(item.Qty) || 0;
     var left = round2_(cur - d);
+    moves.push(stockMove_(item, cur, left));
     appendRow_(logSheet, CONFIG.HEADERS.StockLog,
       stockLogRow_(session, 'SL' + nextSeq_('STOCKLOG', 5), todayStr_(), item, logKind || 'record', d < 0 ? -d : 0, d > 0 ? d : 0, left, label));
     // The log row just written IS the latest balance, so set Stock.Qty from it (resyncStockQtyFromLog_ would read the
@@ -3067,6 +3085,7 @@ function applyStockEffects_(session, oldEff, newEff, label, logKind) {
     stockById[id] = Object.assign({}, item, { Qty: left });
   });
   if (movedIds.length) invalidateStockLiteCache_();
+  return moves;
 }
 
 /* ---------------------------------------------------------------------
@@ -4354,6 +4373,7 @@ function saveOrder(token, order) {
     });
     var totalAmount = lines.reduce(function (sum, l) { return sum + Number(l.qty) * Number(l.unitPrice); }, 0);
 
+    var notice = null; // LINE: what this PO did to stock, sent once the lock is released
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     try {
@@ -4372,7 +4392,7 @@ function saveOrder(token, order) {
       // Add the purchased qty to Stock (an edit moves only the difference).
       var stockIds = stockIdSet_();
       var oldLines = isNew ? [] : getRows_(lineSheet).filter(function (l) { return l.PoID === order.id; });
-      applyStockEffects_(session, orderEffects_(existingOrder, oldLines, stockIds), orderEffects_(obj, lines, stockIds),
+      var poMoves = applyStockEffects_(session, orderEffects_(existingOrder, oldLines, stockIds), orderEffects_(obj, lines, stockIds),
         'จัดซื้อ ' + poId + ' · ' + order.supplier, 'purchase');
       if (isNew) appendRow_(orderSheet, CONFIG.HEADERS.Orders, obj);
       else {
@@ -4393,9 +4413,11 @@ function saveOrder(token, order) {
       });
       writeAudit_(session, isNew ? 'CREATE' : 'UPDATE', 'Order', poId, obj.Supplier + ' ' + totalAmount);
       bumpDashboardCacheVersion_(); // Round 19 item 4: purchase orders feed dashboard expense totals
+      if (poMoves.length) notice = { title: isNew ? 'รับสินค้าเข้าสต๊อก' : 'ปรับสต๊อกจากการแก้ไขใบสั่งซื้อ', sub: 'จัดซื้อ ' + poId + ' · ' + obj.Supplier, date: order.date, by: session, moves: poMoves };
       return { ok: true, data: mapOrderOut_(Object.assign({ _row: 0 }, obj), lines) };
     } finally {
       lock.releaseLock();
+      if (notice) notifyStockChange_(notice);
     }
   });
 }
@@ -5532,6 +5554,263 @@ function buildLineSummaryMessage_(summary, clinicName) {
   }
 }
 
+/* ---------------------------------------------------------------------
+   หน้าสต๊อกมือถือ (StockView.html, doGet ?page=stock&t=...): read-only, no login. The link carries its own expiry, signed
+   with a secret Script Property, so it works for 24 hours without storing anything; the LINE messages hand out a fresh one.
+   No ราคาทุน on the page (the link may be forwarded).
+   --------------------------------------------------------------------- */
+var STOCK_LINK_HOURS_ = 24;
+function stockLinkSecret_() {
+  var props = PropertiesService.getScriptProperties();
+  var secret = props.getProperty(CONFIG.PROPS.STOCK_LINK_SECRET);
+  if (!secret) { secret = Utilities.getUuid() + Utilities.getUuid(); props.setProperty(CONFIG.PROPS.STOCK_LINK_SECRET, secret); }
+  return secret;
+}
+function stockLinkSig_(expiry) {
+  return Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature('stock:' + expiry, stockLinkSecret_())).replace(/=+$/, '');
+}
+/** A token valid for STOCK_LINK_HOURS_: "<expiry ms, base 36>.<signature>". */
+function makeStockLinkToken_() {
+  var expiry = (Date.now() + STOCK_LINK_HOURS_ * 3600 * 1000).toString(36);
+  return expiry + '.' + stockLinkSig_(expiry);
+}
+function isStockLinkTokenValid_(token) {
+  var parts = String(token || '').split('.');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return false;
+  var expiry = parseInt(parts[0], 36);
+  if (!(expiry > Date.now())) return false;
+  return stockLinkSig_(parts[0]) === parts[1];
+}
+/** The link to the stock page (fresh 24-hour token), optionally opened on a search. */
+function stockPageUrl_(q) {
+  var base = PropertiesService.getScriptProperties().getProperty(CONFIG.PROPS.APP_URL) || ScriptApp.getService().getUrl();
+  return base + '?page=stock&t=' + encodeURIComponent(makeStockLinkToken_()) + (q ? '&q=' + encodeURIComponent(q) : '');
+}
+/** Every stock item for the page: name, category, unit, type, qty, min (no cost). */
+function stockViewItems_() {
+  return getRows_(getSheet_(CONFIG.SHEETS.STOCK)).map(function (r) {
+    return { name: String(r.Name || ''), cat: String(r.Category || ''), unit: String(r.Unit || ''), type: stockTypeOf_(r), qty: Number(r.Qty) || 0, min: numOrNull_(r.MinQty) };
+  });
+}
+function renderStockPage_(token, q) {
+  var tpl = HtmlService.createTemplateFromFile('StockView');
+  tpl.valid = isStockLinkTokenValid_(token);
+  tpl.q = String(q || '').slice(0, 100);
+  tpl.clinicName = getClinicName_();
+  tpl.updated = nowThai_();
+  tpl.selfUrl = (PropertiesService.getScriptProperties().getProperty(CONFIG.PROPS.APP_URL) || ScriptApp.getService().getUrl()) +
+    '?page=stock&t=' + encodeURIComponent(String(token || '')) + (q ? '&q=' + encodeURIComponent(tpl.q) : '');
+  tpl.itemsJson = tpl.valid ? JSON.stringify(stockViewItems_()).replace(/</g, '\\u003c') : '[]';
+  return tpl.evaluate()
+    .setTitle('สต๊อกทั้งหมด | ' + tpl.clinicName)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1, viewport-fit=cover')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+/* ---------------------------------------------------------------------
+   LINE — stock messages (Flex bubbles built here, not in a template):
+   - สต๊อกใกล้หมด: every item whose stock is below its จำนวนขั้นต่ำ (or is out), by type. Sent right after the daily
+     summary, and in reply to the chat command "เช็ค stock ใกล้หมด".
+   - ปรับจำนวนสต๊อก: what a จัดซื้อ / อัพเดตสต๊อก / ปรับสต๊อก just changed — each item's change and what is left. Pushed to
+     the same admins as the daily summary, after the save (a LINE failure never fails the save).
+   --------------------------------------------------------------------- */
+var STOCK_TYPE_TH_ = { medicine: 'ยา', oral: 'ยาทาน', supply: 'เวชภัณฑ์' };
+var LINE_ROWS_MAX_ = 30; // a bubble has a size limit; longer lists end with "และอีก N รายการ"
+
+function qtyFmt_(n) { return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-US'); }
+function lineText_(text, o) { return Object.assign({ type: 'text', text: String(text === '' || text == null ? '-' : text), size: 'sm', color: '#1C2440', wrap: true }, o || {}); }
+function lineHeader_(title, sub, color) {
+  return { type: 'box', layout: 'vertical', backgroundColor: color || '#1E3A72', paddingAll: '16px', contents: [
+    lineText_(title, { color: '#FFFFFF', weight: 'bold', size: 'lg' }),
+    lineText_(sub, { color: '#E2E6EE', size: 'xs', margin: 'sm' })
+  ] };
+}
+/** {itemId, name, type, unit, min, before, after, delta} for one item whose stock went from `before` to `after`. */
+function stockMove_(item, before, after) {
+  return { itemId: item.ItemID, name: item.Name, type: stockTypeOf_(item), unit: item.Unit || '', min: numOrNull_(item.MinQty),
+    before: round2_(before), after: round2_(after), delta: round2_(after - before) };
+}
+function isLowStock_(qty, min) { return qty <= 0 || (min != null && qty < min); }
+
+/** Items whose stock is below their จำนวนขั้นต่ำ, or out — [{name, type, unit, qty, min}], most short first within each type. */
+function lowStockItems_() {
+  var typeOrder = { medicine: 0, oral: 1, supply: 2 };
+  return getRows_(getSheet_(CONFIG.SHEETS.STOCK)).map(function (s) {
+    return { name: s.Name, type: stockTypeOf_(s), unit: s.Unit || '', qty: Number(s.Qty) || 0, min: numOrNull_(s.MinQty) };
+  }).filter(function (x) { return isLowStock_(x.qty, x.min); }).sort(function (a, b) {
+    var ra = a.min ? a.qty / a.min : (a.qty <= 0 ? -1 : 1), rb = b.min ? b.qty / b.min : (b.qty <= 0 ? -1 : 1);
+    return typeOrder[a.type] - typeOrder[b.type] || ra - rb || String(a.name).localeCompare(String(b.name), 'th');
+  });
+}
+
+function nowThai_() { return Utilities.formatDate(new Date(), Session.getScriptTimeZone() || 'Asia/Bangkok', 'yyyy-MM-dd HH:mm'); }
+
+/** Flex: สต๊อกใกล้หมด — grouped by type, each row: name | คงเหลือ (red when out) | ขั้นต่ำ. */
+function stockLinkFooter_(url, extra) {
+  var buttons = (extra || []).concat(url ? [{ type: 'button', style: 'secondary', height: 'sm', action: { type: 'uri', label: 'ดูสต๊อกทั้งหมด', uri: url } }] : []);
+  return buttons.length ? { type: 'box', layout: 'vertical', spacing: 'sm', paddingAll: '12px', contents: buttons } : null;
+}
+/** The link for a LINE message, or '' when it cannot be made (the message still goes without the button). */
+function stockLinkSafe_(q) { try { return stockPageUrl_(q); } catch (e) { console.error('stock link: ' + e); return ''; } }
+
+function buildLowStockMessage_(items, clinicName, url) {
+  var out = items.filter(function (x) { return x.qty <= 0; }).length;
+  var body = [];
+  if (!items.length) {
+    body.push({ type: 'box', layout: 'vertical', paddingAll: '14px', cornerRadius: '10px', backgroundColor: '#E7F5EC', contents: [
+      lineText_('✓ ทุกรายการมีจำนวนไม่ต่ำกว่าขั้นต่ำ', { color: '#357552', weight: 'bold' })
+    ] });
+  } else {
+    body.push({ type: 'box', layout: 'horizontal', spacing: 'sm', contents: [
+      { type: 'box', layout: 'vertical', flex: 1, paddingAll: '10px', cornerRadius: '10px', backgroundColor: '#FBF1DE', contents: [
+        lineText_('ต่ำกว่าขั้นต่ำ', { size: 'xxs', color: '#B4791E' }), lineText_(String(items.length - out) + ' รายการ', { weight: 'bold', color: '#B4791E' })] },
+      { type: 'box', layout: 'vertical', flex: 1, paddingAll: '10px', cornerRadius: '10px', backgroundColor: '#FBEBEB', contents: [
+        lineText_('หมดแล้ว', { size: 'xxs', color: '#AC4143' }), lineText_(String(out) + ' รายการ', { weight: 'bold', color: '#AC4143' })] }
+    ] });
+    var shown = items.slice(0, LINE_ROWS_MAX_);
+    ['medicine', 'oral', 'supply'].forEach(function (t) {
+      var list = shown.filter(function (x) { return x.type === t; });
+      if (!list.length) return;
+      body.push({ type: 'box', layout: 'horizontal', margin: 'lg', contents: [
+        lineText_(STOCK_TYPE_TH_[t] + ' (' + items.filter(function (x) { return x.type === t; }).length + ')', { weight: 'bold', size: 'sm', color: '#1E3A72', flex: 6 }),
+        lineText_('คงเหลือ', { size: 'xxs', color: '#8891AC', align: 'end', flex: 3 }), lineText_('ขั้นต่ำ', { size: 'xxs', color: '#8891AC', align: 'end', flex: 3 })
+      ] });
+      body.push({ type: 'separator', margin: 'sm', color: '#E4E8F1' });
+      list.forEach(function (x) {
+        body.push({ type: 'box', layout: 'horizontal', margin: 'sm', contents: [
+          lineText_(x.name, { size: 'sm', flex: 6 }),
+          lineText_(qtyFmt_(x.qty) + (x.unit ? ' ' + x.unit : ''), { size: 'sm', weight: 'bold', align: 'end', flex: 3, color: x.qty <= 0 ? '#AC4143' : '#B4791E' }),
+          lineText_(x.min == null ? '-' : qtyFmt_(x.min), { size: 'sm', align: 'end', flex: 3, color: '#8891AC' })
+        ] });
+      });
+    });
+    if (items.length > shown.length) body.push(lineText_('และอีก ' + (items.length - shown.length) + ' รายการ — ดูทั้งหมดในเมนู จัดการสินค้า/บริการ', { size: 'xs', color: '#8891AC', margin: 'lg' }));
+  }
+  return {
+    type: 'flex',
+    altText: (clinicName || 'VALIN CLINIC') + ' สต๊อกใกล้หมด ' + items.length + ' รายการ',
+    contents: withFooter_({ type: 'bubble', size: 'mega',
+      header: lineHeader_('สต๊อกใกล้หมด', (clinicName || 'VALIN CLINIC') + ' · ' + nowThai_(), '#1E3A72'),
+      body: { type: 'box', layout: 'vertical', paddingAll: '16px', contents: body } }, stockLinkFooter_(url))
+  };
+}
+function withFooter_(bubble, footer) { if (footer) bubble.footer = footer; return bubble; }
+
+/** Flex: สต๊อกปัจจุบัน — counts per type, ต่ำกว่าขั้นต่ำ / หมดแล้ว, and buttons: เช็ค stock ใกล้หมด, ดูสต๊อกทั้งหมด (24-hour link). */
+function buildStockOverviewMessage_(items, clinicName, url) {
+  var tile = function (label, value, bg, fg) {
+    return { type: 'box', layout: 'vertical', flex: 1, paddingAll: '10px', cornerRadius: '10px', backgroundColor: bg, contents: [lineText_(label, { size: 'xxs', color: fg }), lineText_(value, { weight: 'bold', color: fg })] };
+  };
+  var count = function (t) { return items.filter(function (x) { return x.type === t; }).length + ' รายการ'; };
+  var out = items.filter(function (x) { return x.qty <= 0; }).length, low = items.filter(function (x) { return x.qty > 0 && isLowStock_(x.qty, x.min); }).length;
+  return {
+    type: 'flex', altText: (clinicName || 'VALIN CLINIC') + ' สต๊อกปัจจุบัน ' + items.length + ' รายการ',
+    contents: withFooter_({ type: 'bubble', size: 'mega',
+      header: lineHeader_('สต๊อกปัจจุบัน', (clinicName || 'VALIN CLINIC') + ' · ' + nowThai_(), '#1E3A72'),
+      body: { type: 'box', layout: 'vertical', paddingAll: '16px', spacing: 'md', contents: [
+        { type: 'box', layout: 'horizontal', spacing: 'sm', contents: [tile('ยา', count('medicine'), '#E9EDF7', '#1E3A72'), tile('ยาทาน', count('oral'), '#E9EDF7', '#1E3A72'), tile('เวชภัณฑ์', count('supply'), '#E9EDF7', '#1E3A72')] },
+        { type: 'box', layout: 'horizontal', spacing: 'sm', contents: [tile('ต่ำกว่าขั้นต่ำ', low + ' รายการ', '#FBF1DE', '#B4791E'), tile('หมดแล้ว', out + ' รายการ', '#FBEBEB', '#AC4143')] },
+        lineText_('ค้นหาเฉพาะรายการ: พิมพ์ "สต๊อก <ชื่อยา>" เช่น สต๊อก โบท็อกซ์', { size: 'xs', color: '#8891AC' })
+      ] } }, stockLinkFooter_(url, [{ type: 'button', style: 'primary', color: '#1E3A72', height: 'sm', action: { type: 'message', label: 'เช็ค stock ใกล้หมด', text: 'เช็ค stock ใกล้หมด' } }]))
+  };
+}
+
+/** The items whose name / category contains q, most short first. */
+function searchStockItems_(items, q) {
+  var ql = String(q || '').trim().toLowerCase(), order = function (x) { return x.qty <= 0 ? 0 : (isLowStock_(x.qty, x.min) ? 1 : 2); };
+  return items.filter(function (x) { return (x.name + ' ' + x.cat).toLowerCase().indexOf(ql) > -1; })
+    .sort(function (a, b) { return order(a) - order(b) || String(a.name).localeCompare(String(b.name), 'th'); });
+}
+
+/** Flex: ผลค้นหาสต๊อก — name (type) | คงเหลือ (amber / red when low / out) | ขั้นต่ำ, up to LINE_ROWS_MAX_, button to the page on that search. */
+function buildStockSearchMessage_(q, found, clinicName, url) {
+  var shown = found.slice(0, LINE_ROWS_MAX_), body = [];
+  if (!found.length) {
+    body.push(lineText_('ไม่พบรายการที่ชื่อมีคำว่า "' + q + '"', { color: '#8891AC' }));
+  } else {
+    body.push({ type: 'box', layout: 'horizontal', contents: [
+      lineText_('รายการ', { size: 'xxs', color: '#8891AC', flex: 6 }), lineText_('คงเหลือ', { size: 'xxs', color: '#8891AC', align: 'end', flex: 3 }),
+      lineText_('ขั้นต่ำ', { size: 'xxs', color: '#8891AC', align: 'end', flex: 3 })] });
+    body.push({ type: 'separator', margin: 'sm', color: '#E4E8F1' });
+    shown.forEach(function (x) {
+      var color = x.qty <= 0 ? '#AC4143' : (isLowStock_(x.qty, x.min) ? '#B4791E' : '#1C2440');
+      body.push({ type: 'box', layout: 'horizontal', margin: 'md', contents: [
+        { type: 'box', layout: 'vertical', flex: 6, contents: [lineText_(x.name, { size: 'sm' }), lineText_(STOCK_TYPE_TH_[x.type] + (x.cat ? ' · ' + x.cat : ''), { size: 'xxs', color: '#8891AC' })] },
+        lineText_(qtyFmt_(x.qty) + (x.unit ? ' ' + x.unit : ''), { size: 'sm', weight: 'bold', align: 'end', flex: 3, color: color }),
+        lineText_(x.min == null ? '-' : qtyFmt_(x.min), { size: 'sm', align: 'end', flex: 3, color: '#8891AC' })] });
+    });
+    if (found.length > shown.length) body.push(lineText_('และอีก ' + (found.length - shown.length) + ' รายการ — กดดูทั้งหมดด้านล่าง', { size: 'xs', color: '#8891AC', margin: 'lg' }));
+  }
+  return {
+    type: 'flex', altText: (clinicName || 'VALIN CLINIC') + ' สต๊อก "' + q + '" ' + found.length + ' รายการ',
+    contents: withFooter_({ type: 'bubble', size: 'mega',
+      header: lineHeader_('ผลค้นหาสต๊อก "' + q + '"', found.length + ' รายการ · ' + nowThai_(), '#1E3A72'),
+      body: { type: 'box', layout: 'vertical', paddingAll: '16px', contents: body } }, stockLinkFooter_(url))
+  };
+}
+
+/** Flex: ปรับจำนวนสต๊อก — info {title, sub, date, by (session), moves:[stockMove_]}; each row: name (type) | +/− change | คงเหลือ. */
+function buildStockChangeMessage_(info, clinicName) {
+  var moves = info.moves || [], shown = moves.slice(0, LINE_ROWS_MAX_);
+  var inQty = 0, outQty = 0;
+  moves.forEach(function (m) { if (m.delta > 0) inQty += m.delta; else outQty -= m.delta; });
+  var body = [
+    { type: 'box', layout: 'horizontal', contents: [
+      lineText_('รายการ', { size: 'xxs', color: '#8891AC', flex: 6 }), lineText_('เปลี่ยนแปลง', { size: 'xxs', color: '#8891AC', align: 'end', flex: 3 }),
+      lineText_('คงเหลือ', { size: 'xxs', color: '#8891AC', align: 'end', flex: 3 })] },
+    { type: 'separator', margin: 'sm', color: '#E4E8F1' }
+  ];
+  shown.forEach(function (m) {
+    var low = isLowStock_(m.after, m.min);
+    body.push({ type: 'box', layout: 'horizontal', margin: 'md', contents: [
+      { type: 'box', layout: 'vertical', flex: 6, contents: [
+        lineText_(m.name, { size: 'sm' }),
+        lineText_(STOCK_TYPE_TH_[m.type] + (low ? ' · ' + (m.after <= 0 ? 'หมด' : 'ต่ำกว่าขั้นต่ำ ' + qtyFmt_(m.min)) : ''), { size: 'xxs', color: low ? '#AC4143' : '#8891AC' })] },
+      lineText_((m.delta > 0 ? '+' : (m.delta < 0 ? '−' : '')) + qtyFmt_(Math.abs(m.delta)), { size: 'sm', weight: 'bold', align: 'end', flex: 3, color: m.delta > 0 ? '#357552' : (m.delta < 0 ? '#AC4143' : '#8891AC') }),
+      lineText_(qtyFmt_(m.after) + (m.unit ? ' ' + m.unit : ''), { size: 'sm', align: 'end', flex: 3, weight: 'bold', color: low ? '#AC4143' : '#1C2440' })
+    ] });
+  });
+  if (moves.length > shown.length) body.push(lineText_('และอีก ' + (moves.length - shown.length) + ' รายการ', { size: 'xs', color: '#8891AC', margin: 'lg' }));
+  body.push({ type: 'separator', margin: 'lg', color: '#E4E8F1' });
+  body.push({ type: 'box', layout: 'horizontal', margin: 'md', contents: [
+    lineText_(moves.length + ' รายการ', { size: 'xs', color: '#3D4568', flex: 4 }),
+    lineText_((inQty ? 'เข้า +' + qtyFmt_(inQty) : '') + (inQty && outQty ? ' · ' : '') + (outQty ? 'ออก −' + qtyFmt_(outQty) : '') || 'ไม่เปลี่ยน', { size: 'xs', color: '#3D4568', align: 'end', flex: 8 })] });
+  var by = info.by ? (info.by.name || info.by.username || '') : '';
+  return {
+    type: 'flex',
+    altText: (clinicName || 'VALIN CLINIC') + ' ' + info.title + ' ' + moves.length + ' รายการ',
+    contents: { type: 'bubble', size: 'mega',
+      header: lineHeader_(info.title, [info.sub, 'วันที่ ' + (info.date || todayStr_()), by ? 'โดย ' + by : ''].filter(Boolean).join(' · '), '#1E3A72'),
+      body: { type: 'box', layout: 'vertical', paddingAll: '16px', contents: body } }
+  };
+}
+
+/** Pushes messages (max 5) to the admins with a LINE ID. Returns {sent, skipped}; never throws. */
+function pushLineToAdmins_(messages) {
+  try {
+    var channelToken = PropertiesService.getScriptProperties().getProperty(CONFIG.PROPS.LINE_CHANNEL_ACCESS_TOKEN);
+    if (!channelToken) return { sent: 0, skipped: 'ยังไม่ได้ตั้งค่า LINE' };
+    var targets = getLineAdminTargets_();
+    if (!targets.length) return { sent: 0, skipped: 'ยังไม่มีผู้ดูแลที่กรอก LINE ID' };
+    var resp = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/multicast', {
+      method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + channelToken },
+      payload: JSON.stringify({ to: targets.map(function (t) { return t.lineId; }), messages: messages.slice(0, 5) }), muteHttpExceptions: true
+    });
+    if (resp.getResponseCode() >= 300) { console.error('LINE push failed: ' + resp.getContentText()); return { sent: 0, skipped: 'LINE ' + resp.getResponseCode() }; }
+    return { sent: targets.length };
+  } catch (e) {
+    console.error('LINE push error: ' + e);
+    return { sent: 0, skipped: String(e) };
+  }
+}
+/** After a stock save: tell the admins on LINE what changed (no-op without LINE set up; never throws). */
+function notifyStockChange_(info) {
+  try {
+    if (!info.moves || !info.moves.length) return;
+    pushLineToAdmins_([buildStockChangeMessage_(info, getClinicName_())]);
+  } catch (e) { console.error('notifyStockChange_: ' + e); }
+}
+
 /** token may be omitted when called from a time-based trigger (no logged-in user).
  *  Round 22: pushes to every admin-level, Active Staff row's own LineID
  *  (getLineAdminTargets_()) instead of one fixed Script Property id — see
@@ -5555,20 +5834,22 @@ function sendLineDailySummary(token, dateStr) {
     var summary = computeDailySummaryDetail_(date);
     var clinicName = getClinicName_();
     var message = buildLineSummaryMessage_(summary, clinicName);
+    var messages = [message];
+    try { messages.push(buildLowStockMessage_(lowStockItems_(), clinicName, stockLinkSafe_())); } catch (e) { console.error('low-stock message: ' + e); } // the summary still goes
 
     // LINE's multicast endpoint accepts up to 500 user ids in a single
     // call, so N registered admins costs 1 API call, not N pushes.
     var resp = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/multicast', {
       method: 'post', contentType: 'application/json',
       headers: { Authorization: 'Bearer ' + channelToken },
-      payload: JSON.stringify({ to: targetIds, messages: [message] }),
+      payload: JSON.stringify({ to: targetIds, messages: messages }),
       muteHttpExceptions: true
     });
     if (resp.getResponseCode() >= 300) throw new Error('ส่งข้อความ LINE ไม่สำเร็จ: ' + resp.getContentText());
     writeAudit_(session, 'LINE_PUSH', 'Summary', date, 'to ' + targetIds.length + ' admin(s): ' + targetNames.join(', '));
     return {
       ok: true,
-      message: 'ส่งสรุปยอดประจำวันไปยัง LINE เรียบร้อยแล้ว (' + targetIds.length + ' คน: ' + targetNames.join(', ') + ')',
+      message: 'ส่งสรุปยอดประจำวัน' + (messages.length > 1 ? ' และสต๊อกใกล้หมด' : '') + 'ไปยัง LINE เรียบร้อยแล้ว (' + targetIds.length + ' คน: ' + targetNames.join(', ') + ')',
       recipientCount: targetIds.length,
       recipientNames: targetNames
     };
@@ -5682,10 +5963,16 @@ function handleLineWebhookEvent_(event) {
     return;
   }
 
+  // "เช็ค stock ใกล้หมด" (spaces / สต๊อก / สต็อก / Stock all accepted)
+  var isLowStockCmd = /^(เช็ค|เช็ก|check)?(stock|สต๊อก|สต็อก|สต็อค|สต๊อค)ใกล้หมด$/.test(text.replace(/\s+/g, '').toLowerCase());
+  // "สต๊อกทั้งหมด" -> the overview card; "สต๊อก <ชื่อ>" -> a search (both accept สต็อก / stock, any spacing)
+  var squeezed = text.replace(/\s+/g, ' ').trim();
+  var isStockAllCmd = /^(ดู|เช็ค|เช็ก)?\s*(สต๊อก|สต็อก|สต็อค|สต๊อค|stock)\s*ทั้งหมด$/i.test(squeezed);
+  var stockQuery = (isLowStockCmd || isStockAllCmd) ? null : (squeezed.match(/^(?:เช็ค|เช็ก)?\s*(?:สต๊อก|สต็อก|สต็อค|สต๊อค|stock)\s+(.+)$/i) || [])[1] || null;
   var isTodayCmd = text === 'สรุปยอดวันนี้';
   var isOtherDayCmd = text === 'สรุปยอดวันอื่น' || text.indexOf('สรุปยอดวันอื่น ') === 0;
   var isSpecificDateCmd = /^สรุปยอดวันที่ \d{4}-\d{2}-\d{2}$/.test(text);
-  if (!isTodayCmd && !isOtherDayCmd && !isSpecificDateCmd) return;
+  if (!isTodayCmd && !isOtherDayCmd && !isSpecificDateCmd && !isLowStockCmd && !isStockAllCmd && !stockQuery) return;
 
   var staff = findLineAuthorizedStaff_(userId);
   if (!staff) {
@@ -5693,7 +5980,14 @@ function handleLineWebhookEvent_(event) {
     return;
   }
 
-  if (isTodayCmd) {
+  if (isLowStockCmd) {
+    replyLineMessage_(replyToken, buildLowStockMessage_(lowStockItems_(), getClinicName_(), stockLinkSafe_()));
+  } else if (isStockAllCmd) {
+    replyLineMessage_(replyToken, buildStockOverviewMessage_(stockViewItems_(), getClinicName_(), stockLinkSafe_()));
+  } else if (stockQuery) {
+    var sq = stockQuery.slice(0, 60);
+    replyLineMessage_(replyToken, buildStockSearchMessage_(sq, searchStockItems_(stockViewItems_(), sq), getClinicName_(), stockLinkSafe_(sq)));
+  } else if (isTodayCmd) {
     replyLineDailySummary_(replyToken, todayStr_());
   } else if (isSpecificDateCmd) {
     replyLineDailySummary_(replyToken, text.replace('สรุปยอดวันที่', '').trim());
