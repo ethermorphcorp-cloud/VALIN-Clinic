@@ -639,7 +639,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   var NO_DEDUPE = { login: 1, startResumableUpload: 1, uploadFileChunk: 1 };
   var WRITE_LABELS = { login: 'กำลังเข้าสู่ระบบ...', backupData: 'กำลังสำรองข้อมูล...', seedDemoData: 'กำลังสร้างข้อมูลตัวอย่าง...', importStockCsv: 'กำลังนำเข้าข้อมูล...',
     startResumableUpload: 'กำลังอัปโหลด...', uploadFileChunk: 'กำลังอัปโหลด...', setLogo: 'กำลังอัปโหลด...', setLoginImage: 'กำลังอัปโหลด...', setWithdrawalPhotos: 'กำลังอัปโหลด...',
-    sendLineDailySummary: 'กำลังส่ง LINE...', getReceiptHtml: 'กำลังเตรียมใบเสร็จ...' };
+    sendLineDailySummary: 'กำลังส่ง LINE...', receiveOrder: 'กำลังบันทึกการรับสินค้า...', getReceiptHtml: 'กำลังเตรียมใบเสร็จ...' };
   function isWriteFn(fn) { return !/^(list|get|search)/.test(fn) || !!WRITE_GETS[fn]; }
   var busyKeys = {}, clickKey = null, armedKey = null, inflightWrites = {};
   function isBusy(key) { return !!busyKeys[key]; }
@@ -768,12 +768,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     { id: 'report-daily', screen: 'reports', tab: 'daily', label: 'รายงานรายวัน', icon: 'assessment', sub: 'รายงาน > รายงานรายวัน', adminOnly: true },
     { id: 'report-sales', screen: 'reports', tab: 'sales', label: 'คิดค่ายาเซลล์', icon: 'payments', sub: 'รายงาน > รายงานรายเซลล์', adminOnly: true },
     { id: 'stock', label: 'จัดการสินค้า/บริการ (สต๊อก)', icon: 'inventory_2', sub: 'รายการเวชภัณฑ์ รายการยาสต๊อกคลีนิค และรายการค่าหัตถการ' },
+    { id: 'pcheck', label: 'เช็ครายการจัดซื้อ', icon: 'fact_check', sub: 'ตรวจรับสินค้าตามใบสั่งซื้อที่ admin สร้าง กรอกจำนวนที่รับจริง แล้วเพิ่มเข้าสต๊อก' },
     { id: 'expense', label: 'ค่าใช้จ่าย & จัดซื้อ', icon: 'receipt_long', sub: 'ค่าใช้จ่ายคลินิกและรายการสั่งซื้อ', adminOnly: true },
     { id: 'promotions', label: 'จัดการโปรโมชันหน้าคลินิก', icon: 'local_offer', sub: 'รายการโปรโมชันและส่วนแบ่งแพทย์/คลินิก' },
     { id: 'settings', label: 'ตั้งค่าคลินิก', icon: 'settings', sub: 'แพทย์ หมวดหมู่ ข้อมูลคลินิก และผู้ใช้งาน', adminOnly: true }
   ];
   // Sidebar zones, separated by a thin line: [Dashboard, คนไข้] [จัดยา, ระหว่างดำเนินการ, บันทึกการรักษา] [รายการยาฝาก, รายงาน] [สินค้า, จัดซื้อ, โปรโมชัน] [ตั้งค่า]
-  var NAV_ZONE = { dash: 1, patients: 1, withdraw: 2, board: 2, records: 2, deposits: 3, 'report-daily': 3, 'report-sales': 3, stock: 4, expense: 4, promotions: 4, settings: 5 };
+  var NAV_ZONE = { dash: 1, patients: 1, withdraw: 2, board: 2, records: 2, deposits: 3, 'report-daily': 3, 'report-sales': 3, stock: 4, pcheck: 4, expense: 4, promotions: 4, settings: 5 };
   function allowedNav() { return NAV.filter(function (n) { return isAdmin() || !n.adminOnly; }); }
 
   var state = {
@@ -801,6 +802,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // flight — see the dd-* action handlers and the loadX() functions below.
     expense: { tab: 'expense', list: null, page: 1, q: '', category: '', orders: null, orderPanel: null, orderPage: 1, orderQ: '', orderCategory: '', searchSuggest: [], orderSearchSuggest: [], reloading: false, orderReloading: false },
     promotions: { list: null, q: '' },
+    // เช็ครายการจัดซื้อ: `tab` 'pending' (รอตรวจรับ) | 'received' (ตรวจรับแล้ว); `pending` = how many wait (nav badge).
+    pcheck: { tab: 'pending', list: null, page: 1, q: '', pending: 0 },
     backup: { cutoff: '', preview: null, previewing: false, list: null, selected: '' },
     board: { data: null, date: '', updatedAt: null, loading: false, q: '' },
     notify: { known: null, unseen: 0, timer: null },
@@ -1055,7 +1058,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       var sep = prevZone !== null && NAV_ZONE[n.id] !== prevZone ? '<div class="nav-sep"></div>' : '';
       prevZone = NAV_ZONE[n.id];
       var activeCls = (n.screen ? state.screen === n.screen && state.report.tab === n.tab : state.screen === n.id) ? ' active' : '';
-      var badge = n.id === 'board' && state.notify.unseen > 0 ? '<span class="nav-badge" title="มีคนไข้รอชำระเงินใหม่">' + state.notify.unseen + '</span>' : '';
+      var badge = n.id === 'board' && state.notify.unseen > 0 ? '<span class="nav-badge" title="มีคนไข้รอชำระเงินใหม่">' + state.notify.unseen + '</span>' :
+        (n.id === 'pcheck' && state.pcheck.pending > 0 ? '<span class="nav-badge" title="ใบสั่งซื้อรอตรวจรับ">' + state.pcheck.pending + '</span>' : '');
       return sep + '<button class="nav-item' + activeCls + '" data-action="nav" data-arg="' + n.id + '">' +
         '<span class="ms">' + n.icon + '</span><span>' + esc(n.label) + '</span>' + badge + '</button>';
     }).join('');
@@ -1105,6 +1109,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'deposits': return depositsTemplate();
       case 'reports': return reportsTemplate();
       case 'expense': return expenseTemplate();
+      case 'pcheck': return purchaseCheckTemplate();
       case 'promotions': return promotionsTemplate();
       case 'settings': return settingsTemplate();
       default: return '<div class="empty-state">ไม่พบหน้านี้</div>';
@@ -1178,6 +1183,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       if (res.ok) state.master = res.data;
       render();
       pollQueueAlerts();
+      loadPurchaseChecks(); // the เช็ครายการจัดซื้อ badge: how many POs wait to be checked
       if (state.screen === 'dash') loadDash();
       // Clinic logo (Settings > ข้อมูลบริษัท) shows in the sidebar brand
       // mark once fetched — fire-and-render separately so it never blocks
@@ -1219,6 +1225,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     clearSession();
     state.screen = 'login'; state.master = null;
     swrClear(); state.suggestCache.patients = null; state.suggestCache.stock = null; // nothing of this session's data stays in memory
+    state.pcheck.list = null; state.pcheck.pending = 0;
     render();
   }
 
@@ -1249,6 +1256,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     else pollQueueAlerts(); // look for newly รอชำระเงิน customers whenever the screen changes
     if (screenId === 'deposits') loadDeposits(); // always fresh: records/withdrawals elsewhere change it
     if (screenId === 'expense' && !state.expense.list) loadExpenses();
+    if (screenId === 'pcheck') loadPurchaseChecks();
     if (screenId === 'promotions' && !state.promotions.list) loadPromotions();
     if (screenId === 'settings') loadSettingsTabData(state.settings.tab);
   }
@@ -1745,10 +1753,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
 
   function newPatientModal() {
-    openModal('patient', { hn: '', firstName: '', lastName: '', nickname: '', phone: '', dob: '', gender: 'female', email: '', photoFileId: '', _previewId: '' });
-    call('getNextPatientId', session.token, gsOpts({ quiet: true })).then(function (res) {
-      if (res.ok && state.draft && !state.draft.id) { state.draft._previewId = res.data; render(); }
-    });
+    openModal('patient', { hn: '', firstName: '', lastName: '', nickname: '', phone: '', dob: '', gender: 'female', email: '', photoFileId: '' });
   }
   function editPatientModal(id) {
     var p = (state.suggestCache.patients || []).filter(function (x) { return x.id === id; })[0];
@@ -1901,12 +1906,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<input type="file" id="patientPhotoInput" accept="image/*" style="display:none">' +
       (state.patients.photoProgress != null ? '<div class="upload-progress"><i style="width:' + state.patients.photoProgress + '%"></i></div>' : '') +
     '</div>';
-    var idField = field('รหัสคนไข้ (ระบบ)', '<input type="text" value="' + esc(d.id || d._previewId || 'กำลังสร้าง...') + '" disabled style="' + inputStyle + ';background:var(--hover-bg);color:var(--muted)">' +
-      (!d.id ? '<div style="font-size:11px;color:var(--muted);margin-top:3px">สร้างอัตโนมัติเมื่อบันทึก</div>' : ''));
+    // รหัสคนไข้ (ระบบ) is internal (still made on save) — the form only shows the clinic's own เลข HN.
     return modalHeader(d.id ? 'แก้ไขข้อมูลคนไข้' : 'เพิ่มคนไข้ใหม่') +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
-        field('เลข HN', bindInput('hn', 'text', 'placeholder="กรอกเลข HN ของคลินิก"')) + idField +
-      '</div>' +
+      field('เลข HN', bindInput('hn', 'text', 'placeholder="กรอกเลข HN ของคลินิก"')) +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
         field('ชื่อ', bindInput('firstName', 'text', 'required'), true) + field('นามสกุล', bindInput('lastName', 'text', 'required'), true) +
         field('ชื่อเล่น', bindInput('nickname')) + field('เบอร์โทร', bindInput('phone', 'tel', 'required'), true) +
@@ -5117,11 +5119,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       return '<span class="tag-badge" style="background:' + (t === 'sales' ? 'var(--accent-soft)' : 'var(--hover-bg)') + ';color:' + (t === 'sales' ? 'var(--accent-hover)' : 'var(--text-2)') + ';white-space:nowrap">' + esc(orderTypeLabel(t)) + '</span>';
     };
     var rows = !L ? skelRows(5) :
-      (!L.items.length ? '<tr><td colspan="5" class="empty-state">ไม่พบรายการ</td></tr>' :
+      (!L.items.length ? '<tr><td colspan="6" class="empty-state">ไม่พบรายการ</td></tr>' :
       L.items.map(function (o) {
         var open = state.expense.orderPanel && state.expense.orderPanel.id === o.id;
-        return '<tr data-action="view-order" data-arg="' + esc(o.id) + '" style="cursor:pointer' + (open ? ';background:var(--hover-bg)' : '') + '"><td style="padding-left:12px">' + esc(o.date) + '</td><td>' + orderTypeBadge(o.orderType) + '</td><td>' + esc(o.supplier) + '</td><td>' + money(o.totalAmount) + '</td>' +
-          '<td style="text-align:right"><button class="btn" data-action="edit-order" data-arg="' + esc(o.id) + '"><span class="ms">edit</span></button> ' +
+        return '<tr data-action="view-order" data-arg="' + esc(o.id) + '" style="cursor:pointer' + (open ? ';background:var(--hover-bg)' : '') + '"><td style="padding-left:12px">' + esc(o.date) + '</td><td>' + orderTypeBadge(o.orderType) + '</td><td>' + esc(o.supplier) + '</td><td>' + money(o.totalAmount) + '</td><td>' + orderStatusBadge(o) + '</td>' +
+          '<td style="text-align:right">' + (o.status === 'pending' ? '<button class="btn" data-action="edit-order" data-arg="' + esc(o.id) + '"><span class="ms">edit</span></button> ' : '') +
           (isAdmin() ? '<button class="btn" data-action="delete-order" data-arg="' + esc(o.id) + '"><span class="ms">delete</span></button>' : '') + '</td></tr>';
       }).join(''));
     return '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">' +
@@ -5131,8 +5133,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '</div>' +
       listCardWrap(
         '<table class="table" style="width:100%;border-collapse:collapse">' +
-          '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">วันที่</th><th>ประเภท</th><th>ผู้จำหน่าย / เซลล์</th><th>ยอดรวม</th><th></th></tr></thead>' +
-          '<tbody>' + rows + '</tbody></table>', state.expense.orderReloading) + pagerHtml(L, 'order-page');
+          '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">วันที่</th><th>ประเภท</th><th>ผู้จำหน่าย / เซลล์</th><th>ยอดรวม</th><th>สถานะ</th><th></th></tr></thead>' +
+          '<tbody>' + rows + '</tbody></table>', state.expense.orderReloading) + pagerHtml(L, 'order-page') +
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">ใบสั่งซื้อใหม่ยังไม่เพิ่มสต๊อก — staff ตรวจรับและกรอกจำนวนที่รับจริงที่เมนู เช็ครายการจัดซื้อ · แก้ไขได้เฉพาะใบที่รอตรวจรับ · ยอดรวมของใบที่ตรวจรับแล้วคิดจากจำนวนที่รับจริง</div>';
+  }
+  function orderStatusBadge(o) {
+    return o.status === 'pending' ? '<span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark);white-space:nowrap">รอตรวจรับ</span>'
+      : '<span class="tag-badge" style="background:var(--green-soft);color:var(--green-dark);white-space:nowrap">ตรวจรับแล้ว</span>';
   }
   /* ---- PO detail side panel (own root, like the ยาฝาก one) ---- */
   var orderPanelEl = document.getElementById('orderPanelRoot');
@@ -5162,14 +5169,15 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var th = 'padding:8px 10px;font-size:11px;color:var(--muted);background:var(--hover-bg);text-align:left';
     var lines = !o.lines.length ? '<div class="empty-state" style="padding:20px">ไม่มีรายการสินค้า</div>' :
       '<table class="table vmid" style="width:100%;border-collapse:collapse"><thead><tr>' +
-        '<th style="' + th + '">ชื่อสินค้า</th><th style="' + th + ';text-align:right">จำนวน</th><th style="' + th + ';text-align:right">ราคา/หน่วย</th><th style="' + th + ';text-align:right">จำนวนเงิน</th></tr></thead><tbody>' +
+        '<th style="' + th + '">ชื่อสินค้า</th><th style="' + th + ';text-align:right">จำนวนที่สั่ง</th>' + (o.status === 'pending' ? '' : '<th style="' + th + ';text-align:right">รับจริง</th>') + '<th style="' + th + ';text-align:right">ราคา/หน่วย</th><th style="' + th + ';text-align:right">จำนวนเงิน</th></tr></thead><tbody>' +
         o.lines.map(function (l) {
           return '<tr><td style="padding:9px 10px;font-size:12.5px">' + esc(l.itemName) + '<div style="font-size:11px;color:var(--muted)">' + esc(l.category) + (l.itemId ? ' · ตัดเข้าสต๊อก' : '') + '</div></td>' +
             '<td style="font-size:12.5px;text-align:right;white-space:nowrap">' + esc(l.qty) + '</td>' +
+            (o.status === 'pending' ? '' : '<td style="font-size:12.5px;text-align:right;white-space:nowrap;font-weight:600' + (l.qtyReceived != null && l.qtyReceived !== l.qty ? ';color:var(--amber-dark)' : '') + '">' + esc(l.qtyReceived == null ? l.qty : l.qtyReceived) + '</td>') +
             '<td style="font-size:12.5px;text-align:right;white-space:nowrap">' + money(l.unitPrice) + '</td>' +
             '<td style="font-size:12.5px;text-align:right;white-space:nowrap;font-weight:600">' + money(l.lineTotal || orderLineAmount(l)) + '</td></tr>';
         }).join('') +
-        '<tr><td colspan="3" style="padding:10px;text-align:right;font-size:12.5px;font-weight:700;border-top:1px solid var(--border)">รวมทั้งสิ้น</td><td style="text-align:right;font-weight:700;font-size:14px;border-top:1px solid var(--border);padding-right:10px;white-space:nowrap">' + money(o.totalAmount) + '</td></tr>' +
+        '<tr><td colspan="' + (o.status === 'pending' ? 3 : 4) + '" style="padding:10px;text-align:right;font-size:12.5px;font-weight:700;border-top:1px solid var(--border)">รวมทั้งสิ้น</td><td style="text-align:right;font-weight:700;font-size:14px;border-top:1px solid var(--border);padding-right:10px;white-space:nowrap">' + money(o.totalAmount) + '</td></tr>' +
         '</tbody></table>';
     var body = '' +
       '<div style="padding:22px 22px 12px;display:flex;justify-content:space-between;align-items:flex-start;flex:none">' +
@@ -5184,14 +5192,15 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
             cell(o.orderType === 'sales' ? 'ชื่อเซลล์' : 'ผู้จำหน่าย', esc(o.supplier)) +
             cell('จำนวนรายการ', esc(o.lines.length)) + cell('ยอดรวม', '<span style="font-size:15px;color:var(--accent-hover)">' + money(o.totalAmount) + '</span>') +
             cell('ผู้บันทึก', o.createdBy ? esc(o.createdBy) : '<span style="color:var(--muted)">-</span>') +
-            cell('สต๊อก', o.stockApplied ? 'เพิ่มเข้าสต๊อกแล้ว' : '<span style="color:var(--muted)">ไม่ได้เชื่อมสต๊อก</span>') +
+            cell('สถานะ', orderStatusBadge(o) + (o.status === 'received' && o.receivedDate ? '<div style="font-size:11.5px;font-weight:400;color:var(--muted);margin-top:4px">' + esc(o.receivedDate) + (o.receivedBy ? ' · ' + esc(o.receivedBy) : '') + '</div>' : '')) +
+            (o.receiveNote ? cell('หมายเหตุการรับ', esc(o.receiveNote)) : '') +
           '</div></div>' +
         '<div style="font-size:13px;font-weight:700;margin:14px 0 8px">รายการสินค้า</div>' +
         '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">' + lines + '</div>' +
       '</div>' +
       '<div style="padding:14px 22px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;flex:none">' +
         '<button class="btn" data-action="close-order-panel">ปิด</button>' +
-        '<button class="btn btn-primary" data-action="order-panel-edit" data-arg="' + esc(o.id) + '"><span class="ms">edit</span> แก้ไข</button>' +
+        (o.status === 'pending' ? '<button class="btn btn-primary" data-action="order-panel-edit" data-arg="' + esc(o.id) + '"><span class="ms">edit</span> แก้ไข</button>' : '') +
       '</div>';
     return sidePanelShell('close-order-panel', body, 'side-panel-wide');
   }
@@ -5253,7 +5262,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">รายการสินค้า</label></div>' +
       lineHeader + lines + '<datalist id="dlOrderStock">' + stockOpts + '</datalist>' +
       '<button class="btn" data-action="add-order-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการ</button>' +
-      (d.id && !d.stockApplied ? '<div style="font-size:11.5px;color:var(--amber-dark);margin-bottom:8px">ใบสั่งซื้อนี้สร้างก่อนระบบเชื่อมสต๊อก — การแก้ไขจะไม่เปลี่ยนจำนวนสต๊อก</div>' : '') +
+      '<div style="font-size:11.5px;color:var(--muted);margin-bottom:8px">บันทึกแล้วใบสั่งซื้อจะรอ staff ตรวจรับที่เมนู เช็ครายการจัดซื้อ — สต๊อกจะเพิ่มตามจำนวนที่รับจริง</div>' +
       '<div id="orderTotal" style="text-align:right;font-weight:700;margin-bottom:10px">รวมทั้งสิ้น ' + money(total) + '</div>' + saveBtn();
   }
   /** จำนวนเงิน of one PO line = qty × ราคา/หน่วย. */
@@ -5261,15 +5270,121 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /** Under each PO line: which stock item it will add to, or that it isn't linked to stock. */
   function orderLineCaption(l) {
     var s = l.itemId ? (state.suggestCache.stock || []).filter(function (x) { return x.id === l.itemId; })[0] : null;
-    if (s) return '<span style="color:var(--green-dark)"><span class="ms" style="font-size:13px;vertical-align:middle">add_circle</span> เพิ่มเข้าสต๊อก' + esc(stockTypeLabel(s.type)) + (s.unit ? ' (' + esc(s.unit) + ')' : '') + '</span>';
+    if (s) return '<span style="color:var(--green-dark)"><span class="ms" style="font-size:13px;vertical-align:middle">add_circle</span> เพิ่มเข้าสต๊อก' + esc(stockTypeLabel(s.type)) + 'เมื่อตรวจรับ' + (s.unit ? ' (' + esc(s.unit) + ')' : '') + '</span>';
     return String(l.itemName || '').trim() ? '<span style="color:var(--muted)">ไม่อยู่ในสต๊อก — ไม่เพิ่มจำนวนสต๊อก</span>' : '';
   }
   function saveOrderModal() {
     if (!state.draft.lines.length) { toast('error', 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ'); return; }
     if (!String(state.draft.supplier || '').trim()) { toast('error', state.draft.orderType === 'sales' ? 'กรุณาเลือกชื่อเซลล์' : 'กรุณากรอกชื่อผู้จำหน่าย'); return; }
     call('saveOrder', session.token, state.draft).then(function () {
-      toast('success', 'บันทึกใบสั่งซื้อแล้ว'); closeModal(); loadOrders();
+      toast('success', 'บันทึกใบสั่งซื้อแล้ว — รอตรวจรับ'); closeModal(); loadOrders();
+      state.pcheck.list = null; loadPurchaseChecks(); // nav badge
+    });
+  }
+
+  /* ================================================================== */
+  /* เช็ครายการจัดซื้อ (staff): the POs an admin made — no prices. Each is   */
+  /* opened, its จำนวนที่รับจริง typed and confirmed (receiveOrder), which   */
+  /* adds it to stock and tells the admins on LINE.                       */
+  /* ================================================================== */
+  function pcheckKey() { var p = state.pcheck; return 'pcheck|' + [p.tab, p.page, p.q].join('|'); }
+  function loadPurchaseChecks() {
+    var p = state.pcheck, key = pcheckKey(), hit = swrGet(key);
+    if (hit && p.list !== hit) { p.list = hit; render(); }
+    call('listPurchaseChecks', session.token, { status: p.tab, page: p.page, q: p.q }, gsOpts({ quiet: true })).then(function (res) {
+      swrPut(key, res.data);
+      state.pcheck.pending = res.data.counts ? res.data.counts.pending : state.pcheck.pending;
+      if (key !== pcheckKey()) { render(); return; }
+      p.list = res.data; render();
+    });
+  }
+  function pcheckTab(tab) {
+    if (tab === state.pcheck.tab) return;
+    var p = state.pcheck; p.tab = tab; p.page = 1; p.list = swrGet(pcheckKey()); render(); loadPurchaseChecks();
+  }
+  var onPurchaseCheckSearch = debounce(function (q) { state.pcheck.q = q; state.pcheck.page = 1; loadPurchaseChecks(); }, 300);
+  function purchaseCheckTemplate() {
+    var p = state.pcheck, L = p.list, pending = p.tab === 'pending';
+    var th = 'padding:10px 12px;white-space:nowrap';
+    var rows = !L ? skelRows(6) :
+      (!L.items.length ? '<tr><td colspan="6" class="empty-state">' + (p.q ? 'ไม่พบรายการที่ค้นหา' : (pending ? 'ไม่มีใบสั่งซื้อรอตรวจรับ' : 'ยังไม่มีใบสั่งซื้อที่ตรวจรับแล้ว')) + '</td></tr>' :
+      L.items.map(function (o) {
+        var items = o.lines.map(function (l) {
+          var got = !pending && l.qtyReceived != null && l.qtyReceived !== l.qty ? ' <span style="color:var(--amber-dark)">(รับ ' + esc(l.qtyReceived) + ')</span>' : '';
+          return '<div style="font-size:12.5px">' + esc(l.itemName) + ' <span style="color:var(--muted)">×' + esc(l.qty) + (l.unit ? ' ' + esc(l.unit) : '') + '</span>' + got + '</div>';
+        }).join('');
+        return '<tr data-action="pcheck-open" data-arg="' + esc(o.id) + '" style="cursor:pointer">' +
+          '<td style="padding:10px 12px;vertical-align:top;white-space:nowrap">' + esc(o.date) + '<div style="font-size:11px;color:var(--muted)">' + esc(o.id) + '</div></td>' +
+          '<td style="vertical-align:top">' + esc(o.supplier) + '<div style="font-size:11px;color:var(--muted)">' + esc(orderTypeLabel(o.orderType)) + '</div></td>' +
+          '<td style="vertical-align:top;white-space:normal;min-width:220px">' + items + '</td>' +
+          '<td style="vertical-align:top">' + esc(o.createdBy || '-') + '</td>' +
+          '<td style="vertical-align:top">' + (pending ? '<span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark)">รอตรวจรับ</span>'
+            : '<span class="tag-badge" style="background:var(--green-soft);color:var(--green-dark)">ตรวจรับแล้ว</span><div style="font-size:11px;color:var(--muted);margin-top:3px">' + esc(o.receivedDate) + (o.receivedBy ? ' · ' + esc(o.receivedBy) : '') + '</div>') + '</td>' +
+          '<td style="vertical-align:top;text-align:right">' + (pending ? '<button class="btn btn-primary" data-action="pcheck-open" data-arg="' + esc(o.id) + '"><span class="ms">fact_check</span> ตรวจรับ</button>' : '<button class="btn" data-action="pcheck-open" data-arg="' + esc(o.id) + '">ดู</button>') + '</td>' +
+        '</tr>';
+      }).join(''));
+    return tabBar([{ id: 'pending', label: 'รอตรวจรับ' + (p.pending ? ' (' + p.pending + ')' : '') }, { id: 'received', label: 'ตรวจรับแล้ว' }], p.tab, 'pcheck-tab') +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">' +
+        searchInputHtml('pcheckSearch', p.q, 'ค้นหาเลขที่ / ผู้จำหน่าย / ชื่อสินค้า...', 'window.__valin.onPurchaseCheckSearch(this.value)', 'max-width:300px') + '</div>' +
+      listCardWrap('<div style="overflow-x:auto"><table class="table" style="width:100%;border-collapse:collapse">' +
+        '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
+          '<th style="' + th + '">วันที่สั่ง</th><th style="' + th + '">ผู้จำหน่าย / เซลล์</th><th style="' + th + '">รายการสินค้า (จำนวนที่สั่ง)</th><th style="' + th + '">ผู้สร้าง</th><th style="' + th + '">สถานะ</th><th></th>' +
+        '</tr></thead><tbody>' + rows + '</tbody></table></div>', false) + pagerHtml(L, 'pcheck-page') +
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">ใบสั่งซื้อที่ admin สร้างจะรอตรวจรับที่นี่ · กรอกจำนวนที่รับจริงแล้วกดยืนยัน ระบบจะเพิ่มเข้าสต๊อกคลีนิคและแจ้งทาง LINE</div>';
+  }
+  function openReceiveModal(id) {
+    var o = ((state.pcheck.list && state.pcheck.list.items) || []).filter(function (x) { return x.id === id; })[0];
+    if (!o) return;
+    var pending = o.status === 'pending';
+    openModal('receive', {
+      id: o.id, order: o, readOnly: !pending, date: pending ? todayStr() : o.receivedDate, note: pending ? '' : o.receiveNote,
+      lines: o.lines.map(function (l) { return { id: l.id, qtyReceived: pending ? l.qty : l.qtyReceived }; })
+    });
+  }
+  /** Under a line's รับจริง box: matches / short / over what was ordered. */
+  function receiveDiffHtml(ordered, got) {
+    if (got === '' || got == null || isNaN(Number(got))) return '<span style="color:var(--red-dark)">กรอกจำนวน</span>';
+    var d = Math.round((Number(got) - Number(ordered)) * 100) / 100;
+    return d === 0 ? '<span style="color:var(--green-dark)">ครบ</span>' : (d < 0 ? '<span style="color:var(--amber-dark)">ขาด ' + esc(-d) + '</span>' : '<span style="color:var(--accent)">เกิน ' + esc(d) + '</span>');
+  }
+  function receiveModalBody() {
+    var d = state.draft, o = d.order;
+    var cols = 'minmax(0,1fr) 90px 110px';
+    var lines = o.lines.map(function (l, i) {
+      var got = d.lines[i].qtyReceived;
+      return '<div style="display:grid;grid-template-columns:' + cols + ';gap:10px;align-items:start;padding:10px 12px;border-top:1px solid var(--border)">' +
+        '<div style="min-width:0"><div style="font-size:13px;font-weight:600">' + esc(l.itemName) + '</div>' +
+          '<div style="font-size:11px;color:' + (l.inStock ? 'var(--muted)' : 'var(--amber-dark)') + '">' + esc(l.category || '') + (l.inStock ? ' · เพิ่มเข้าสต๊อก' + (l.unit ? ' (' + esc(l.unit) + ')' : '') : ' · ไม่อยู่ในสต๊อก (ไม่เพิ่มสต๊อก)') + '</div></div>' +
+        '<div style="font-size:13px;text-align:right;padding-top:9px">' + esc(l.qty) + '</div>' +
+        '<div>' + (d.readOnly ? '<div style="font-size:13px;font-weight:700;text-align:right;padding-top:9px">' + esc(got == null ? '-' : got) + '</div>'
+          : '<input type="number" min="0" step="any" value="' + esc(got) + '" data-bind="lines.' + i + '.qtyReceived" style="' + inputStyle + ';text-align:right">') +
+          '<div id="rcvDiff' + i + '" style="font-size:11px;text-align:right;margin-top:3px">' + receiveDiffHtml(l.qty, got) + '</div></div>' +
+      '</div>';
+    }).join('');
+    var info = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 16px;font-size:12.5px;margin-bottom:12px">' +
+      '<div><div style="font-size:11px;color:var(--muted)">' + (o.orderType === 'sales' ? 'ชื่อเซลล์' : 'ผู้จำหน่าย') + '</div><b>' + esc(o.supplier) + '</b></div>' +
+      '<div><div style="font-size:11px;color:var(--muted)">วันที่สั่ง / ผู้สร้าง</div><b>' + esc(o.date) + ' · ' + esc(o.createdBy || '-') + '</b></div>' +
+      (d.readOnly ? '<div><div style="font-size:11px;color:var(--muted)">ตรวจรับเมื่อ / โดย</div><b>' + esc(o.receivedDate) + ' · ' + esc(o.receivedBy || '-') + '</b></div>' : '') +
+    '</div>';
+    return modalHeader((d.readOnly ? 'ใบสั่งซื้อ ' : 'ตรวจรับใบสั่งซื้อ ') + o.id) + info +
+      (d.readOnly ? '' : field('วันที่รับของ', bindInput('date', 'date'), true)) +
+      '<div style="border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;margin-bottom:12px">' +
+        '<div style="display:grid;grid-template-columns:' + cols + ';gap:10px;padding:8px 12px;background:var(--hover-bg);font-size:11.5px;font-weight:600;color:var(--text-2)">' +
+          '<div>รายการสินค้า</div><div style="text-align:right">จำนวนที่สั่ง</div><div style="text-align:right">จำนวนที่รับจริง</div></div>' +
+        lines + '</div>' +
+      (d.readOnly ? (d.note ? field('หมายเหตุ', '<div style="font-size:13px">' + esc(d.note) + '</div>') : '') +
+        '<div style="display:flex;justify-content:flex-end;margin-top:18px"><button class="btn" data-action="close-modal">ปิด</button></div>'
+        : field('หมายเหตุ', bindTextarea('note', 2)) + saveBtn('ยืนยันรับเข้าสต๊อก'));
+  }
+  function saveReceiveModal() {
+    var d = state.draft;
+    if (d.readOnly) { closeModal(); return; }
+    if (d.lines.some(function (l) { return l.qtyReceived === '' || l.qtyReceived == null || isNaN(Number(l.qtyReceived)) || Number(l.qtyReceived) < 0; })) { toast('error', 'กรุณากรอกจำนวนที่รับจริงให้ครบทุกรายการ (ไม่ได้รับให้กรอก 0)'); return; }
+    call('receiveOrder', session.token, { id: d.id, date: d.date, note: d.note, lines: d.lines }).then(function () {
+      toast('success', 'ตรวจรับแล้ว เพิ่มเข้าสต๊อกและแจ้ง LINE');
+      closeModal(); loadPurchaseChecks();
       if (state.stock.list) loadStock();
+      if (state.expense.orders) loadOrders();
     });
   }
 
@@ -5908,6 +6023,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'procedure': return procedureModalBody();
       case 'expense': return expenseModalBody();
       case 'order': return orderModalBody();
+      case 'receive': return receiveModalBody();
       case 'doctor': return doctorModalBody();
       case 'sales': return salesModalBody();
       case 'promotion': return promotionModalBody();
@@ -5931,6 +6047,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'procedure': return saveProcedureModal();
       case 'expense': return saveExpenseModal();
       case 'order': return saveOrderModal();
+      case 'receive': return saveReceiveModal();
       case 'doctor': return saveDoctorModal();
       case 'sales': return saveSalesModal();
       case 'promotion': return savePromotionModal();
@@ -6134,6 +6251,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'edit-stock-log': editStockLogModal(arg); break;
       case 'delete-stock-log': deleteStockLogConfirm(arg); break;
       case 'exp-tab': expTab(arg); break;
+      case 'pcheck-tab': pcheckTab(arg); break;
+      case 'pcheck-open': openReceiveModal(arg); break;
+      case 'pcheck-page': state.pcheck.page = Number(arg); loadPurchaseChecks(); break;
       case 'stock-tab': stockTab(arg); break;
       case 'new-withdraw': newWithdrawModal(); break;
       case 'wd-photo-add': pickWdPhoto(); break;
@@ -6275,6 +6395,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       }
       var capEl = document.getElementById('orderLineCap' + orderPick[1]);
       if (capEl) capEl.innerHTML = orderLineCaption(oLine);
+      return;
+    }
+    var rcv = state.modal && state.modal.type === 'receive' && bindPath.match(/^lines\.(\d+)\.qtyReceived$/);
+    if (rcv) {
+      var rIdx = Number(rcv[1]), rEl = document.getElementById('rcvDiff' + rIdx);
+      if (el.value === '') state.draft.lines[rIdx].qtyReceived = '';
+      if (rEl) rEl.innerHTML = receiveDiffHtml(state.draft.order.lines[rIdx].qty, state.draft.lines[rIdx].qtyReceived);
       return;
     }
     // จัดซื้อ: switching ประเภทใบสั่งซื้อ swaps the ผู้จำหน่าย box (a sales-person list / free text), so the old value no longer applies.
@@ -6460,7 +6587,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   window.__valin = {
     onListSearchInput: onListSearchInput,
     onPatientSuggestSearch: onPatientSuggestSearch, onPromotionSearch: onPromotionSearch, onWithdrawSearch: onWithdrawSearch,
-    onProcedureSearch: onProcedureSearch, onDepositSearch: onDepositSearch, onBoardSearch: onBoardSearch
+    onProcedureSearch: onProcedureSearch, onDepositSearch: onDepositSearch, onBoardSearch: onBoardSearch, onPurchaseCheckSearch: onPurchaseCheckSearch
   };
 
   /* ---------------------------------------------------------------- */

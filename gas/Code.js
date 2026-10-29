@@ -87,7 +87,10 @@
  * (category, item, qty, unit price, line total) in `OrderLines`,
  * linked by PoID. The UI table lists one row per PO; editing a PO
  * opens all of its lines together, matching the "รองรับมากกว่า 1
- * รายการ" requirement in the order modal spec.
+ * รายการ" requirement in the order modal spec. Flow: an admin creates the
+ * PO (รอตรวจรับ — stock untouched); staff open it under เช็ครายการจัดซื้อ,
+ * type each line's จำนวนที่รับจริง and confirm (receiveOrder), which adds
+ * that to Stock and tells the admins on LINE.
  *
  * SETUP (run once from the Apps Script editor):
  *   1. Run `setupProject` — creates the spreadsheet, all sheets with
@@ -295,8 +298,10 @@ var CONFIG = {
     // carry ItemID and their Qty is added to Stock — only on POs created
     // since then (StockApplied=TRUE), so editing an older PO never re-adds it.
     // OrderType: 'sales' = ยา(จากเซลล์), Supplier holds the sales person's name; 'other' (or blank) = อื่นๆ, Supplier is the vendor.
-    Orders: ['PoID', 'Date', 'Supplier', 'TotalAmount', 'CreatedBy', 'CreatedAt', 'StockApplied', 'OrderType'],
-    OrderLines: ['LineID', 'PoID', 'Category', 'ItemName', 'Qty', 'UnitPrice', 'LineTotal', 'ItemID'],
+    // Status: 'pending' = รอตรวจรับ (made by admin, stock untouched) | 'received' = ตรวจรับแล้ว (blank on rows from before
+    // the check step = received). ReceivedDate/By/At/Note are the staff check; OrderLines.QtyReceived is จำนวนที่รับจริง.
+    Orders: ['PoID', 'Date', 'Supplier', 'TotalAmount', 'CreatedBy', 'CreatedAt', 'StockApplied', 'OrderType', 'Status', 'ReceivedDate', 'ReceivedBy', 'ReceivedAt', 'ReceiveNote'],
+    OrderLines: ['LineID', 'PoID', 'Category', 'ItemName', 'Qty', 'UnitPrice', 'LineTotal', 'ItemID', 'QtyReceived'],
     Doctors: ['DoctorID', 'Name', 'Status', 'MinAmount', 'CreatedAt', 'CommissionPct'],
     Sales: ['SalesID', 'Name', 'Status', 'CommissionRate', 'MinAmount', 'CreatedAt'],
     // Promotions (round 12, item 3) — reference/display table for the
@@ -4357,12 +4362,17 @@ function deleteExpense(token, id) {
 
 /* ---- จัดซื้อ (purchase orders): Orders (header) + OrderLines (multi-line items) ---- */
 
+/** 'pending' (รอตรวจรับ) or 'received' (ตรวจรับแล้ว); rows from before the check step are received. */
+function orderStatusOf_(o) { return o.Status === 'pending' ? 'pending' : 'received'; }
+function lineQtyReceived_(l) { var v = l.QtyReceived != null ? l.QtyReceived : l.qtyReceived; return v === '' || v == null ? null : Number(v) || 0; }
+
 function mapOrderOut_(o, lines) {
   return {
     id: o.PoID, date: dateStr_(o.Date), supplier: o.Supplier, orderType: o.OrderType === 'sales' ? 'sales' : 'other', totalAmount: Number(o.TotalAmount) || 0,
     createdBy: o.CreatedBy, row: o._row,
+    status: orderStatusOf_(o), receivedDate: o.ReceivedDate ? dateStr_(o.ReceivedDate) : '', receivedBy: o.ReceivedBy || '', receiveNote: o.ReceiveNote || '',
     lines: (lines || []).map(function (l) {
-      return { id: l.LineID, category: l.Category, itemName: l.ItemName, qty: Number(l.Qty) || 0, unitPrice: Number(l.UnitPrice) || 0, lineTotal: Number(l.LineTotal) || 0, itemId: l.ItemID || '' };
+      return { id: l.LineID, category: l.Category, itemName: l.ItemName, qty: Number(l.Qty) || 0, unitPrice: Number(l.UnitPrice) || 0, lineTotal: Number(l.LineTotal) || 0, itemId: l.ItemID || '', qtyReceived: lineQtyReceived_(l) };
     }),
     stockApplied: isTrue_(o.StockApplied)
   };
@@ -4370,7 +4380,8 @@ function mapOrderOut_(o, lines) {
 
 /**
  * Stock a PO puts in, in applyStockEffects_'s shape (negative = added to
- * stock): {itemId: -qty}. Only POs with StockApplied=TRUE count, and items
+ * stock): {itemId: -qty}. Only POs with StockApplied=TRUE (ตรวจรับแล้ว) count,
+ * each line by its จำนวนที่รับจริง (older lines: the ordered qty), and items
  * no longer in Stock are skipped so a deleted stock item never blocks
  * editing/deleting the PO.
  */
@@ -4378,7 +4389,8 @@ function orderEffects_(orderRow, lines, stockIds) {
   var eff = {};
   if (!orderRow || !isTrue_(orderRow.StockApplied)) return eff;
   lines.forEach(function (l) {
-    var id = l.ItemID || l.itemId, qty = Number(l.Qty != null ? l.Qty : l.qty) || 0;
+    var got = lineQtyReceived_(l);
+    var id = l.ItemID || l.itemId, qty = got != null ? got : (Number(l.Qty != null ? l.Qty : l.qty) || 0);
     if (id && qty && stockIds[id]) eff[id] = round2_((eff[id] || 0) - qty);
   });
   return eff;
@@ -4435,10 +4447,15 @@ function getOrder(token, id) {
   });
 }
 
-/** order: {id?, date, orderType ('sales' ยา(จากเซลล์): supplier = the sales person's name | 'other' อื่นๆ: the vendor), supplier, lines:[{category,itemName,qty,unitPrice,itemId?}]} — TotalAmount computed server-side; lines with an itemId add their qty to Stock (see orderEffects_). */
+/**
+ * Admin creates / edits a PO. order: {id?, date, orderType ('sales' ยา(จากเซลล์): supplier = the sales person's name |
+ * 'other' อื่นๆ: the vendor), supplier, lines:[{category,itemName,qty,unitPrice,itemId?}]} — TotalAmount computed
+ * server-side. A new PO is รอตรวจรับ and does not touch Stock; staff receive it with receiveOrder. Once received it
+ * can't be edited (delete it — which takes its stock back out — and make a new one).
+ */
 function saveOrder(token, order) {
   return safeCall_(function () {
-    var session = requireAuth_(token, 'staff');
+    var session = requireAuth_(token, 'admin');
     var orderType = order.orderType === 'sales' ? 'sales' : 'other';
     requireFields_(order, { date: 'วันที่', supplier: orderType === 'sales' ? 'ชื่อเซลล์' : 'ผู้จำหน่าย' });
     requireDateStr_(order.date, 'วันที่');
@@ -4451,7 +4468,6 @@ function saveOrder(token, order) {
     });
     var totalAmount = lines.reduce(function (sum, l) { return sum + Number(l.qty) * Number(l.unitPrice); }, 0);
 
-    var notice = null; // LINE: what this PO did to stock, sent once the lock is released
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     try {
@@ -4460,18 +4476,14 @@ function saveOrder(token, order) {
       var isNew = !order.id;
       var existingOrder = isNew ? null : getRows_(orderSheet).filter(function (o) { return o.PoID === order.id; })[0];
       if (!isNew && !existingOrder) throw ValidationError_('ไม่พบใบสั่งซื้อ');
+      if (!isNew && orderStatusOf_(existingOrder) !== 'pending') throw ValidationError_('ใบสั่งซื้อนี้ตรวจรับแล้ว แก้ไขไม่ได้ — ลบแล้วสร้างใหม่แทน (การลบจะหักจำนวนที่รับเข้าออกจากสต๊อก)');
       var poId = isNew ? ('PO' + nextSeq_('ORDER', 5)) : order.id;
       var obj = {
         PoID: poId, Date: order.date, Supplier: order.supplier, OrderType: orderType, TotalAmount: totalAmount,
-        CreatedBy: isNew ? session.username : (order.createdBy || session.username),
-        CreatedAt: isNew ? nowStr_() : (order.createdAt || nowStr_()),
-        StockApplied: isNew ? 'TRUE' : (existingOrder.StockApplied || '')
+        CreatedBy: isNew ? session.username : (existingOrder.CreatedBy || session.username),
+        CreatedAt: isNew ? nowStr_() : (existingOrder.CreatedAt || nowStr_()),
+        StockApplied: 'FALSE', Status: 'pending', ReceivedDate: '', ReceivedBy: '', ReceivedAt: '', ReceiveNote: ''
       };
-      // Add the purchased qty to Stock (an edit moves only the difference).
-      var stockIds = stockIdSet_();
-      var oldLines = isNew ? [] : getRows_(lineSheet).filter(function (l) { return l.PoID === order.id; });
-      var poMoves = applyStockEffects_(session, orderEffects_(existingOrder, oldLines, stockIds), orderEffects_(obj, lines, stockIds),
-        'จัดซื้อ ' + poId + ' · ' + order.supplier, 'purchase');
       if (isNew) appendRow_(orderSheet, CONFIG.HEADERS.Orders, obj);
       else {
         var rowIndex = findRowIndexById_(orderSheet, 'PoID', order.id);
@@ -4486,13 +4498,109 @@ function saveOrder(token, order) {
         appendRow_(lineSheet, CONFIG.HEADERS.OrderLines, {
           LineID: poId + '-' + (i + 1), PoID: poId, Category: l.category, ItemName: l.itemName,
           Qty: Number(l.qty), UnitPrice: Number(l.unitPrice), LineTotal: Number(l.qty) * Number(l.unitPrice),
-          ItemID: l.itemId || ''
+          ItemID: l.itemId || '', QtyReceived: ''
         });
       });
       writeAudit_(session, isNew ? 'CREATE' : 'UPDATE', 'Order', poId, obj.Supplier + ' ' + totalAmount);
       bumpDashboardCacheVersion_(); // Round 19 item 4: purchase orders feed dashboard expense totals
-      if (poMoves.length) notice = { title: isNew ? 'เพิ่มสต๊อกคลีนิค' : 'ปรับสต๊อกคลีนิคจากการแก้ไขใบสั่งซื้อ', sub: 'จัดซื้อ ' + poId + ' · ' + obj.Supplier, date: order.date, by: session, moves: poMoves };
       return { ok: true, data: mapOrderOut_(Object.assign({ _row: 0 }, obj), lines) };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+/* ---- เช็ครายการจัดซื้อ (staff): the POs an admin made, without any price, and the receive step ---- */
+
+/** A PO for the check screen: no ราคา/ยอดเงิน (staff never see purchase prices); each line with its stock unit. */
+function mapOrderCheckOut_(o, lines, stockById) {
+  return {
+    id: o.PoID, date: dateStr_(o.Date), supplier: o.Supplier, orderType: o.OrderType === 'sales' ? 'sales' : 'other',
+    status: orderStatusOf_(o), createdBy: o.CreatedBy || '', receivedDate: o.ReceivedDate ? dateStr_(o.ReceivedDate) : '',
+    receivedBy: o.ReceivedBy || '', receiveNote: o.ReceiveNote || '', lineCount: lines ? lines.length : 0,
+    lines: (lines || []).map(function (l) {
+      var st = stockById && l.ItemID ? stockById[l.ItemID] : null;
+      return { id: l.LineID, category: l.Category, itemName: l.ItemName, qty: Number(l.Qty) || 0, qtyReceived: lineQtyReceived_(l),
+        itemId: l.ItemID || '', unit: st ? st.Unit || '' : '', inStock: !!st };
+    })
+  };
+}
+
+/** opts: {status: 'pending' | 'received', q, page} — รอตรวจรับ oldest first (work queue), ตรวจรับแล้ว newest first. */
+function listPurchaseChecks(token, opts) {
+  return safeCall_(function () {
+    requireAuth_(token, 'staff');
+    opts = opts || {};
+    var status = opts.status === 'received' ? 'received' : 'pending';
+    var rows = getRows_(getSheet_(CONFIG.SHEETS.ORDERS)).filter(function (o) { return orderStatusOf_(o) === status; });
+    var lineRows = getRows_(getSheet_(CONFIG.SHEETS.ORDER_LINES)), byPo = {};
+    lineRows.forEach(function (l) { (byPo[l.PoID] = byPo[l.PoID] || []).push(l); });
+    var q = String(opts.q || '').trim().toLowerCase();
+    if (q) rows = rows.filter(function (o) {
+      return String(o.Supplier).toLowerCase().indexOf(q) > -1 || String(o.PoID).toLowerCase().indexOf(q) > -1 ||
+        (byPo[o.PoID] || []).some(function (l) { return String(l.ItemName).toLowerCase().indexOf(q) > -1; });
+    });
+    rows.sort(function (a, b) {
+      return status === 'pending'
+        ? dateStr_(a.Date).localeCompare(dateStr_(b.Date)) || String(a.CreatedAt).localeCompare(String(b.CreatedAt))
+        : String(b.ReceivedAt || b.CreatedAt).localeCompare(String(a.ReceivedAt || a.CreatedAt));
+    });
+    var counts = { pending: 0 };
+    getRows_(getSheet_(CONFIG.SHEETS.ORDERS)).forEach(function (o) { if (orderStatusOf_(o) === 'pending') counts.pending++; });
+    var page = paginate_(rows, opts.page, opts.pageSize);
+    var stockById = {};
+    getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (st) { stockById[st.ItemID] = st; });
+    page.items = page.items.map(function (o) { return mapOrderCheckOut_(o, byPo[o.PoID] || [], stockById); });
+    page.counts = counts;
+    return { ok: true, data: page };
+  });
+}
+
+/**
+ * Staff confirm a รอตรวจรับ PO. payload: {id, date, note, lines:[{id, qtyReceived}]} — every line needs its จำนวนที่รับจริง
+ * (0 = nothing came). Stock-linked lines add what arrived to Stock (StockLog kind 'purchase'), the PO's ยอดรวม becomes
+ * รับจริง × ราคา/หน่วย, and the admins get a LINE "เพิ่มสต๊อกคลีนิค" message.
+ */
+function receiveOrder(token, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'staff');
+    payload = payload || {};
+    requireFields_(payload, { id: 'ใบสั่งซื้อ', date: 'วันที่รับของ' });
+    requireDateStr_(payload.date, 'วันที่รับของ');
+    var got = {};
+    (Array.isArray(payload.lines) ? payload.lines : []).forEach(function (l) { if (l && l.id) got[l.id] = l.qtyReceived; });
+    var notice = null;
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var orderSheet = getSheet_(CONFIG.SHEETS.ORDERS), lineSheet = getSheet_(CONFIG.SHEETS.ORDER_LINES);
+      var order = getRows_(orderSheet).filter(function (o) { return o.PoID === payload.id; })[0];
+      if (!order) throw ValidationError_('ไม่พบใบสั่งซื้อ');
+      if (orderStatusOf_(order) !== 'pending') throw ValidationError_('ใบสั่งซื้อนี้ตรวจรับไปแล้ว');
+      var lines = getRows_(lineSheet).filter(function (l) { return l.PoID === order.PoID; });
+      if (!lines.length) throw ValidationError_('ใบสั่งซื้อนี้ไม่มีรายการสินค้า');
+      var short = 0, total = 0;
+      var newLines = lines.map(function (l, i) {
+        var v = got[l.LineID];
+        if (v === undefined || v === null || v === '') throw ValidationError_('กรุณากรอกจำนวนที่รับจริง (' + l.ItemName + ')');
+        var qr = requireNumber_(v, 'จำนวนที่รับจริง (' + l.ItemName + ')', { min: 0 });
+        if (qr < (Number(l.Qty) || 0)) short++;
+        var lineTotal = round2_(qr * (Number(l.UnitPrice) || 0));
+        total += lineTotal;
+        return Object.assign({}, l, { QtyReceived: qr, LineTotal: lineTotal });
+      });
+      var obj = Object.assign({}, order, {
+        Status: 'received', StockApplied: 'TRUE', TotalAmount: round2_(total), ReceivedDate: payload.date,
+        ReceivedBy: session.name || session.username, ReceivedAt: nowStr_(), ReceiveNote: String(payload.note || '').trim().slice(0, 500)
+      });
+      var moves = applyStockEffects_(session, {}, orderEffects_(obj, newLines, stockIdSet_()), 'ตรวจรับใบสั่งซื้อ ' + order.PoID + ' · ' + order.Supplier, 'purchase');
+      newLines.forEach(function (l) { updateRowByIndex_(lineSheet, CONFIG.HEADERS.OrderLines, l._row, l); });
+      updateRowByIndex_(orderSheet, CONFIG.HEADERS.Orders, order._row, obj);
+      writeAudit_(session, 'RECEIVE', 'Order', order.PoID, order.Supplier + (short ? ' รับไม่ครบ ' + short + ' รายการ' : ' รับครบ'));
+      bumpDashboardCacheVersion_();
+      notice = { title: 'เพิ่มสต๊อกคลีนิค', date: payload.date, by: session, moves: moves,
+        sub: ['ตรวจรับ ' + order.PoID + ' · ' + order.Supplier, short ? 'รับไม่ครบ ' + short + ' รายการ' : 'รับครบ', obj.ReceiveNote].filter(Boolean).join(' · ') };
+      return { ok: true, data: mapOrderCheckOut_(obj, newLines, null) };
     } finally {
       lock.releaseLock();
       if (notice) notifyStockChange_(notice);
@@ -4529,7 +4637,7 @@ function deleteOrder(token, id) {
 /* ======================================================================
    DASHBOARD — aggregated stats + chart data
    Revenue = sum of Amount on Records with Status = 'paid'.
-   Expense = sum of Expenses.Amount + Orders.TotalAmount (all money out).
+   Expense = sum of Expenses.Amount + Orders.TotalAmount of the ตรวจรับแล้ว POs (all money out).
    NOTE (assumption, flagged for the clinic to confirm): "รายได้เซลล์"
    is revenue attributed to a record that has a SalesID; "ยอดรายได้คลีนิค"
    is revenue with no SalesID (walk-in / clinic-direct); "รายได้อื่นๆ" is
@@ -4582,7 +4690,7 @@ function getDashboardData(token, opts) {
 
     var allExpenses = getRows_(getSheet_(CONFIG.SHEETS.EXPENSES));
     var periodExpenses = allExpenses.filter(function (r) { var d = dateStr_(r.Date); return d >= dateFrom && d <= dateTo; });
-    var allOrders = getRows_(getSheet_(CONFIG.SHEETS.ORDERS));
+    var allOrders = getRows_(getSheet_(CONFIG.SHEETS.ORDERS)).filter(function (o) { return orderStatusOf_(o) === 'received'; }); // a PO waiting to be checked is not spent yet
     var periodOrders = allOrders.filter(function (r) { var d = dateStr_(r.Date); return d >= dateFrom && d <= dateTo; });
 
     // True total money collected per record (recordCollected_) ties out
@@ -5123,14 +5231,22 @@ function seedDemoData(token) {
         for (var l = 0; l < 2 + (o % 2); l++) {
           var it = stock[(o * 2 + l) % 7], q = 10 + l * 5, price = it.cost || (40 + l * 25);
           total += q * price;
-          poLines.push({ LineID: poId + '-' + (l + 1), PoID: poId, Category: it.category, ItemName: it.name, Qty: q, UnitPrice: price, LineTotal: q * price, ItemID: it.id });
+          poLines.push({ LineID: poId + '-' + (l + 1), PoID: poId, Category: it.category, ItemName: it.name, Qty: q, UnitPrice: price, LineTotal: q * price, ItemID: it.id, QtyReceived: q });
           move(poDate, it, 'purchase', q, 0, 'จัดซื้อ ' + poId + ' · ' + poSupplier);
         }
         // One free-text line (not in stock) to show it doesn't touch stock.
-        if (o === 2) { poLines.push({ LineID: poId + '-9', PoID: poId, Category: 'วัสดุสิ้นเปลือง', ItemName: 'ถุงขยะ', Qty: 5, UnitPrice: 30, LineTotal: 150, ItemID: '' }); total += 150; }
-        appendRow_(orderSheet, CONFIG.HEADERS.Orders, { PoID: poId, Date: poDate, Supplier: poSupplier, OrderType: poType, TotalAmount: total, CreatedBy: actor, CreatedAt: nowStr_(), StockApplied: 'TRUE' });
+        if (o === 2) { poLines.push({ LineID: poId + '-9', PoID: poId, Category: 'วัสดุสิ้นเปลือง', ItemName: 'ถุงขยะ', Qty: 5, UnitPrice: 30, LineTotal: 150, ItemID: '', QtyReceived: 5 }); total += 150; }
+        appendRow_(orderSheet, CONFIG.HEADERS.Orders, { PoID: poId, Date: poDate, Supplier: poSupplier, OrderType: poType, TotalAmount: total, CreatedBy: actor, CreatedAt: nowStr_(), StockApplied: 'TRUE',
+          Status: 'received', ReceivedDate: poDate, ReceivedBy: actor, ReceivedAt: nowStr_(), ReceiveNote: '' });
         poLines.forEach(function (row) { appendRow_(lineSheet, CONFIG.HEADERS.OrderLines, row); });
       }
+      // Two POs made by the admin that staff have not checked yet (เช็ครายการจัดซื้อ: รอตรวจรับ) — stock untouched.
+      [[dayStr(1), suppliers[0], [[0, 5], [3, 10]]], [dayStr(0), suppliers[1], [[1, 3], [7, 6]]]].forEach(function (p) {
+        var pid = 'PO' + nextSeq_('ORDER', 5), sum = 0;
+        var pl = p[2].map(function (x, k) { var it = stock[x[0] % stock.length], price = it.cost || 50; sum += x[1] * price; return { LineID: pid + '-' + (k + 1), PoID: pid, Category: it.category, ItemName: it.name, Qty: x[1], UnitPrice: price, LineTotal: x[1] * price, ItemID: it.id, QtyReceived: '' }; });
+        appendRow_(orderSheet, CONFIG.HEADERS.Orders, { PoID: pid, Date: p[0], Supplier: p[1], OrderType: 'other', TotalAmount: sum, CreatedBy: actor, CreatedAt: nowStr_(), StockApplied: 'FALSE', Status: 'pending' });
+        pl.forEach(function (row) { appendRow_(lineSheet, CONFIG.HEADERS.OrderLines, row); });
+      });
 
       // Treatment records — 16 days (oldest first), 1-4 records a day. Most start
       // as a จัดยา-เบิกยา (the withdrawal, then หัตถการ / โปร / อื่นๆ added to its
@@ -6326,7 +6442,7 @@ function backupPlan_(cutoff) {
   split('StockLog', logs, function (l) { return dateStr_(l.Date) < cutoff && latest[l.ItemID] !== l; });
   split('Expenses', expenses, function (e) { return dateStr_(e.Date) < cutoff; });
   var movedPo = {};
-  split('Orders', orders, function (o) { var m = dateStr_(o.Date) < cutoff; if (m) movedPo[o.PoID] = true; return m; });
+  split('Orders', orders, function (o) { var m = orderStatusOf_(o) === 'received' && dateStr_(o.Date) < cutoff; if (m) movedPo[o.PoID] = true; return m; }); // รอตรวจรับ stays
   split('OrderLines', lines, function (l) { return !!movedPo[l.PoID]; });
   split('AuditLog', audit, function (a) { return dateStr_(a.Timestamp) < cutoff; });
   var from = '', to = '';
