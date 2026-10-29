@@ -16,6 +16,7 @@ body{margin:0;font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text
 .top{background:linear-gradient(160deg,#27488F,#14295A);color:#fff;padding:18px 16px 54px;border-radius:0 0 26px 26px}
 .top .row{display:flex;align-items:center;gap:10px}
 .logo{width:38px;height:38px;border-radius:12px;background:var(--gold);color:var(--navy);display:flex;align-items:center;justify-content:center;font-weight:700;flex:none}
+.logo-img{width:44px;height:44px;object-fit:cover;background:#fff;padding:0;box-shadow:0 4px 12px rgba(0,0,0,.18)}
 .top h1{font-size:18px;margin:0}.top .sub{font-size:11.5px;opacity:.75}
 .refresh{margin-left:auto;width:38px;height:38px;border-radius:12px;background:rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,.2);color:#fff;text-decoration:none;flex:none}
 .tiles{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:-40px 12px 0;position:relative}
@@ -55,7 +56,7 @@ body{margin:0;font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text
   </div>
 <? } else { ?>
   <div class="top"><div class="row">
-    <div class="logo">VC</div>
+    <? if (logoUrl) { ?><img class="logo logo-img" src="<?= logoUrl ?>" alt="<?= clinicName ?>"><? } else { ?><div class="logo">VC</div><? } ?>
     <div style="min-width:0"><h1>สต๊อกทั้งหมด</h1><div class="sub"><?= clinicName ?> · อัปเดต <?= updated ?></div></div>
     <a class="refresh" href="<?= selfUrl ?>" title="โหลดใหม่"><span class="ms">refresh</span></a>
   </div></div>

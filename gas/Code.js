@@ -5592,11 +5592,23 @@ function stockViewItems_() {
     return { name: String(r.Name || ''), cat: String(r.Category || ''), unit: String(r.Unit || ''), type: stockTypeOf_(r), qty: Number(r.Qty) || 0, min: numOrNull_(r.MinQty) };
   });
 }
+/** The company logo (ตั้งค่าคลินิก > ข้อมูลบริษัท) as a data URI for pages served without a login; '' when there is none. */
+function getClinicLogoUrl_() {
+  try {
+    var row = getRows_(getSheet_(CONFIG.SHEETS.CLINIC_SETTINGS)).filter(function (r) { return r.Key === 'logoFileId'; })[0];
+    if (!row || !row.Value) return '';
+    var blob = DriveApp.getFileById(row.Value).getBlob();
+    return 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
+  } catch (e) {
+    return '';
+  }
+}
 function renderStockPage_(token, q) {
   var tpl = HtmlService.createTemplateFromFile('StockView');
   tpl.valid = isStockLinkTokenValid_(token);
   tpl.q = String(q || '').slice(0, 100);
   tpl.clinicName = getClinicName_();
+  tpl.logoUrl = tpl.valid ? getClinicLogoUrl_() : '';
   tpl.updated = nowThai_();
   tpl.selfUrl = (PropertiesService.getScriptProperties().getProperty(CONFIG.PROPS.APP_URL) || ScriptApp.getService().getUrl()) +
     '?page=stock&t=' + encodeURIComponent(String(token || '')) + (q ? '&q=' + encodeURIComponent(tpl.q) : '');
