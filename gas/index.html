@@ -268,6 +268,7 @@ button,input,textarea,select{font-family:inherit}
 .empty-state{padding:40px 20px;text-align:center;color:var(--muted);font-size:13px}
 .supply-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
 .supply-row .g{flex:1}
+.cat-badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:11.5px;font-weight:500;background:var(--accent-soft);color:var(--accent);white-space:nowrap}
 .tag-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .upload-drop{border:1.5px dashed var(--border);border-radius:var(--r-sm);padding:16px;text-align:center;font-size:12.5px;color:var(--muted);cursor:pointer}
 .upload-drop:hover{border-color:var(--accent)}
@@ -465,6 +466,38 @@ body{background:transparent;background-image:
 
 /* Inputs */
 input,select,textarea{transition:border-color .18s ease,box-shadow .18s ease,background .18s ease}
+/* Native <select>: Safari/macOS ignores padding on the system look, so it came out shorter than the inputs beside it. Same box everywhere instead. */
+select{-webkit-appearance:none;-moz-appearance:none;appearance:none;line-height:normal;cursor:pointer;padding-right:32px!important;text-overflow:ellipsis;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24'><path d='M6 9l6 6 6-6' fill='none' stroke='%237A839F' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/></svg>")!important;
+  background-repeat:no-repeat!important;background-position:right 11px center!important;background-size:14px!important}
+select:disabled{cursor:not-allowed;opacity:.6}
+/* ค.ศ. date field: a text box (ปปปป-ดด-วว) + our own calendar, so the year is never พ.ศ. */
+.dt-wrap{position:relative;display:block}
+.dt-wrap.dt-inline{display:inline-block}
+.dt-text{padding-right:34px!important}
+.dt-text.dt-bad{border-color:var(--red-dark)!important;box-shadow:0 0 0 3px rgba(172,65,67,.12)!important}
+.dt-cal{position:absolute;right:4px;top:50%;transform:translateY(-50%);border:none;background:none;cursor:pointer;padding:4px 6px;border-radius:8px;color:var(--muted);display:flex;align-items:center;line-height:1}
+.dt-cal:hover{background:var(--hover-bg);color:var(--accent)}
+.dt-cal .ms{font-size:18px}
+#dtPopRoot{position:fixed;z-index:5100;display:none}
+#dtPopRoot.open{display:block}
+.dt-pop{width:272px;padding:10px 10px 8px;background:var(--glass-strong,#fff);backdrop-filter:blur(22px) saturate(160%);-webkit-backdrop-filter:blur(22px) saturate(160%);border:1px solid var(--glass-border,var(--border));border-radius:14px;box-shadow:0 18px 44px rgba(15,27,61,.22)}
+.dt-head{display:flex;align-items:center;gap:2px;margin-bottom:6px}
+.dt-title{flex:1;text-align:center;font-weight:700;font-size:13.5px}
+.dt-title small{display:block;font-size:10px;font-weight:400;color:var(--muted)}
+.dt-nav{border:none;background:none;cursor:pointer;width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text-2)}
+.dt-nav:hover{background:var(--hover-bg)}
+.dt-nav .ms{font-size:18px}
+.dt-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+.dt-dow{font-size:10.5px;color:var(--muted);text-align:center;padding:3px 0}
+.dt-day{border:none;background:none;cursor:pointer;height:32px;border-radius:9px;font-size:12.5px;color:var(--text);font-family:inherit}
+.dt-day:hover:not(:disabled){background:var(--hover-bg)}
+.dt-day.today{box-shadow:inset 0 0 0 1px var(--accent)}
+.dt-day.sel{background:var(--accent);color:#fff;font-weight:700}
+.dt-day:disabled{color:var(--muted-4,#C5CBDD);cursor:not-allowed}
+.dt-foot{display:flex;justify-content:space-between;margin-top:6px;padding-top:6px;border-top:1px solid var(--border)}
+.dt-foot button{border:none;background:none;cursor:pointer;color:var(--accent);font-size:12.5px;font-weight:600;padding:4px 8px;border-radius:8px;font-family:inherit}
+.dt-foot button:hover{background:var(--hover-bg)}
 input:focus,select:focus,textarea:focus,.input:focus{outline:none;border-color:var(--accent)!important;box-shadow:0 0 0 3px rgba(30,58,114,.12);background:rgba(255,255,255,.9)}
 .input-wrap:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(30,58,114,.12)}
 
@@ -501,6 +534,7 @@ input:focus,select:focus,textarea:focus,.input:focus{outline:none;border-color:v
 <div class="gs-loading-overlay" id="gsLoadingBar"><div class="spin-lg"></div><div class="lbl" id="gsLoadingLbl">กำลังบันทึก...</div></div>
 <div id="app"></div>
 <div id="portalDropdown" class="portal-dd"></div>
+<div id="dtPopRoot"></div>
 <!-- Side panels live in their own root, outside #app, so an unrelated
      full-page render() (e.g. a background list refresh) never recreates
      their DOM node and replays the slide-in animation — see renderPatientPanel/
@@ -921,9 +955,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var trigger = document.getElementById(state.portal.triggerId);
     if (!trigger) { closePortal(); return; }
     var r = trigger.getBoundingClientRect();
-    var estHeight = Math.min(260, (state.portal.options.length || 1) * 38 + 8);
-    var roomBelow = window.innerHeight - r.bottom;
-    var openUpward = roomBelow < estHeight + 12 && r.top > estHeight + 12;
+    var natural = Math.min(260, portalEl.scrollHeight || ((state.portal.options.length || 1) * 44 + 8)); // the list's real height at this font
+    var roomBelow = window.innerHeight - r.bottom - 18, roomAbove = r.top - 18;
+    var openUpward = roomBelow < natural && roomAbove > roomBelow; // flip only when the other side really has more room
+    portalEl.style.maxHeight = Math.max(120, Math.min(260, openUpward ? roomAbove : roomBelow)) + 'px'; // never taller than the screen has room for
     portalEl.style.left = Math.min(r.left, window.innerWidth - 220) + 'px';
     if (openUpward) {
       portalEl.style.top = 'auto';
@@ -1469,9 +1504,114 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     '</div>';
   }
 
+  /* ---- Dates are ค.ศ. only ----
+     A native <input type=date> shows the OS calendar (พ.ศ. on a Thai Mac) and the user then types 2026 into a พ.ศ. box. So every date
+     is a text box holding the ISO text ปปปป-ดด-วว (what the code, tables and server already use) + our own calendar. Typing digits
+     inserts the dashes; 29/10/2026 is understood; a year typed as พ.ศ. (2569) is turned into ค.ศ. (2026); a date that is incomplete,
+     impossible or past data-max never reaches the form (the last good date stays) and is refused when the box is left. */
+  var TH_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน', 'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+  var TH_DOW = ['อา', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส'];
+  var dt2 = function (n) { return (n < 10 ? '0' : '') + n; };
+  /** '' when v is a real ปปปป-ดด-วว date (and not after max); else why not. An empty value is fine. */
+  function dtCheckStr(v, max) {
+    if (!v) return '';
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+    if (!m) return 'กรอกวันที่เป็น ค.ศ. รูปแบบ ปปปป-ดด-วว เช่น 2026-10-29';
+    var y = +m[1], mo = +m[2], d = +m[3], t = new Date(Date.UTC(y, mo - 1, d));
+    if (y < 1900 || t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d) return 'วันที่ไม่ถูกต้อง (กรอกเป็น ค.ศ. เช่น 2026-10-29)';
+    if (max && v > max) return 'วันที่ต้องไม่เกิน ' + max;
+    return '';
+  }
+  /** o: {id, bind, value, action (data-action-change), max, title, style, wrapStyle, inline}. */
+  function dateInputHtml(o) {
+    var v = o.value == null ? '' : String(o.value);
+    return '<span class="dt-wrap' + (o.inline ? ' dt-inline' : '') + '"' + (o.wrapStyle ? ' style="' + o.wrapStyle + '"' : '') + '>' +
+      '<input type="text" class="dt-text" inputmode="numeric" autocomplete="off" maxlength="10" placeholder="ปปปป-ดด-วว" title="' + esc(o.title || 'กรอกเป็น ค.ศ. เช่น 2026-10-29') + '" value="' + esc(v) + '" data-last="' + esc(dtCheckStr(v, o.max) ? '' : v) + '"' +
+        (o.id ? ' id="' + o.id + '"' : '') + (o.bind ? ' data-bind="' + o.bind + '"' : '') + (o.action ? ' data-action-change="' + o.action + '"' : '') + (o.max ? ' data-max="' + esc(o.max) + '"' : '') +
+        ' style="' + (o.style || inputStyle) + '">' +
+      '<button type="button" class="dt-cal" tabindex="-1" data-action="dt-open" aria-label="เลือกวันที่"><span class="ms">calendar_month</span></button></span>';
+  }
+  // typing: mask / convert / validate (capture phase = before the form's own input handler)
+  document.addEventListener('input', function (ev) {
+    var el = ev.target;
+    if (!el.classList || !el.classList.contains('dt-text')) return;
+    var raw = el.value, out = raw, m;
+    if ((m = /^\s*(\d{1,2})[\/.\-](\d{1,2})[\/.\-](\d{4})\s*$/.exec(raw))) out = m[3] + '-' + dt2(+m[2]) + '-' + dt2(+m[1]); // 29/10/2026
+    else if (!/^\d{1,2}[\/.\-]/.test(raw)) { // not a วว/ดด/ปปปป being typed: keep digits, put the dashes in
+      var dg = raw.replace(/\D/g, '').slice(0, 8);
+      out = dg.slice(0, 4) + (dg.length > 4 ? '-' + dg.slice(4, 6) : '') + (dg.length > 6 ? '-' + dg.slice(6, 8) : '');
+    }
+    var ym = /^(\d{4})/.exec(out);
+    if (ym && +ym[1] >= 2400) { out = (+ym[1] - 543) + out.slice(4); toast('info', 'ปีที่กรอกเป็น พ.ศ. — แปลงเป็น ค.ศ. ให้แล้ว'); }
+    if (out !== raw) el.value = out;
+    var bad = dtCheckStr(el.value, el.getAttribute('data-max'));
+    el.classList.toggle('dt-bad', !!bad && el.value.length === 10);
+    if (el.value !== '' && bad) ev.stopImmediatePropagation(); // the form keeps the last good date
+    else el.setAttribute('data-last', el.value); // this is now what the form holds
+  }, true);
+  // leaving the box: a half-typed / impossible date is refused and the last good one comes back
+  document.addEventListener('change', function (ev) {
+    var el = ev.target;
+    if (!el.classList || !el.classList.contains('dt-text')) return;
+    var bad = dtCheckStr(el.value, el.getAttribute('data-max'));
+    if (el.value !== '' && bad) {
+      ev.stopImmediatePropagation();
+      toast('error', bad);
+      el.value = el.getAttribute('data-last') || ''; el.classList.remove('dt-bad');
+      return;
+    }
+    el.setAttribute('data-last', el.value);
+  }, true);
+  /* the calendar (own root, outside #app so a render() does not remove it) */
+  var dtPop = null, dtPopEl = document.getElementById('dtPopRoot');
+  function dtOpen(btn) {
+    var el = btn.closest('.dt-wrap').querySelector('.dt-text');
+    if (dtPop && dtPop.el === el) { dtClose(); return; }
+    var cur = el.value && !dtCheckStr(el.value, el.getAttribute('data-max')) ? el.value : todayStr();
+    dtPop = { el: el, y: +cur.slice(0, 4), m: +cur.slice(5, 7) - 1 };
+    dtDraw(); dtPopEl.classList.add('open'); dtPlace();
+  }
+  function dtClose() { dtPop = null; dtPopEl.classList.remove('open'); dtPopEl.innerHTML = ''; }
+  function dtNav(delta) { var t = dtPop.y * 12 + dtPop.m + delta; dtPop.y = Math.floor(t / 12); dtPop.m = t % 12; dtDraw(); dtPlace(); }
+  function dtSet(iso) {
+    var el = dtPop && dtPop.el;
+    dtClose();
+    if (!el || !document.body.contains(el)) return;
+    el.value = iso; el.classList.remove('dt-bad');
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }
+  function dtDraw() {
+    var P = dtPop, el = P.el, max = el.getAttribute('data-max') || '', today = todayStr();
+    var sel = el.value && !dtCheckStr(el.value, max) ? el.value : '';
+    var first = new Date(Date.UTC(P.y, P.m, 1)).getUTCDay(), n = new Date(Date.UTC(P.y, P.m + 1, 0)).getUTCDate();
+    var cells = '', i;
+    for (i = 0; i < first; i++) cells += '<span></span>';
+    for (i = 1; i <= n; i++) {
+      var iso = P.y + '-' + dt2(P.m + 1) + '-' + dt2(i);
+      cells += '<button type="button" class="dt-day' + (iso === sel ? ' sel' : '') + (iso === today ? ' today' : '') + '"' + (max && iso > max ? ' disabled' : '') + ' data-action="dt-pick" data-arg="' + iso + '">' + i + '</button>';
+    }
+    var nav = function (delta, icon, label) { return '<button type="button" class="dt-nav" data-action="dt-nav" data-arg="' + delta + '" aria-label="' + label + '"><span class="ms">' + icon + '</span></button>'; };
+    dtPopEl.innerHTML = '<div class="dt-pop">' +
+      '<div class="dt-head">' + nav(-12, 'keyboard_double_arrow_left', 'ปีก่อน') + nav(-1, 'chevron_left', 'เดือนก่อน') +
+        '<div class="dt-title">' + TH_MONTHS[P.m] + ' ' + P.y + '<small>ค.ศ.</small></div>' + nav(1, 'chevron_right', 'เดือนถัดไป') + nav(12, 'keyboard_double_arrow_right', 'ปีถัดไป') + '</div>' +
+      '<div class="dt-grid">' + TH_DOW.map(function (d) { return '<div class="dt-dow">' + d + '</div>'; }).join('') + cells + '</div>' +
+      '<div class="dt-foot"><button type="button" data-action="dt-pick" data-arg="' + (max && today > max ? max : today) + '">' + (max && today > max ? 'วันล่าสุด' : 'วันนี้') + '</button><button type="button" data-action="dt-pick" data-arg="">ล้าง</button></div></div>';
+  }
+  function dtPlace() {
+    var r = dtPop.el.getBoundingClientRect(), h = dtPopEl.offsetHeight, w = dtPopEl.offsetWidth, below = window.innerHeight - r.bottom;
+    dtPopEl.style.left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8)) + 'px';
+    dtPopEl.style.top = (below < h + 12 && r.top > below ? Math.max(8, r.top - h - 6) : r.bottom + 6) + 'px';
+  }
+  document.addEventListener('mousedown', function (ev) { if (dtPop && !ev.target.closest('#dtPopRoot') && !ev.target.closest('.dt-cal')) dtClose(); }, true);
+  document.addEventListener('keydown', function (ev) { if (dtPop && ev.key === 'Escape') { ev.stopPropagation(); dtClose(); } }, true);
+  window.addEventListener('scroll', function (ev) { if (dtPop && !(ev.target.nodeType === 1 && ev.target.closest('#dtPopRoot'))) dtClose(); }, true);
+  window.addEventListener('resize', function () { if (dtPop) dtClose(); });
+
   function bindInput(path, type, extra) {
     var v = getPath(state.draft, path);
     type = type || 'text';
+    if (type === 'date') return dateInputHtml({ bind: path, value: v });
     if (type === 'checkbox') {
       return '<input type="checkbox" data-bind="' + path + '" ' + (v ? 'checked' : '') + ' style="width:16px;height:16px" ' + (extra || '') + '>';
     }
@@ -1671,9 +1811,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       statCard('groups', 'จำนวนคนไข้', num(s.customerCount) + ' ราย');
     return '' +
       '<div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">' +
-        '<input type="date" id="dashFrom" value="' + esc(state.dash.from) + '" style="' + inputStyle + ';width:auto" data-action-change="dash-range">' +
+        dateInputHtml({ id: 'dashFrom', value: state.dash.from, action: 'dash-range', inline: true, style: inputStyle + ';width:150px' }) +
         '<span style="color:var(--muted)">ถึง</span>' +
-        '<input type="date" id="dashTo" value="' + esc(state.dash.to) + '" style="' + inputStyle + ';width:auto" data-action-change="dash-range">' +
+        dateInputHtml({ id: 'dashTo', value: state.dash.to, action: 'dash-range', inline: true, style: inputStyle + ';width:150px' }) +
       '</div>' +
       '<div class="grid-fit" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">' + cards + '</div>' +
       // Charts: รายเดือน (only months that have data) / รายได้ + รายจ่ายรายหมวดหมู่ / สัดส่วนส่วนแบ่งแพทย์ + ส่วนแบ่งเซลล์ + รายได้รายโปรโมชัน
@@ -2974,7 +3114,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       // The deposited part becomes a ยาฝาก lot; its วันหมดอายุ is typed right here.
       dispDep: line.qtyDeposit > 0
         ? '<span class="tag-badge" style="background:var(--green-soft);color:var(--green-dark);font-size:12.5px">' + esc(line.qtyDeposit) + (unit ? ' ' + esc(unit) : '') + '</span>' +
-          '<input type="date" value="' + esc(line.expiry || '') + '" data-bind="' + group + '.' + i + '.expiry" title="วันหมดอายุยาฝาก" style="' + inputStyle + ';padding:6px;margin-top:6px;font-size:12px">'
+          dateInputHtml({ bind: group + '.' + i + '.expiry', value: line.expiry || '', title: 'วันหมดอายุยาฝาก (ค.ศ. เช่น 2027-01-31)', wrapStyle: 'margin-top:6px', style: inputStyle + ';padding:6px;font-size:12px' })
         : '<span style="color:var(--muted)">—</span>',
       dispDepCap: line.qtyDeposit > 0 ? 'วันหมดอายุยาฝาก' : '',
       dispTotal: money(line.amount || 0)
@@ -3088,7 +3228,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (!(w.qtyDeposit > 0)) return '<span style="color:var(--muted)">—</span>';
     var s = medicineStockItem(w.itemId);
     return '<span class="tag-badge" style="background:var(--green-soft);color:var(--green-dark);font-size:12.5px">' + esc(w.qtyDeposit) + (s && s.unit ? ' ' + esc(s.unit) : '') + '</span>' +
-      '<input type="date" value="' + esc(w.expiry || '') + '" data-bind="withdrawItems.' + i + '.expiry" title="วันหมดอายุยาฝาก" style="' + inputStyle + ';padding:6px;margin-top:6px;font-size:12px">';
+      dateInputHtml({ bind: 'withdrawItems.' + i + '.expiry', value: w.expiry || '', title: 'วันหมดอายุยาฝาก (ค.ศ. เช่น 2027-01-31)', wrapStyle: 'margin-top:6px', style: inputStyle + ';padding:6px;font-size:12px' });
   }
   function addPendingWithdrawLines() {
     var d = state.draft, add = pendingWdNotInDraft(d);
@@ -3678,7 +3818,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var hint = { dispensed: 'รอลูกค้ามา (ทุกวัน)', waiting_doctor: 'ตามลำดับคิวพบแพทย์', with_doctor: 'กำลังพบแพทย์', waiting_payment: 'ตามลำดับคิวชำระเงิน', completed: 'ชำระเงินแล้ว' };
     var icon = { dispensed: 'medication', waiting_doctor: 'schedule', with_doctor: 'stethoscope', waiting_payment: 'payments', completed: 'task_alt' };
     var head = '<div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap">' +
-      '<input type="date" id="boardDate" value="' + esc(B.date) + '" style="' + inputStyle + ';width:auto" data-action-change="board-date">' +
+      dateInputHtml({ id: 'boardDate', value: B.date, action: 'board-date', inline: true, style: inputStyle + ';width:150px' }) +
       (B.date !== todayStr() ? '<button class="btn" data-action="board-today">วันนี้</button>' : '') +
       '<button class="btn" data-action="board-refresh"><span class="ms">refresh</span> รีเฟรช</button>' +
       '<span style="font-size:11.5px;color:var(--muted);margin-left:auto">' + (B.updatedAt ? 'อัปเดต ' + String(B.updatedAt.getHours()).padStart(2, '0') + ':' + String(B.updatedAt.getMinutes()).padStart(2, '0') + ' · รีเฟรชเองทุก 10 นาที' : '') + '</span>' +
@@ -3779,6 +3919,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     render();
     if (type === 'procedure') loadProcedures(); else loadStock();
   }
+  /** หมวดหมู่ as a small pill ('-' when none). */
+  function catBadge(c) { return c ? '<span class="cat-badge">' + esc(c) + '</span>' : '<span style="color:var(--muted)">-</span>'; }
   function stockNumCell(v) { return v == null ? '<span style="color:var(--muted)">-</span>' : esc(Number(v).toLocaleString('en-US')); }
   function stockMoneyCell(v) { return v == null ? '<span style="color:var(--muted)">-</span>' : esc(money(v)); }
 
@@ -3852,7 +3994,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (s.type === 'oral') {
       return rowOpen +
         '<td style="padding:10px 12px">' + esc(s.name) + '</td>' +
-        '<td>' + esc(s.category) + '</td>' +
+        '<td>' + catBadge(s.category) + '</td>' +
         '<td>' + stockNumCell(s.minQty) + '</td>' +
         '<td style="white-space:nowrap">' + esc(qty) + qtyBadge + dateNote + '</td>' +
         '<td>' + esc(s.unit) + '</td>' +
@@ -3861,7 +4003,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     }
     return rowOpen +
       '<td style="padding:10px 12px">' + esc(s.name) + '</td>' +
-      '<td>' + esc(s.category) + '</td>' +
+      '<td>' + catBadge(s.category) + '</td>' +
       '<td>' + stockNumCell(s.minQty) + '</td>' +
       '<td style="white-space:nowrap">' + esc(qty) + ' ' + esc(s.unit) + qtyBadge + dateNote + '</td>' +
       (isMed && showCost ? '<td>' + stockMoneyCell(s.costPrice) + '</td>' + (s.prices || []).map(function (p) { return '<td>' + stockMoneyCell(p) + '</td>'; }).join('') : '') +
@@ -3971,7 +4113,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       pg.items.map(function (p) {
         return '<tr>' +
           '<td style="padding:10px 12px;font-weight:600">' + esc(p.name) + '</td>' +
-          '<td>' + (p.category ? esc(p.category) : '<span style="color:var(--muted)">-</span>') + '</td>' +
+          '<td>' + catBadge(p.category) + '</td>' +
           '<td>' + money(p.price) + '</td>' +
           '<td>' + (isAdmin() ? toggleSwitchHtml(p.id, p.status === 'active', 'toggle-procedure') : statusPill(p.status === 'active')) + '</td>' +
           '<td style="text-align:right">' + (isAdmin() ?
@@ -4725,8 +4867,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     }).join('');
     var lbl = function (t) { return '<label style="font-size:11.5px;color:var(--muted);display:block;margin-bottom:4px">' + esc(t) + '</label>'; };
     var filterBar = '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;margin-bottom:14px;display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">' +
-      '<div style="width:170px">' + lbl('ตั้งแต่วันที่') + '<input type="date" id="rpFrom" value="' + esc(rp.from) + '" style="' + inputStyle + '"></div>' +
-      '<div style="width:170px">' + lbl('ถึงวันที่') + '<input type="date" id="rpTo" value="' + esc(rp.to) + '" style="' + inputStyle + '"></div>' +
+      '<div style="width:170px">' + lbl('ตั้งแต่วันที่') + dateInputHtml({ id: 'rpFrom', value: rp.from }) + '</div>' +
+      '<div style="width:170px">' + lbl('ถึงวันที่') + dateInputHtml({ id: 'rpTo', value: rp.to }) + '</div>' +
       '<div style="min-width:200px;flex:1">' + lbl('ชื่อเซลล์') + '<select id="rpSales" style="' + inputStyle + '">' + salesOpts + '</select></div>' +
       '<button class="btn btn-primary" data-action="run-report"' + (rp.loading ? ' disabled' : '') + '>' + (rp.loading ? '<span class="spin"></span>' : '<span class="ms">assessment</span>') + ' ดูรายงาน</button>' +
       (D && D.rows.length ? '<button class="btn" data-action="report-pdf"><span class="ms">picture_as_pdf</span> ดาวน์โหลด PDF</button>' : '') +
@@ -5076,7 +5218,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var rows = !L ? skelRows(5) :
       (!L.items.length ? '<tr><td colspan="5" class="empty-state">ไม่พบรายการ</td></tr>' :
       L.items.map(function (e) {
-        return '<tr><td>' + esc(e.date) + '</td><td>' + esc(e.name) + '</td><td>' + esc(e.category) + '</td><td>' + money(e.amount) + '</td>' +
+        return '<tr><td>' + esc(e.date) + '</td><td>' + esc(e.name) + '</td><td>' + catBadge(e.category) + '</td><td>' + money(e.amount) + '</td>' +
           '<td style="text-align:right"><button class="btn" data-action="edit-expense" data-arg="' + esc(e.id) + '"><span class="ms">edit</span></button> ' +
           (isAdmin() ? '<button class="btn" data-action="delete-expense" data-arg="' + esc(e.id) + '"><span class="ms">delete</span></button>' : '') + '</td></tr>';
       }).join(''));
@@ -5171,7 +5313,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<table class="table vmid" style="width:100%;border-collapse:collapse"><thead><tr>' +
         '<th style="' + th + '">ชื่อสินค้า</th><th style="' + th + ';text-align:right">จำนวนที่สั่ง</th>' + (o.status === 'pending' ? '' : '<th style="' + th + ';text-align:right">รับจริง</th>') + '<th style="' + th + ';text-align:right">ราคา/หน่วย</th><th style="' + th + ';text-align:right">จำนวนเงิน</th></tr></thead><tbody>' +
         o.lines.map(function (l) {
-          return '<tr><td style="padding:9px 10px;font-size:12.5px">' + esc(l.itemName) + '<div style="font-size:11px;color:var(--muted)">' + esc(l.category) + (l.itemId ? ' · ตัดเข้าสต๊อก' : '') + '</div></td>' +
+          return '<tr><td style="padding:9px 10px;font-size:12.5px">' + esc(l.itemName) + '<div style="font-size:11px;color:var(--muted);margin-top:3px">' + catBadge(l.category) + (l.itemId ? ' · ตัดเข้าสต๊อก' : '') + '</div></td>' +
             '<td style="font-size:12.5px;text-align:right;white-space:nowrap">' + esc(l.qty) + '</td>' +
             (o.status === 'pending' ? '' : '<td style="font-size:12.5px;text-align:right;white-space:nowrap;font-weight:600' + (l.qtyReceived != null && l.qtyReceived !== l.qty ? ';color:var(--amber-dark)' : '') + '">' + esc(l.qtyReceived == null ? l.qty : l.qtyReceived) + '</td>') +
             '<td style="font-size:12.5px;text-align:right;white-space:nowrap">' + money(l.unitPrice) + '</td>' +
@@ -5563,7 +5705,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var run = '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;margin-bottom:16px">' +
       '<div style="font-size:15px;font-weight:700;margin-bottom:4px">Backup ข้อมูล</div>' + steps +
       '<div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap"><div style="min-width:220px"><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">ย้ายข้อมูลที่จบแล้วก่อนวันที่</label>' +
-        '<input type="date" id="backupCutoff" value="' + esc(B.cutoff) + '" max="' + esc(todayStr()) + '" data-action-change="backup-cutoff" style="' + inputStyle + '"></div>' +
+        dateInputHtml({ id: 'backupCutoff', value: B.cutoff, max: todayStr(), action: 'backup-cutoff' }) + '</div>' +
         '<button class="btn" data-action="backup-preview"' + (B.previewing ? ' disabled' : '') + '><span class="ms">fact_check</span> ตรวจสอบข้อมูลที่จะย้าย</button></div>' +
       previewHtml + '</div>';
     var list = B.list;
@@ -6251,6 +6393,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'edit-stock-log': editStockLogModal(arg); break;
       case 'delete-stock-log': deleteStockLogConfirm(arg); break;
       case 'exp-tab': expTab(arg); break;
+      case 'dt-open': dtOpen(el); break;
+      case 'dt-nav': dtNav(Number(arg)); break;
+      case 'dt-pick': dtSet(arg); break;
       case 'pcheck-tab': pcheckTab(arg); break;
       case 'pcheck-open': openReceiveModal(arg); break;
       case 'pcheck-page': state.pcheck.page = Number(arg); loadPurchaseChecks(); break;
