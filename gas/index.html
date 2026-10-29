@@ -3908,7 +3908,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   var PRODUCT_TABS = STOCK_TABS.concat([{ id: 'procedure', label: 'รายการค่าหัตถการ' }]);
   // Must match STOCK_PRICE_TIERS in Code.gs — item.prices[i] is the ราคาขาย for STOCK_PRICE_TIERS[i] ชิ้น.
   var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
-  var STOCK_LOG_KIND_LABELS = { update: 'อัพเดตสต๊อก', in: 'รับเข้า', out: 'เบิกออก', set: 'ปรับยอดคงเหลือ', import: 'นำเข้า CSV', opening: 'ยอดยกมา', record: 'บันทึกการรักษา', withdraw: 'จัดยา-เบิกยา', purchase: 'จัดซื้อ' };
+  var STOCK_LOG_KIND_LABELS = { update: 'อัพเดตสต๊อก', in: 'รับเข้า', out: 'เบิกออก', set: 'ปรับสต๊อก', import: 'นำเข้า CSV', opening: 'ยอดยกมา', record: 'บันทึกการรักษา', withdraw: 'จัดยา-เบิกยา', purchase: 'จัดซื้อ' };
   function stockTypeLabel(type) { return type === 'medicine' ? 'ยา' : (type === 'oral' ? 'ยาทาน' : 'เวชภัณฑ์'); }
   function stockTab(type) {
     if (type === state.stock.type) return;
@@ -4066,7 +4066,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<table class="table" style="width:100%;border-collapse:collapse;font-size:12.5px">' +
         '<thead><tr style="text-align:left;font-size:11px;color:var(--muted);background:var(--hover-bg)">' +
           '<th style="' + td + ';padding-left:10px">วันที่</th><th style="' + td + '">รายละเอียด</th><th style="' + td + '">user</th>' +
-          '<th style="' + td + ';text-align:right">จำนวนเข้า</th><th style="' + td + ';text-align:right">จำนวนออก</th><th style="' + td + ';text-align:right">จำนวนคงเหลือ</th><th></th></tr></thead>' +
+          '<th style="' + td + ';text-align:right">จำนวนเข้า</th><th style="' + td + ';text-align:right">จำนวนออก</th><th style="' + td + ';text-align:right">จำนวนคงเหลือ</th></tr></thead>' +
         '<tbody>' + logPg.items.map(function (l) {
           var detail = '<div style="font-weight:600">' + esc(STOCK_LOG_KIND_LABELS[l.kind] || l.kind) + '</div>' + (l.note ? '<div style="font-size:11px;color:var(--muted);white-space:normal">' + esc(l.note) + '</div>' : '');
           return '<tr>' +
@@ -4075,17 +4075,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
             '<td style="' + td + '">' + esc(l.createdBy || '-') + '</td>' +
             '<td style="' + td + ';text-align:right;color:var(--green-dark)">' + (l.qtyIn ? '+' + esc(l.qtyIn) : '-') + '</td>' +
             '<td style="' + td + ';text-align:right;color:var(--red-dark)">' + (l.qtyOut ? '-' + esc(l.qtyOut) : '-') + '</td>' +
-            '<td style="' + td + ';text-align:right;font-weight:600">' + esc(l.qtyRemaining) + '</td>' +
-            '<td style="' + td + ';text-align:right">' +
-              '<button class="btn" data-action="edit-stock-log" data-arg="' + esc(l.id) + '" title="แก้ไข" style="padding:4px 6px"><span class="ms" style="font-size:16px">edit</span></button>' +
-              (isAdmin() ? ' <button class="btn" data-action="delete-stock-log" data-arg="' + esc(l.id) + '" title="ลบ" style="padding:4px 6px"><span class="ms" style="font-size:16px">delete</span></button>' : '') +
-            '</td></tr>';
+            '<td style="' + td + ';text-align:right;font-weight:600">' + esc(l.qtyRemaining) + '</td></tr>';
         }).join('') + '</tbody></table>' + localPagerHtml(logPg, 'stockLog'));
     var qty = it.latestQtyRemaining != null ? it.latestQtyRemaining : it.qty;
     var body = '' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:18px 22px;border-bottom:1px solid var(--border);flex:none">' +
         '<div><div style="font-size:16px;font-weight:700">' + esc(it.name) + '</div>' +
-        '<div style="font-size:12px;color:var(--muted);margin-top:2px">ประวัติการเคลื่อนไหว · ' + esc(stockTypeLabel(it.type)) + (it.category ? ' · ' + esc(it.category) : '') + '</div>' +
+        '<div style="font-size:12px;color:var(--muted);margin-top:2px">ประวัติการเคลื่อนไหว (แก้ไขไม่ได้) · ' + esc(stockTypeLabel(it.type)) + (it.category ? ' · ' + esc(it.category) : '') + '</div>' +
         '<div style="font-size:13px;margin-top:6px">' + 'คงเหลือ <b>' + esc(qty) + ' ' + esc(it.unit) + '</b>' + (it.depositQty ? ' · ฝาก <b>' + esc(it.depositQty) + ' ' + esc(it.unit) + '</b>' : '') + '</div></div>' +
         '<button data-action="close-stock-panel" style="border:none;background:none;cursor:pointer"><span class="ms">close</span></button>' +
       '</div>' +
@@ -4358,27 +4354,36 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function newStockUpdateModal() {
     openModal('stockupdate', { date: todayStr(), note: '', items: [newStockUpdateLine()] });
   }
-  /** ยา: just จำนวนรับเข้า (added onto what is there); เวชภัณฑ์ / ยาทาน also give the counted จำนวนคงเหลือ. */
-  function newStockUpdateLine() { return state.stock.type === 'medicine' ? { itemId: '', qtyIn: 0 } : { itemId: '', qtyIn: 0, qtyRemaining: 0 }; }
+  /** One line: the item + its จำนวนปัจจุบัน (what is really there). The difference from the system's count is logged as ปรับสต๊อก. */
+  function newStockUpdateLine() { return { itemId: '', qtyRemaining: '' }; }
   function addStockUpdateLine() { state.draft.items.push(newStockUpdateLine()); render(); }
   function removeStockUpdateLine(idx) { state.draft.items.splice(idx, 1); render(); }
+  /** Under a line: what the system holds and what this count changes. Patched in place while typing. */
+  function stockUpdateCapHtml(it) {
+    var st = it.itemId ? (state.suggestCache.stock || []).filter(function (x) { return x.id === it.itemId; })[0] : null;
+    if (!st) return '';
+    var cur = Number(st.qty) || 0, base = 'ในระบบ <b>' + esc(cur) + '</b>' + (st.unit ? ' ' + esc(st.unit) : '');
+    if (it.qtyRemaining === '' || it.qtyRemaining == null || isNaN(Number(it.qtyRemaining))) return base;
+    var d = Math.round((Number(it.qtyRemaining) - cur) * 100) / 100;
+    return base + ' → ' + (d === 0 ? '<span style="color:var(--muted)">ไม่เปลี่ยน (ไม่บันทึก)</span>'
+      : d > 0 ? '<b style="color:var(--green-dark)">เพิ่ม ' + esc(d) + '</b>' : '<b style="color:var(--red-dark)">ลด ' + esc(-d) + '</b>');
+  }
   function stockUpdateModalBody() {
     var d = state.draft;
     var typeLabel = stockTypeLabel(state.stock.type);
     var itemOpts = [{ value: '', label: '— เลือก' + typeLabel + ' —' }].concat(stockItemsOfType(state.stock.type).map(function (s) { return { value: s.id, label: s.name + (s.category ? ' (' + s.category + ')' : '') }; }));
-    var isMedUpdate = state.stock.type === 'medicine';
     var lines = d.items.map(function (it, i) {
-      return '<div class="supply-row">' +
+      return '<div style="margin-bottom:8px"><div class="supply-row" style="margin-bottom:2px">' +
         '<div style="flex:1">' + bindSelect('items.' + i + '.itemId', itemOpts) + '</div>' +
-        '<input type="number" min="0" value="' + esc(it.qtyIn) + '" data-bind="items.' + i + '.qtyIn" style="' + inputStyle + ';width:110px" placeholder="จำนวนรับเข้า">' +
-        (isMedUpdate ? '' : '<input type="number" min="0" value="' + esc(it.qtyRemaining) + '" data-bind="items.' + i + '.qtyRemaining" style="' + inputStyle + ';width:110px" placeholder="จำนวนคงเหลือ">') +
+        '<input type="number" min="0" step="any" value="' + esc(it.qtyRemaining) + '" data-bind="items.' + i + '.qtyRemaining" style="' + inputStyle + ';width:130px" placeholder="จำนวนปัจจุบัน">' +
         '<button class="btn" data-action="remove-stock-update-line" data-arg="' + i + '"><span class="ms">close</span></button>' +
-      '</div>';
+      '</div><div id="suCap' + i + '" style="font-size:11.5px;color:var(--text-2);min-height:15px">' + stockUpdateCapHtml(it) + '</div></div>';
     }).join('');
     return modalHeader('อัพเดตสต๊อก' + typeLabel) +
+      '<div style="font-size:12px;color:var(--text-2);background:var(--hover-bg);border-radius:var(--r-sm);padding:9px 12px;margin-bottom:12px;line-height:1.6">กรอก <b>จำนวนปัจจุบัน</b> ที่นับได้จริง — ระบบเทียบกับจำนวนในระบบ แล้วบันทึกส่วนที่เปลี่ยนในประวัติการเคลื่อนไหวว่าเป็น <b>"ปรับสต๊อก"</b></div>' +
       field('วันที่', bindInput('date', 'date')) +
       '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">รายการ' + typeLabel + '</label></div>' +
-      '<div style="display:flex;gap:8px;font-size:11px;color:var(--muted);padding:0 0 4px"><span style="flex:1">' + typeLabel + '</span><span style="width:110px">จำนวนรับเข้า</span>' + (isMedUpdate ? '' : '<span style="width:110px">จำนวนคงเหลือ</span>') + '<span style="width:38px"></span></div>' +
+      '<div style="display:flex;gap:8px;font-size:11px;color:var(--muted);padding:0 0 4px"><span style="flex:1">' + typeLabel + '</span><span style="width:130px">จำนวนปัจจุบัน</span><span style="width:38px"></span></div>' +
       lines + '<button class="btn" data-action="add-stock-update-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มรายการ</button>' +
       field('หมายเหตุ', bindTextarea('note', 2)) + saveBtn();
   }
@@ -4386,37 +4391,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var d = state.draft;
     if (!d.items.length) { toast('error', 'กรุณาเพิ่มรายการสินค้าอย่างน้อย 1 รายการ'); return; }
     if (d.items.some(function (it) { return !it.itemId; })) { toast('error', 'กรุณาเลือกสินค้าให้ครบทุกรายการ'); return; }
-    call('saveStockUpdate', session.token, d).then(function () {
-      toast('success', 'บันทึกอัพเดตสต๊อกแล้ว'); closeModal(); afterStockLogWrite();
-    });
-  }
-
-  /* ---- แก้ไข/ลบ รายการประวัติ (a single StockLog row, from the history panel) ---- */
-  function editStockLogModal(logId) {
-    var p = state.stock.panel;
-    var entry = p && (p.log || []).filter(function (l) { return l.id === logId; })[0];
-    if (entry) openModal('stocklogentry', Object.assign({}, entry));
-  }
-  function stockLogEntryModalBody() {
-    var d = state.draft;
-    return modalHeader('แก้ไขรายการ (' + d.itemName + ')') +
-      field('วันที่', bindInput('date', 'date')) +
-      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">' +
-        field('จำนวนเข้า', bindInput('qtyIn', 'number')) + field('จำนวนออก', bindInput('qtyOut', 'number')) + field('จำนวนคงเหลือ', bindInput('qtyRemaining', 'number')) +
-      '</div>' +
-      field('หมายเหตุ', bindTextarea('note', 2)) + saveBtn();
-  }
-  function saveStockLogEntryModal() {
-    call('editStockLogEntry', session.token, state.draft).then(function () {
-      toast('success', 'บันทึกแล้ว'); closeModal(); afterStockLogWrite();
-    });
-  }
-  function deleteStockLogConfirm(logId) {
-    Swal.fire({ icon: 'warning', title: 'ลบรายการประวัตินี้?', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
-      if (!r.isConfirmed) return;
-      call('deleteStockLogEntry', session.token, logId).then(function () {
-        toast('success', 'ลบแล้ว'); afterStockLogWrite();
-      });
+    if (d.items.some(function (it) { return it.qtyRemaining === '' || it.qtyRemaining == null || isNaN(Number(it.qtyRemaining)) || Number(it.qtyRemaining) < 0; })) { toast('error', 'กรุณากรอกจำนวนปัจจุบันให้ครบทุกรายการ'); return; }
+    call('saveStockUpdate', session.token, { date: d.date, note: d.note, items: d.items.map(function (it) { return { itemId: it.itemId, qtyRemaining: Number(it.qtyRemaining) }; }) }).then(function () {
+      toast('success', 'บันทึกการปรับสต๊อกแล้ว'); closeModal(); afterStockLogWrite();
     });
   }
 
@@ -6156,7 +6133,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'record': return recordModalBody();
       case 'stock': return stockModalBody();
       case 'stockupdate': return stockUpdateModalBody();
-      case 'stocklogentry': return stockLogEntryModalBody();
       case 'stockadjust': return stockAdjustModalBody();
       case 'medwithdraw': return withdrawModalBody();
       case 'wdphotos': return wdPhotosModalBody();
@@ -6181,7 +6157,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'record': return saveRecordModal();
       case 'stock': return saveStockModal();
       case 'stockupdate': return saveStockUpdateModal();
-      case 'stocklogentry': return saveStockLogEntryModal();
       case 'stockadjust': return saveStockAdjustModal();
       case 'medwithdraw': return saveWithdrawModal();
       case 'payment': return savePaymentModal();
@@ -6390,8 +6365,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'new-stock-update': newStockUpdateModal(); break;
       case 'add-stock-update-line': addStockUpdateLine(); break;
       case 'remove-stock-update-line': removeStockUpdateLine(Number(arg)); break;
-      case 'edit-stock-log': editStockLogModal(arg); break;
-      case 'delete-stock-log': deleteStockLogConfirm(arg); break;
       case 'exp-tab': expTab(arg); break;
       case 'dt-open': dtOpen(el); break;
       case 'dt-nav': dtNav(Number(arg)); break;
@@ -6556,6 +6529,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (wdLine) {
       var wdCap = document.getElementById('wdCap' + wdLine[1]);
       if (wdCap) wdCap.innerHTML = withdrawLineCaption(state.draft.lines[Number(wdLine[1])]);
+      return;
+    }
+    var suLine = state.modal && state.modal.type === 'stockupdate' && bindPath.match(/^items\.(\d+)\.(itemId|qtyRemaining)$/);
+    if (suLine) {
+      if (suLine[2] === 'qtyRemaining' && el.value === '') state.draft.items[Number(suLine[1])].qtyRemaining = '';
+      var suCap = document.getElementById('suCap' + suLine[1]);
+      if (suCap) suCap.innerHTML = stockUpdateCapHtml(state.draft.items[Number(suLine[1])]);
       return;
     }
     // The stock form shows ราคาทุน/ราคาขาย only for ยา, so switching type redraws it.

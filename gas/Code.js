@@ -2266,10 +2266,12 @@ function importStockCsv(token, payload) {
    full schema rationale, and latestStockLogByItem_/resyncStockQtyFromLog_
    above for how Stock.Qty is kept in sync as a denormalized cache. ---- */
 
-/** An อัพเดตสต๊อก line that carries the counted จำนวนคงเหลือ (otherwise it only adds จำนวนรับเข้า to what is there). */
-function hasCountedQty_(it) { return it.qtyRemaining !== undefined && it.qtyRemaining !== null && it.qtyRemaining !== ''; }
-
-/** payload: {date, note, items:[{itemId, qtyIn, qtyRemaining?}]} — writes one StockLog row per item (all sharing date/note), then re-syncs Stock.Qty for every touched item. */
+/**
+ * อัพเดตสต๊อก: the user only types each item's จำนวนปัจจุบัน (what is really there). What changed since the system's count is
+ * written to the history as a ปรับสต๊อก movement (kind 'set': จำนวนเข้า when more, จำนวนออก when less). An item whose count did
+ * not change makes no movement. payload: {date, note, items:[{itemId, qtyRemaining}]}; one StockLog row per changed item
+ * (all sharing date/note), then Stock.Qty is re-synced for every touched item.
+ */
 function saveStockUpdate(token, payload) {
   return safeCall_(function () {
     var session = requireAuth_(token, 'staff');
@@ -2285,9 +2287,8 @@ function saveStockUpdate(token, payload) {
     items.forEach(function (it, i) {
       requireFields_(it, { itemId: 'ชื่อสินค้า (บรรทัดที่ ' + (i + 1) + ')' });
       if (!stockById[it.itemId]) throw ValidationError_('ไม่พบสินค้า (บรรทัดที่ ' + (i + 1) + ')');
-      requireNumber_(it.qtyIn || 0, 'จำนวนรับเข้า (บรรทัดที่ ' + (i + 1) + ')', { min: 0 });
-      if (hasCountedQty_(it)) requireNumber_(it.qtyRemaining, 'จำนวนคงเหลือ (บรรทัดที่ ' + (i + 1) + ')', { min: 0 });
-      else if (!(Number(it.qtyIn) > 0)) throw ValidationError_('กรุณากรอกจำนวนรับเข้า (บรรทัดที่ ' + (i + 1) + ')');
+      if (it.qtyRemaining === undefined || it.qtyRemaining === null || it.qtyRemaining === '') throw ValidationError_('กรุณากรอกจำนวนปัจจุบัน (บรรทัดที่ ' + (i + 1) + ')');
+      requireNumber_(it.qtyRemaining, 'จำนวนปัจจุบัน (บรรทัดที่ ' + (i + 1) + ')', { min: 0 });
     });
 
     var notice = null;
@@ -2295,24 +2296,22 @@ function saveStockUpdate(token, payload) {
     lock.waitLock(30000);
     try {
       var logSheet = getSheet_(CONFIG.SHEETS.STOCK_LOG);
-      var createdIds = [], before = {}, order = [];
+      var createdIds = [], before = {}, order = [], note = ['ปรับสต๊อก (นับจริง)', String(payload.note || '').trim()].filter(Boolean).join(' · ');
       items.forEach(function (it) {
+        var item = stockById[it.itemId], current = Number(item.Qty) || 0, counted = Number(it.qtyRemaining);
+        var delta = round2_(counted - current);
+        if (!delta) return; // same as the system's count: nothing moved
+        if (!(it.itemId in before)) { before[it.itemId] = current; order.push(it.itemId); }
         var logId = 'SL' + nextSeq_('STOCKLOG', 5);
-        var item = stockById[it.itemId];
-        if (!(it.itemId in before)) { before[it.itemId] = Number(item.Qty) || 0; order.push(it.itemId); }
-        var qtyIn = Number(it.qtyIn) || 0, remaining = hasCountedQty_(it) ? Number(it.qtyRemaining) : round2_((Number(item.Qty) || 0) + qtyIn);
-        // จำนวนออก = whatever left between the previous count (+ this receipt) and the new count.
-        var qtyOut = Math.max(0, (Number(item.Qty) || 0) + qtyIn - remaining);
-        appendRow_(logSheet, CONFIG.HEADERS.StockLog, stockLogRow_(session, logId, payload.date, item, 'update', qtyIn, qtyOut, remaining, payload.note));
-        item.Qty = remaining; // same item twice in one batch chains off the first line
+        appendRow_(logSheet, CONFIG.HEADERS.StockLog, stockLogRow_(session, logId, payload.date, item, 'set', delta > 0 ? delta : 0, delta < 0 ? -delta : 0, counted, note));
+        item.Qty = counted; // the same item twice in one batch chains off the first line
         createdIds.push(logId);
       });
-      var touchedIds = {};
-      items.forEach(function (it) { touchedIds[it.itemId] = true; });
-      Object.keys(touchedIds).forEach(resyncStockQtyFromLog_);
-      writeAudit_(session, 'CREATE', 'StockLog', createdIds.join(','), payload.date + ' x' + items.length + ' รายการ');
+      if (!createdIds.length) throw ValidationError_('จำนวนปัจจุบันตรงกับในระบบทุกรายการ — ไม่มีอะไรต้องปรับ');
+      Object.keys(before).forEach(resyncStockQtyFromLog_);
+      writeAudit_(session, 'ADJUST', 'StockLog', createdIds.join(','), payload.date + ' x' + createdIds.length + ' รายการ');
       invalidateStockLiteCache_();
-      notice = { title: 'อัพเดตสต๊อกคลีนิค', sub: payload.note || '', date: payload.date, by: session,
+      notice = { title: 'ปรับสต๊อกคลีนิค', sub: String(payload.note || '').trim(), date: payload.date, by: session,
         moves: order.map(function (id) { return stockMove_(stockById[id], before[id], Number(stockById[id].Qty) || 0); }) };
       return { ok: true, data: { logIds: createdIds } };
     } finally {
@@ -2351,50 +2350,17 @@ function mapStockLogOut_(l) {
   };
 }
 
-/** entry: {id, date, qtyIn, qtyOut, qtyRemaining, note} — edits ONE StockLog row (e.g. fixing a typo in a single item's line after the fact); does not touch the other item rows from that same original batch save. */
+/** ประวัติการเคลื่อนไหวแก้ไขไม่ได้ (read-only): a wrong count is corrected with a new ปรับสต๊อก, which adds its own movement. */
 function editStockLogEntry(token, entry) {
   return safeCall_(function () {
-    var session = requireAuth_(token, 'staff');
-    requireFields_(entry, { id: 'รายการ', date: 'วันที่' });
-    requireDateStr_(entry.date, 'วันที่');
-    requireNumber_(entry.qtyIn || 0, 'จำนวนเข้า', { min: 0 });
-    requireNumber_(entry.qtyOut || 0, 'จำนวนออก', { min: 0 });
-    requireNumber_(entry.qtyRemaining, 'จำนวนคงเหลือ'); // may be negative (stock is allowed below zero)
-
-    var lock = LockService.getScriptLock();
-    lock.waitLock(30000);
-    try {
-      var logSheet = getSheet_(CONFIG.SHEETS.STOCK_LOG);
-      var rowIndex = findRowIndexById_(logSheet, 'LogID', entry.id);
-      if (rowIndex < 0) throw ValidationError_('ไม่พบรายการ');
-      var existing = getRows_(logSheet).filter(function (l) { return l._row === rowIndex; })[0];
-      var obj = Object.assign({}, existing, {
-        Date: entry.date, QtyIn: Number(entry.qtyIn) || 0, QtyOut: Number(entry.qtyOut) || 0,
-        QtyRemaining: Number(entry.qtyRemaining), Note: entry.note || ''
-      });
-      updateRowByIndex_(logSheet, CONFIG.HEADERS.StockLog, rowIndex, obj);
-      resyncStockQtyFromLog_(existing.ItemID);
-      writeAudit_(session, 'UPDATE', 'StockLog', entry.id, obj.ItemName);
-      invalidateStockLiteCache_();
-      return { ok: true, data: mapStockLogOut_(obj) };
-    } finally {
-      lock.releaseLock();
-    }
+    requireAuth_(token, 'staff');
+    throw ValidationError_('ประวัติการเคลื่อนไหวแก้ไขไม่ได้ — ใช้ ปรับสต๊อก / อัพเดตสต๊อก เพื่อแก้จำนวน (ระบบจะบันทึกเป็นรายการใหม่)');
   });
 }
-
 function deleteStockLogEntry(token, id) {
   return safeCall_(function () {
-    var session = requireAuth_(token, 'admin');
-    var logSheet = getSheet_(CONFIG.SHEETS.STOCK_LOG);
-    var rowIndex = findRowIndexById_(logSheet, 'LogID', id);
-    if (rowIndex < 0) throw ValidationError_('ไม่พบรายการ');
-    var existing = getRows_(logSheet).filter(function (l) { return l._row === rowIndex; })[0];
-    deleteRowByIndex_(logSheet, rowIndex);
-    resyncStockQtyFromLog_(existing.ItemID); // falls through to a no-op if that was the item's last remaining entry
-    writeAudit_(session, 'DELETE', 'StockLog', id, existing.ItemName);
-    invalidateStockLiteCache_();
-    return { ok: true };
+    requireAuth_(token, 'admin');
+    throw ValidationError_('ประวัติการเคลื่อนไหวลบไม่ได้ — ใช้ ปรับสต๊อก / อัพเดตสต๊อก เพื่อแก้จำนวน (ระบบจะบันทึกเป็นรายการใหม่)');
   });
 }
 
