@@ -673,7 +673,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   var NO_DEDUPE = { login: 1, startResumableUpload: 1, uploadFileChunk: 1 };
   var WRITE_LABELS = { login: 'กำลังเข้าสู่ระบบ...', backupData: 'กำลังสำรองข้อมูล...', seedDemoData: 'กำลังสร้างข้อมูลตัวอย่าง...', importStockCsv: 'กำลังนำเข้าข้อมูล...',
     startResumableUpload: 'กำลังอัปโหลด...', uploadFileChunk: 'กำลังอัปโหลด...', setLogo: 'กำลังอัปโหลด...', setLoginImage: 'กำลังอัปโหลด...', setWithdrawalPhotos: 'กำลังอัปโหลด...',
-    sendLineDailySummary: 'กำลังส่ง LINE...', receiveOrder: 'กำลังบันทึกการรับสินค้า...', getReceiptHtml: 'กำลังเตรียมใบเสร็จ...' };
+    sendLineDailySummary: 'กำลังส่ง LINE...', importPatientsCsv: 'กำลังประมวลผลไฟล์...', importRecordsCsv: 'กำลังประมวลผลไฟล์...', importWithdrawalsCsv: 'กำลังประมวลผลไฟล์...', clearDemoData: 'กำลังลบข้อมูล...', deleteOldData: 'กำลังลบข้อมูล...', receiveOrder: 'กำลังบันทึกการรับสินค้า...', getReceiptHtml: 'กำลังเตรียมใบเสร็จ...' };
   function isWriteFn(fn) { return !/^(list|get|search)/.test(fn) || !!WRITE_GETS[fn]; }
   var busyKeys = {}, clickKey = null, armedKey = null, inflightWrites = {};
   function isBusy(key) { return !!busyKeys[key]; }
@@ -5602,7 +5602,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
 
   function settingsTemplate() {
     var tabDefs = [{ id: 'doctors', label: 'แพทย์ / เซลล์' }, { id: 'categories', label: 'หมวดหมู่' }, { id: 'clinic', label: 'ข้อมูลบริษัท' }];
-    if (isAdmin()) tabDefs.push({ id: 'staff', label: 'ตั้งค่าพนักงาน' }, { id: 'backup', label: 'สำรองข้อมูล' });
+    if (isAdmin()) tabDefs.push({ id: 'staff', label: 'ตั้งค่าพนักงาน' }, { id: 'backup', label: 'สำรองข้อมูล' }, { id: 'import', label: 'นำเข้า / ลบข้อมูลตัวอย่าง' });
     var bar = tabBar(tabDefs, state.settings.tab, 'set-tab');
     var body;
     switch (state.settings.tab) {
@@ -5611,6 +5611,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'clinic': body = settingsClinicView(); break;
       case 'staff': body = settingsStaffView(); break;
       case 'backup': body = isAdmin() ? settingsBackupView() : ''; break;
+      case 'import': body = isAdmin() ? settingsImportView() : ''; break;
       default: body = '';
     }
     return bar + body;
@@ -5633,6 +5634,211 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (tab === 'clinic' && !settingsData.clinicInfo) loadClinicInfo();
     if (tab === 'staff' && !state.settings.staff && isAdmin()) loadStaff();
     if (tab === 'backup' && isAdmin()) loadBackups();
+  }
+
+  /* ---- นำเข้าข้อมูลเดิม (CSV) + ลบข้อมูลตัวอย่าง ---- */
+  // cols: [key sent to the server, header in the file, required, what to put]. Dates are ค.ศ. (ปปปป-ดด-วว or วว/ดด/ปปปป).
+  var IMPORT_KINDS = {
+    patients: {
+      n: 1, title: 'ข้อมูลคนไข้', fn: 'importPatientsCsv', file: 'template-patients.csv', unit: 'คน',
+      desc: 'ประวัติคนไข้เดิม — ทำเป็นอันดับแรก เพราะอีก 2 ไฟล์ใช้ HN อ้างถึงคนไข้',
+      cols: [['hn', 'HN', false, 'เลข HN ของคลินิก ห้ามซ้ำกัน'], ['firstName', 'ชื่อ', true, ''], ['lastName', 'นามสกุล', true, ''], ['nickname', 'ชื่อเล่น', false, ''],
+        ['phone', 'เบอร์โทร', true, '9-10 หลัก (Excel ตัด 0 หน้าออก ระบบเติมให้)'], ['dob', 'วันเกิด', false, 'ค.ศ. เช่น 1990-03-15'], ['gender', 'เพศ', false, 'หญิง / ชาย / อื่นๆ'],
+        ['email', 'อีเมล', false, ''], ['joined', 'วันที่เป็นลูกค้า', false, 'ค.ศ. ไม่กรอก = วันที่นำเข้า']],
+      example: ['#ตัวอย่าง (แถวที่ขึ้นต้นด้วย # ไม่ถูกนำเข้า)', 'สมชาย', 'ใจดี', 'ชาย', '0812345678', '1990-03-15', 'ชาย', 'somchai@example.com', '2025-01-20']
+    },
+    records: {
+      n: 2, title: 'บันทึกการรักษา', fn: 'importRecordsCsv', file: 'template-records.csv', unit: 'ครั้ง',
+      desc: 'ประวัติการรักษาที่ชำระแล้ว — ต้องตั้งค่าแพทย์ เซลล์ (และหัตถการ ถ้าต้องการให้ตรงรายการ) ไว้ก่อน · แถวที่ใช้ "เลขอ้างอิง" เดียวกัน = การรักษาครั้งเดียวกัน (1 แถวต่อ 1 หัตถการ) · ระบบคำนวณส่วนแบ่งแพทย์/เซลล์ให้เหมือนบันทึกปกติ',
+      cols: [['ref', 'เลขอ้างอิง', false, 'ครั้งเดียวกันใช้เลขเดียวกัน (ไม่กรอก = 1 แถว 1 ครั้ง)'], ['date', 'วันที่', true, 'ค.ศ. (แถวต่อไปของครั้งเดียวกันเว้นว่างได้)'], ['hn', 'HN', true, 'หรือกรอกเบอร์โทรแทน'],
+        ['phone', 'เบอร์โทร', false, 'ใช้เมื่อไม่มี HN'], ['doctor', 'แพทย์', true, 'ชื่อตรงกับในตั้งค่า'], ['procedure', 'หัตถการ', true, 'ชื่อไม่ตรงกับรายการ ก็เก็บตามที่พิมพ์'],
+        ['amount', 'จำนวนเงิน', true, 'ของหัตถการแถวนั้น'], ['sales', 'ชื่อเซลล์', false, 'ชื่อตรงกับในตั้งค่า'], ['payment', 'วิธีชำระเงิน', false, 'เงินสด / โอนเงิน / บัตรเครดิต (ไม่กรอก = เงินสด)'],
+        ['detail', 'รายละเอียด', false, ''], ['receiptNo', 'เลขที่ใบเสร็จ', false, 'ห้ามซ้ำ'], ['otherLabel', 'รายการอื่นๆ', false, 'ชื่อรายการเงินอื่น (ค่ายา ฯลฯ)'], ['otherAmount', 'จำนวนเงินอื่นๆ', false, '']],
+      example: ['#A001', '2025-06-10', 'HN001', '', 'พญ.วลิน ศรีสุข', 'เลเซอร์กระชับผิวหน้า', '4500', 'คุณอลิสา มั่งมี', 'เงินสด', '', '', '', '']
+    },
+    withdrawals: {
+      n: 3, title: 'ประวัติการจัดยา-เบิกยา', fn: 'importWithdrawalsCsv', file: 'template-withdrawals.csv', unit: 'รายการ',
+      desc: 'ยาที่เบิก/จัดให้คนไข้ในอดีต — ทำหลังนำเข้าบันทึกการรักษา เพื่อให้เข้าไปอยู่ในการรักษาของวันเดียวกัน (ไม่มี = สร้างเป็นการรักษาของตัวเอง) · มีผลกับรายงานคิดค่ายาเซลล์ แต่ไม่ตัดสต๊อก (ตั้งสต๊อกด้วย อัพเดตสต๊อก)',
+      cols: [['date', 'วันที่', true, 'ค.ศ.'], ['hn', 'HN', true, 'หรือกรอกเบอร์โทรแทน'], ['phone', 'เบอร์โทร', false, 'ใช้เมื่อไม่มี HN'], ['sales', 'ชื่อเซลล์', true, 'ชื่อตรงกับในตั้งค่า'],
+        ['item', 'ชื่อยา', true, 'ต้องมีในรายการยาสต๊อกคลีนิคแล้ว'], ['qty', 'จำนวน', true, 'มากกว่า 0'], ['cost', 'ราคาทุนต่อหน่วย', false, 'ไม่กรอก = ราคาทุนปัจจุบันในสต๊อก'], ['note', 'หมายเหตุ', false, '']],
+      example: ['#2025-06-10', 'HN001', '', 'คุณอลิสา มั่งมี', 'โบท็อกซ์ Dysport 500u', '2', '', '']
+    }
+  };
+  function importKindList() { return Object.keys(IMPORT_KINDS).map(function (k) { return [k, IMPORT_KINDS[k]]; }).sort(function (a, b) { return a[1].n - b[1].n; }); }
+  function settingsImportView() {
+    var card = 'border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;margin-bottom:16px';
+    var cards = importKindList().map(function (e) {
+      var k = e[0], K = e[1];
+      var cols = '<table class="table" style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px"><thead><tr style="text-align:left;color:var(--muted);background:var(--hover-bg)"><th style="padding:7px 10px">หัวคอลัมน์ในไฟล์</th><th>ต้องกรอก</th><th>ใส่อะไร</th></tr></thead><tbody>' +
+        K.cols.map(function (c) { return '<tr><td style="padding:6px 10px;font-weight:600">' + esc(c[1]) + '</td><td>' + (c[2] ? '<span class="tag-badge" style="background:var(--red-soft);color:var(--red-dark)">จำเป็น</span>' : '<span style="color:var(--muted)">ไม่บังคับ</span>') + '</td><td style="color:var(--text-2)">' + esc(c[3]) + '</td></tr>'; }).join('') + '</tbody></table>';
+      return '<div class="card" style="' + card + '">' +
+        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:4px"><span class="tag-badge" style="background:var(--accent-soft);color:var(--accent)">ขั้นที่ ' + K.n + '</span><div style="font-size:15px;font-weight:700">' + esc(K.title) + '</div></div>' +
+        '<div style="font-size:12.5px;color:var(--text-2);line-height:1.7;margin-bottom:10px">' + esc(K.desc) + '</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" data-action="import-template" data-arg="' + k + '"><span class="ms">download</span> ดาวน์โหลด Template (CSV)</button>' +
+        '<button class="btn btn-primary" data-action="import-pick" data-arg="' + k + '"><span class="ms">upload_file</span> เลือกไฟล์ CSV เพื่อนำเข้า</button></div>' +
+        '<details style="margin-top:10px"><summary style="cursor:pointer;font-size:12.5px;color:var(--accent);font-weight:600">ดูคอลัมน์ในไฟล์</summary>' + cols + '</details></div>';
+    }).join('');
+    return '<div class="card" style="' + card + ';background:var(--hover-bg)">' +
+      '<div style="font-size:15px;font-weight:700;margin-bottom:6px">นำเข้าข้อมูลเดิม (CSV)</div>' +
+      '<div style="font-size:12.5px;color:var(--text-2);line-height:1.85">' +
+        '1. ดาวน์โหลด Template แล้วกรอกใน Excel / Google Sheets (แถวแรกคือหัวคอลัมน์ ห้ามเปลี่ยน) จากนั้นบันทึกเป็น <b>CSV</b><br>' +
+        '2. เลือกไฟล์ — ระบบ<b>ตรวจทั้งไฟล์ก่อน</b> ถ้ามีแถวผิดจะบอกเลขแถวและเหตุผล และ<b>ยังไม่นำเข้าเลย</b> แก้แล้วเลือกใหม่ ถ้าไม่มีแถวผิดจึงกดยืนยันนำเข้า<br>' +
+        '3. นำเข้าตามลำดับ <b>ขั้นที่ 1 → 2 → 3</b> · วันที่ทั้งหมดเป็น <b>ค.ศ.</b> (ปีเป็น พ.ศ. ระบบแปลงให้) · ไฟล์ละไม่เกิน ' + 5000 + ' แถว<br>' +
+        '4. ข้อมูลที่นำเข้าเป็นประวัติ (ชำระแล้ว) <b>ไม่ตัดสต๊อก</b> — ตั้งจำนวนสต๊อกที่หน้า จัดการสินค้า/บริการ > อัพเดตสต๊อก</div></div>' +
+      cards +
+      '<input type="file" id="importFileInput" accept=".csv,text/csv" style="display:none">' +
+      '<div class="card" style="' + card + ';border-color:var(--red-dark)">' +
+        '<div style="font-size:15px;font-weight:700;margin-bottom:6px;color:var(--red-dark)">ลบข้อมูลตัวอย่าง</div>' +
+        '<div style="font-size:12.5px;color:var(--text-2);line-height:1.7;margin-bottom:10px">ล้างข้อมูลทั้งหมดของระบบ (คนไข้ บันทึกการรักษา จัดยา-เบิกยา ยาฝาก สต๊อก ค่าใช้จ่าย ใบสั่งซื้อ แพทย์ เซลล์ โปรโมชัน หมวดหมู่ หัตถการ ฯลฯ) ' +
+          'เพื่อเริ่มใช้งานจริง — <b>เก็บไว้เฉพาะบัญชีผู้ใช้และข้อมูลบริษัท</b> · ลบแล้วกู้คืนไม่ได้ ต้องยืนยันด้วยชื่อผู้ใช้และรหัสผ่านของคุณ · ใช้ไม่ได้ถ้าระบบเคย Backup ข้อมูลจริงแล้ว</div>' +
+        '<button class="btn" data-action="clear-demo" style="border-color:var(--red-dark);color:var(--red-dark)"><span class="ms">delete_forever</span> ตรวจสอบและลบข้อมูลตัวอย่าง</button></div>' +
+      '<div class="card" style="' + card + ';border-color:var(--red-dark)">' +
+        '<div style="font-size:15px;font-weight:700;margin-bottom:6px;color:var(--red-dark)">ลบข้อมูลที่สร้างก่อนวันนี้</div>' +
+        '<div style="font-size:12.5px;color:var(--text-2);line-height:1.7;margin-bottom:10px">ลบ<b>รายการ</b>ที่สร้างก่อนวันนี้ (คนไข้ บันทึกการรักษา จัดยา-เบิกยา ยาฝาก ประวัติสต๊อก ค่าใช้จ่าย ใบสั่งซื้อ ประวัติการใช้งาน) — ' +
+          '<b>เก็บ</b>ข้อมูลหลัก (แพทย์ เซลล์ โปรโมชัน หมวดหมู่ หัตถการ สินค้าสต๊อก) บัญชีผู้ใช้ ข้อมูลบริษัท และข้อมูลที่สร้างตั้งแต่วันนี้ · คนไข้ที่ยังมีรายการของวันนี้อ้างอิงอยู่จะไม่ถูกลบ · ' +
+          'ลบแล้วกู้คืนไม่ได้ ต้องยืนยันด้วยชื่อผู้ใช้และรหัสผ่านของคุณ · ใช้ไม่ได้ถ้าระบบเคย Backup ข้อมูลจริงแล้ว</div>' +
+        '<button class="btn" data-action="clear-old" style="border-color:var(--red-dark);color:var(--red-dark)"><span class="ms">history</span> ตรวจสอบและลบข้อมูลก่อนวันนี้</button></div>';
+  }
+  /** The template: the header row + one example row (starts with # so it is skipped). */
+  function importTemplate(kind) {
+    var K = IMPORT_KINDS[kind];
+    if (!K) return;
+    var q = function (v) { v = String(v); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    var csv = '﻿' + K.cols.map(function (c) { return q(c[1]); }).join(',') + '\r\n' + K.example.map(q).join(',') + '\r\n';
+    var a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+    a.download = K.file;
+    document.body.appendChild(a); a.click(); a.remove();
+  }
+  function importPick(kind) {
+    var input = document.getElementById('importFileInput');
+    if (!input) return;
+    input.value = '';
+    input.onchange = function () { if (input.files && input.files[0]) importReadFile(kind, input.files[0]); };
+    input.click();
+  }
+  function importReadFile(kind, file) {
+    var read = function (encoding, done) { var fr = new FileReader(); fr.onload = function () { done(String(fr.result || '')); }; fr.readAsText(file, encoding); };
+    // Excel's plain "CSV" save on Thai Windows is windows-874, not UTF-8
+    read('UTF-8', function (text) {
+      if (text.indexOf('�') > -1) read('windows-874', function (t) { importCheck(kind, file.name, t); });
+      else importCheck(kind, file.name, text);
+    });
+  }
+  /** CSV text -> {rows:[{line, key:value}]} by the header names of the kind, or {error}. */
+  function importRowsFromCsv(kind, text) {
+    var K = IMPORT_KINDS[kind], grid = parseCsv(text.replace(/^﻿/, ''));
+    var plain = function (h) { return String(h == null ? '' : h).replace(/[(（].*$/, '').replace(/\*/g, '').replace(/\s+/g, '').trim(); };
+    var want = {}; K.cols.forEach(function (c) { want[plain(c[1])] = c; });
+    var hi = -1, i;
+    for (i = 0; i < grid.length && hi < 0; i++) { if (grid[i].filter(function (c) { return want[plain(c)]; }).length >= 2) hi = i; }
+    if (hi < 0) return { error: 'ไม่พบแถวหัวคอลัมน์ของ "' + K.title + '" — ใช้ไฟล์ Template ที่ดาวน์โหลดจากหน้านี้' };
+    var map = {}; // column index -> key
+    grid[hi].forEach(function (c, ci) { var d = want[plain(c)]; if (d && !Object.keys(map).some(function (x) { return map[x] === d[0]; })) map[ci] = d[0]; });
+    var missing = K.cols.filter(function (c) { return c[2] && !Object.keys(map).some(function (x) { return map[x] === c[0]; }); });
+    if (missing.length) return { error: 'ไม่พบคอลัมน์ที่จำเป็น: ' + missing.map(function (c) { return c[1]; }).join(', ') };
+    var rows = [];
+    for (i = hi + 1; i < grid.length; i++) {
+      var g = grid[i], o = { line: i + 1 }, any = false;
+      if (String(g[0] == null ? '' : g[0]).trim().charAt(0) === '#') continue; // an example / comment row
+      Object.keys(map).forEach(function (ci) { var v = g[ci] == null ? '' : String(g[ci]).trim(); o[map[ci]] = v; if (v) any = true; });
+      if (any) rows.push(o);
+    }
+    if (!rows.length) return { error: 'ไม่พบข้อมูลในไฟล์ (มีแต่หัวคอลัมน์)' };
+    return { rows: rows };
+  }
+  function importCheck(kind, fileName, text) {
+    var K = IMPORT_KINDS[kind], parsed = importRowsFromCsv(kind, text);
+    if (parsed.error) { Swal.fire({ icon: 'error', title: 'อ่านไฟล์ไม่ได้', text: parsed.error, confirmButtonText: 'ปิด' }); return; }
+    call(K.fn, session.token, { rows: parsed.rows, dryRun: true }).then(function (res) {
+      var d = res.data;
+      if (!d.ok) {
+        var list = d.errors.map(function (e) { return '<div style="padding:5px 0;border-top:1px solid var(--border-soft);text-align:left;font-size:12.5px"><b>แถวที่ ' + esc(e.line) + '</b> · ' + esc(e.message) + '</div>'; }).join('');
+        Swal.fire({ icon: 'warning', title: 'พบแถวที่ต้องแก้ ' + d.totalErrors + ' จุด', html: '<div style="font-size:12.5px;color:var(--text-2);text-align:left;margin-bottom:6px">ยังไม่ได้นำเข้าอะไร — แก้ไฟล์แล้วเลือกใหม่ (เลขแถวตามที่เห็นใน Excel)</div><div style="max-height:320px;overflow:auto">' + list + '</div>' +
+          (d.totalErrors > d.errors.length ? '<div style="font-size:12px;color:var(--muted);margin-top:6px">แสดง ' + d.errors.length + ' จุดแรก</div>' : ''), confirmButtonText: 'ปิด', width: 560 });
+        return;
+      }
+      var what = kind === 'records' ? d.count + ' ครั้ง (จาก ' + d.lines + ' แถว)' : (kind === 'withdrawals' ? d.count + ' รายการ ใน ' + d.visits + ' การรักษา' : d.count + ' คน');
+      Swal.fire({ icon: 'question', title: 'ตรวจไฟล์ผ่านแล้ว', html: '<div style="font-size:13px;line-height:1.8">' + esc(fileName) + '<br>นำเข้า <b>' + esc(K.title) + '</b> ' + esc(what) + '</div>',
+        showCancelButton: true, confirmButtonText: 'นำเข้าเลย', cancelButtonText: 'ยกเลิก' }).then(function (r) {
+        if (!r.isConfirmed) return;
+        call(K.fn, session.token, { rows: parsed.rows }).then(function (r2) {
+          if (!r2.data.imported) { toast('error', 'ไม่ได้นำเข้า — ลองตรวจไฟล์ใหม่'); return; }
+          toast('success', 'นำเข้า ' + K.title + ' แล้ว ' + what);
+          importRefreshAfter();
+        });
+      });
+    });
+  }
+  /** Everything the screens hold is out of date after an import / delete. */
+  function importRefreshAfter() {
+    state.suggestCache.patients = null; state.suggestCache.stock = null; state.dash.data = null; state.records.list = null; state.records.calData = null;
+    state.withdraw.list = null; state.report.data = null; state.deposits.list = null; state.stock.list = null; state.board.data = null;
+    refreshPatientsSuggestCache(); refreshStockSuggestCache();
+  }
+  function clearDemoStart() {
+    call('getClearDataPreview', session.token).then(function (res) {
+      var d = res.data;
+      var rows = d.counts.filter(function (c) { return c.rows > 0; }).map(function (c) { return '<tr><td style="padding:5px 8px;text-align:left">' + esc(c.label) + '</td><td style="text-align:right;padding:5px 8px;font-weight:600">' + esc(c.rows) + '</td></tr>'; }).join('');
+      if (d.backups > 0) { Swal.fire({ icon: 'info', title: 'ใช้ฟังก์ชันนี้ไม่ได้', text: 'ระบบนี้เคย Backup ข้อมูลจริงแล้ว จึงไม่อนุญาตให้ลบข้อมูลตัวอย่างด้วยปุ่มนี้', confirmButtonText: 'ปิด' }); return; }
+      if (!d.total) { Swal.fire({ icon: 'info', title: 'ไม่มีข้อมูลให้ลบ', text: 'ระบบยังไม่มีข้อมูลในชีตใดเลย', confirmButtonText: 'ปิด' }); return; }
+      Swal.fire({ icon: 'warning', title: 'จะลบข้อมูลทั้งหมดนี้', html: '<div style="font-size:12.5px;color:var(--text-2);margin-bottom:8px">รวม ' + esc(d.total) + ' แถว · เก็บไว้เฉพาะบัญชีผู้ใช้และข้อมูลบริษัท</div><div style="max-height:260px;overflow:auto"><table style="width:100%;font-size:13px;border-collapse:collapse">' + rows + '</table></div>',
+        showCancelButton: true, confirmButtonText: 'ถัดไป — ยืนยันตัวตน', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
+        if (!r.isConfirmed) return;
+        Swal.fire({
+          icon: 'warning', title: 'ยืนยันการลบข้อมูล',
+          html: '<div style="font-size:13px;text-align:left;line-height:1.7">ลบแล้วกู้คืนไม่ได้<br>กรอกชื่อผู้ใช้และรหัสผ่านของคุณอีกครั้งเพื่อยืนยัน</div>' +
+            '<input id="clrUser" class="swal2-input" placeholder="ชื่อผู้ใช้" autocomplete="username"><input id="clrPass" class="swal2-input" type="password" placeholder="รหัสผ่าน" autocomplete="current-password">',
+          showCancelButton: true, confirmButtonText: 'ลบข้อมูลทั้งหมด', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585', focusConfirm: false,
+          didOpen: function () { var u = document.getElementById('clrUser'); if (u) u.focus(); },
+          preConfirm: function () {
+            var u = document.getElementById('clrUser').value.trim(), p = document.getElementById('clrPass').value;
+            if (!u || !p) { Swal.showValidationMessage('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน'); return false; }
+            return { username: u, password: p };
+          }
+        }).then(function (r2) {
+          if (!r2.isConfirmed) return;
+          call('clearDemoData', session.token, r2.value).then(function (res2) {
+            toast('success', res2.message || 'ลบข้อมูลตัวอย่างแล้ว');
+            settingsData.doctors = null; settingsData.sales = null; settingsData.categories = null; state.stock.procedures = null;
+            state.expense.list = null; state.expense.orders = null; state.promotions.list = null; state.pcheck.list = null; state.pcheck.pending = 0;
+            importRefreshAfter(); refreshMaster();
+          });
+        });
+      });
+    });
+  }
+
+  function clearOldStart() {
+    call('getOldDataPreview', session.token).then(function (res) {
+      var d = res.data;
+      var rows = d.counts.filter(function (c) { return c.rows > 0; }).map(function (c) { return '<tr><td style="padding:5px 8px;text-align:left">' + esc(c.label) + '</td><td style="text-align:right;padding:5px 8px;font-weight:600">' + esc(c.rows) + '</td></tr>'; }).join('');
+      if (d.backups > 0) { Swal.fire({ icon: 'info', title: 'ใช้ฟังก์ชันนี้ไม่ได้', text: 'ระบบนี้เคย Backup ข้อมูลจริงแล้ว จึงไม่อนุญาตให้ลบข้อมูลด้วยปุ่มนี้', confirmButtonText: 'ปิด' }); return; }
+      if (!d.total) { Swal.fire({ icon: 'info', title: 'ไม่มีข้อมูลให้ลบ', text: 'ไม่มีรายการที่สร้างก่อนวันที่ ' + d.cutoff, confirmButtonText: 'ปิด' }); return; }
+      Swal.fire({ icon: 'warning', title: 'จะลบรายการที่สร้างก่อนวันที่ ' + d.cutoff, html: '<div style="font-size:12.5px;color:var(--text-2);margin-bottom:8px">รวม ' + esc(d.total) + ' แถว · เก็บข้อมูลหลัก บัญชีผู้ใช้ และข้อมูลบริษัทไว้</div><div style="max-height:260px;overflow:auto"><table style="width:100%;font-size:13px;border-collapse:collapse">' + rows + '</table></div>',
+        showCancelButton: true, confirmButtonText: 'ถัดไป — ยืนยันตัวตน', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585' }).then(function (r) {
+        if (!r.isConfirmed) return;
+        Swal.fire({
+          icon: 'warning', title: 'ยืนยันการลบข้อมูล',
+          html: '<div style="font-size:13px;text-align:left;line-height:1.7">ลบแล้วกู้คืนไม่ได้<br>กรอกชื่อผู้ใช้และรหัสผ่านของคุณอีกครั้งเพื่อยืนยัน</div>' +
+            '<input id="clrUser" class="swal2-input" placeholder="ชื่อผู้ใช้" autocomplete="username"><input id="clrPass" class="swal2-input" type="password" placeholder="รหัสผ่าน" autocomplete="current-password">',
+          showCancelButton: true, confirmButtonText: 'ลบข้อมูล', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#C08585', focusConfirm: false,
+          didOpen: function () { var u = document.getElementById('clrUser'); if (u) u.focus(); },
+          preConfirm: function () {
+            var u = document.getElementById('clrUser').value.trim(), p = document.getElementById('clrPass').value;
+            if (!u || !p) { Swal.showValidationMessage('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน'); return false; }
+            return { username: u, password: p };
+          }
+        }).then(function (r2) {
+          if (!r2.isConfirmed) return;
+          call('deleteOldData', session.token, r2.value).then(function (res2) {
+            toast('success', res2.message || 'ลบข้อมูลแล้ว');
+            state.expense.list = null; state.expense.orders = null; state.pcheck.list = null; state.pcheck.pending = 0;
+            importRefreshAfter(); refreshMaster();
+          });
+        });
+      });
+    });
   }
 
   /* ---- สำรองข้อมูล: move the finished data to a new spreadsheet in the Drive folder "back up data" ---- */
@@ -6424,6 +6630,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'delete-category': deleteCategoryConfirm(arg); break;
       case 'save-clinic-info': saveClinicInfo(); break;
       case 'save-canula-price': saveCanulaPrice(); break;
+      case 'import-template': importTemplate(arg); break;
+      case 'import-pick': importPick(arg); break;
+      case 'clear-demo': clearDemoStart(); break;
+      case 'clear-old': clearOldStart(); break;
       case 'pick-login-image': pickLoginImage(); break;
       case 'remove-login-image': removeLoginImageConfirm(); break;
       case 'pick-logo': pickLogo(); break;

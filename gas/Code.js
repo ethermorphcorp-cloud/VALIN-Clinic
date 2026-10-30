@@ -4175,7 +4175,10 @@ function getDailyReport(token, opts) {
   return safeCall_(function () {
     requireAuth_(token, 'admin');
     var keep = reportOpts_(opts);
-    var rows = getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).filter(function (r) { return r.Status !== 'cancelled' && keep(dateStr_(r.Date), r.SalesID); });
+    var rows = getRows_(getSheet_(CONFIG.SHEETS.RECORDS)).filter(function (r) {
+      if (r.Status === 'cancelled' || !keep(dateStr_(r.Date), r.SalesID)) return false;
+      return !(r.Status === 'paid' && !recordCollected_(r) && !receiptLines_(r).length); // an imported จัดยา-เบิกยา visit: no money, nothing to show
+    });
     rows.sort(function (a, b) { return dateStr_(a.Date).localeCompare(dateStr_(b.Date)) || String(a.CreatedAt).localeCompare(String(b.CreatedAt)); });
     var out = rows.map(function (r) {
       var m = mapRecordOut_(r);
@@ -5058,6 +5061,458 @@ function clearAllData(token) {
     try {
       clearBusinessData_();
       return { ok: true, message: 'ล้างข้อมูลเรียบร้อยแล้ว (เก็บบัญชีผู้ใช้และข้อมูลบริษัทไว้)' };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+/* ======================================================================
+   นำเข้าข้อมูลเดิม (CSV) + ลบข้อมูลตัวอย่าง — admin only (ตั้งค่าคลินิก > นำเข้า / ลบข้อมูลตัวอย่าง)
+   The browser parses the CSV and sends rows {line, ...}; each importer checks EVERY row first
+   (dryRun:true stops there) and writes nothing unless all rows are good, so a half-wrong file never half-loads.
+   Order: คนไข้ -> บันทึกการรักษา -> ประวัติจัดยา-เบิกยา (a withdrawal joins the paid visit of the same
+   patient and day, else it gets a visit of its own). Imported history never moves Stock — stock is set
+   with อัพเดตสต๊อก. Imported visits are paid / เสร็จสิ้น, with the doctor and sales shares worked out the
+   same way as a saved visit (recomputeDoctorDayShares_ included).
+   ====================================================================== */
+
+var CSV_IMPORT_MAX_ROWS_ = 5000;
+var CSV_PAY_METHODS_ = ['เงินสด', 'โอนเงิน', 'บัตรเครดิต'];
+var CSV_NOTE_ = 'นำเข้าจาก CSV';
+
+/** A date cell as yyyy-mm-dd (ค.ศ.): yyyy-mm-dd, yyyy/mm/dd or dd/mm/yyyy (also - or .); a พ.ศ. year becomes ค.ศ. '' = blank, null = not a real date. */
+function csvDate_(v) {
+  var str = String(v == null ? '' : v).trim();
+  if (!str) return '';
+  var y, m, d, a;
+  if ((a = /^(\d{4})[-\/.](\d{1,2})[-\/.](\d{1,2})$/.exec(str))) { y = +a[1]; m = +a[2]; d = +a[3]; }
+  else if ((a = /^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/.exec(str))) { d = +a[1]; m = +a[2]; y = +a[3]; }
+  else return null;
+  if (y >= 2400) y -= 543;
+  var t = new Date(Date.UTC(y, m - 1, d));
+  if (y < 1900 || t.getUTCFullYear() !== y || t.getUTCMonth() !== m - 1 || t.getUTCDate() !== d) return null;
+  return y + '-' + ('0' + m).slice(-2) + '-' + ('0' + d).slice(-2);
+}
+/** Digits only; Excel drops a leading 0, so 9 digits not starting with 0 get it back. */
+function csvPhone_(v) {
+  var p = normalizePhone_(v);
+  if (p.length === 9 && p.charAt(0) !== '0') p = '0' + p;
+  return p;
+}
+function csvTrim_(v) { return String(v == null ? '' : v).replace(/\s+/g, ' ').trim(); }
+function csvKey_(v) { return csvTrim_(v).toLowerCase(); }
+/** '' = blank, null = not a number >= 0. */
+function csvNum_(v) {
+  var t = csvTrim_(v).replace(/,/g, '');
+  if (!t) return '';
+  var n = Number(t);
+  return isNaN(n) || n < 0 ? null : n;
+}
+function csvGender_(v) {
+  var g = csvKey_(v);
+  if (!g) return '';
+  if (g === 'หญิง' || g === 'female' || g === 'f' || g === 'ผู้หญิง') return 'female';
+  if (g === 'ชาย' || g === 'male' || g === 'm' || g === 'ผู้ชาย') return 'male';
+  if (g === 'อื่นๆ' || g === 'อื่น ๆ' || g === 'other') return 'other';
+  return null;
+}
+
+/** The rows of an import call (admin, size-checked). */
+function csvRows_(payload) {
+  var rows = payload && Array.isArray(payload.rows) ? payload.rows : [];
+  if (!rows.length) throw ValidationError_('ไม่พบข้อมูลในไฟล์ CSV');
+  if (rows.length > CSV_IMPORT_MAX_ROWS_) throw ValidationError_('ไฟล์ใหญ่เกินไป (สูงสุด ' + CSV_IMPORT_MAX_ROWS_ + ' แถวต่อครั้ง) — แบ่งเป็นหลายไฟล์');
+  return rows;
+}
+/** The reply of an import: nothing is written when there are errors or dryRun. */
+function csvResult_(errs, ok, extra) {
+  var data = { ok: errs.length === 0, imported: errs.length === 0 && !ok.dryRun, count: ok.count, errors: errs.slice(0, 60), totalErrors: errs.length };
+  Object.keys(extra || {}).forEach(function (k) { data[k] = extra[k]; });
+  return { ok: true, data: data };
+}
+
+/** Patients by เลข HN / by เบอร์โทร, for matching a CSV row to a patient. */
+function csvPatientIndex_() {
+  var idx = { byHn: {}, byPhone: {} };
+  getRows_(getSheet_(CONFIG.SHEETS.PATIENTS)).forEach(function (p) {
+    var hn = csvKey_(p.HN);
+    if (hn) idx.byHn[hn] = p;
+    var ph = normalizePhone_(p.Phone);
+    if (ph) (idx.byPhone[ph] = idx.byPhone[ph] || []).push(p);
+  });
+  return idx;
+}
+/** {p} or {error}: by HN first, else by a phone that belongs to one patient. */
+function csvFindPatient_(idx, hn, phone) {
+  var h = csvKey_(hn);
+  if (h) return idx.byHn[h] ? { p: idx.byHn[h] } : { error: 'ไม่พบคนไข้ HN ' + csvTrim_(hn) + ' — นำเข้าข้อมูลคนไข้ก่อน' };
+  var ph = csvPhone_(phone);
+  if (!ph) return { error: 'ไม่มี HN หรือเบอร์โทรของคนไข้' };
+  var list = idx.byPhone[ph] || [];
+  if (list.length === 1) return { p: list[0] };
+  return { error: list.length ? 'เบอร์โทร ' + ph + ' ตรงกับคนไข้หลายคน — ระบุ HN' : 'ไม่พบคนไข้ที่เบอร์โทร ' + ph + ' — ระบุ HN หรือนำเข้าข้อมูลคนไข้ก่อน' };
+}
+
+/* ---- 1. ข้อมูลคนไข้ — rows {line, hn, firstName, lastName, nickname, phone, dob, gender, email, joined} ---- */
+function importPatientsCsv(token, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'admin');
+    var rows = csvRows_(payload), dryRun = !!payload.dryRun;
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    beginWriteScope_();
+    try {
+      var sheet = getSheet_(CONFIG.SHEETS.PATIENTS);
+      var taken = {};
+      getRows_(sheet).forEach(function (p) { var h = csvKey_(p.HN); if (h) taken[h] = 'อยู่ในระบบแล้ว'; });
+      var errs = [], out = [];
+      rows.forEach(function (r) {
+        var bad = function (m) { errs.push({ line: r.line, message: m }); };
+        var first = csvTrim_(r.firstName), last = csvTrim_(r.lastName), phone = csvPhone_(r.phone);
+        if (!first) return bad('ไม่มีชื่อ');
+        if (!last) return bad('ไม่มีนามสกุล');
+        if (phone.length < 9 || phone.length > 10) return bad('เบอร์โทรไม่ถูกต้อง (9-10 หลัก): ' + csvTrim_(r.phone));
+        var hn = csvTrim_(r.hn);
+        if (hn && taken[hn.toLowerCase()]) return bad('เลข HN ' + hn + ' ซ้ำ (' + taken[hn.toLowerCase()] + ')');
+        var dob = csvDate_(r.dob), joined = csvDate_(r.joined), gender = csvGender_(r.gender);
+        if (dob === null) return bad('วันเกิดไม่ถูกต้อง (ค.ศ. ปปปป-ดด-วว): ' + csvTrim_(r.dob));
+        if (joined === null) return bad('วันที่เป็นลูกค้าไม่ถูกต้อง (ค.ศ. ปปปป-ดด-วว): ' + csvTrim_(r.joined));
+        if (gender === null) return bad('เพศไม่ถูกต้อง (หญิง / ชาย / อื่นๆ): ' + csvTrim_(r.gender));
+        if (hn) taken[hn.toLowerCase()] = 'ซ้ำในไฟล์ (แถวที่ ' + r.line + ')';
+        out.push({ HN: hn, FirstName: first, LastName: last, Nickname: csvTrim_(r.nickname), Phone: phone, DOB: dob, Gender: gender, Email: csvTrim_(r.email), PhotoFileId: '', JoinedDate: joined || todayStr_() });
+      });
+      var res = csvResult_(errs, { dryRun: dryRun, count: out.length });
+      if (errs.length || dryRun) return res;
+      var ids = nextSeqBlock_('PATIENT', out.length, 5), now = nowStr_();
+      out.forEach(function (o, i) { o.ID = 'P' + ids[i]; o.CreatedAt = now; o.UpdatedAt = now; });
+      appendRows_(sheet, CONFIG.HEADERS.Patients, out);
+      writeAudit_(session, 'IMPORT', 'Patients', '', out.length + ' คน');
+      invalidatePatientsLiteCache_();
+      return res;
+    } finally {
+      endWriteScope_();
+      lock.releaseLock();
+    }
+  });
+}
+
+/* ---- 3. บันทึกการรักษา — rows {line, ref, date, hn, phone, doctor, procedure, amount, sales, payment, detail, receiptNo, otherLabel, otherAmount} ----
+   Rows with the same ref are ONE visit (one หัตถการ per row, each with its แพทย์); a row without a ref is a visit of its own. */
+function importRecordsCsv(token, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'admin');
+    var rows = csvRows_(payload), dryRun = !!payload.dryRun;
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    beginWriteScope_();
+    try {
+      var idx = csvPatientIndex_();
+      var byName = function (sheetName, nameCol) { var m = {}; getRows_(getSheet_(sheetName)).forEach(function (r) { m[csvKey_(r[nameCol])] = r; }); return m; };
+      var doctors = byName(CONFIG.SHEETS.DOCTORS, 'Name'), sales = byName(CONFIG.SHEETS.SALES, 'Name'), procs = byName(CONFIG.SHEETS.PROCEDURES, 'Name');
+      var doctorById = {};
+      Object.keys(doctors).forEach(function (k) { doctorById[doctors[k].DoctorID] = doctors[k]; });
+      var recSheet = getSheet_(CONFIG.SHEETS.RECORDS);
+      var receiptTaken = {};
+      getRows_(recSheet).forEach(function (r) { if (r.ReceiptNo) receiptTaken[String(r.ReceiptNo).toLowerCase()] = true; });
+
+      var errs = [], groups = [], byRef = {};
+      rows.forEach(function (r) {
+        var key = csvTrim_(r.ref) ? 'ref:' + csvKey_(r.ref) : 'line:' + r.line;
+        if (!byRef[key]) { byRef[key] = { key: key, rows: [] }; groups.push(byRef[key]); }
+        byRef[key].rows.push(r);
+      });
+
+      var plan = [];
+      groups.forEach(function (g) {
+        var head = g.rows[0], bad = function (line, m) { errs.push({ line: line, message: m }); };
+        var before = errs.length;
+        var date = csvDate_(head.date);
+        if (!date) { bad(head.line, date === null ? 'วันที่ไม่ถูกต้อง (ค.ศ. ปปปป-ดด-วว): ' + csvTrim_(head.date) : 'ไม่มีวันที่'); return; }
+        var found = csvFindPatient_(idx, head.hn, head.phone);
+        if (found.error) { bad(head.line, found.error); return; }
+        var patient = found.p, salesRow = null, payment = '', detail = '', receiptNo = '', otherLabel = '', otherAmount = 0, lines = [];
+        g.rows.forEach(function (r) {
+          if (csvTrim_(r.date) && csvDate_(r.date) !== date) bad(r.line, 'วันที่ไม่ตรงกับแถวอื่นของเลขอ้างอิงเดียวกัน'); // later rows of a visit may leave date / HN blank
+          if (csvTrim_(r.hn) || csvTrim_(r.phone)) {
+            var f2 = csvFindPatient_(idx, r.hn, r.phone);
+            if (f2.error || f2.p.ID !== patient.ID) bad(r.line, f2.error || 'คนไข้ไม่ตรงกับแถวอื่นของเลขอ้างอิงเดียวกัน');
+          }
+          var doc = doctors[csvKey_(r.doctor)];
+          if (!csvTrim_(r.doctor)) bad(r.line, 'ไม่มีชื่อแพทย์');
+          else if (!doc) bad(r.line, 'ไม่พบแพทย์ "' + csvTrim_(r.doctor) + '" ในตั้งค่า (ต้องสะกดตรงกับชื่อแพทย์ในระบบ)');
+          var procName = csvTrim_(r.procedure);
+          if (!procName) bad(r.line, 'ไม่มีชื่อหัตถการ');
+          var amount = csvNum_(r.amount);
+          if (amount === '' || amount === null) bad(r.line, 'จำนวนเงินหัตถการไม่ถูกต้อง: ' + csvTrim_(r.amount));
+          if (csvTrim_(r.sales)) {
+            var sr = sales[csvKey_(r.sales)];
+            if (!sr) bad(r.line, 'ไม่พบเซลล์ "' + csvTrim_(r.sales) + '" ในตั้งค่า');
+            else if (salesRow && salesRow.SalesID !== sr.SalesID) bad(r.line, 'เซลล์ไม่ตรงกับแถวอื่นของเลขอ้างอิงเดียวกัน');
+            else salesRow = sr;
+          }
+          if (csvTrim_(r.payment) && !payment) { payment = csvTrim_(r.payment); if (CSV_PAY_METHODS_.indexOf(payment) < 0) bad(r.line, 'วิธีชำระเงินต้องเป็น ' + CSV_PAY_METHODS_.join(' / ') + ': ' + payment); }
+          if (!detail) detail = csvTrim_(r.detail);
+          if (!receiptNo) receiptNo = csvTrim_(r.receiptNo);
+          var oa = csvNum_(r.otherAmount);
+          if (oa === null) bad(r.line, 'จำนวนเงินอื่นๆ ไม่ถูกต้อง: ' + csvTrim_(r.otherAmount));
+          else if (oa && !otherAmount) { otherAmount = oa; otherLabel = csvTrim_(r.otherLabel) || 'อื่นๆ'; }
+          var p = procName ? procs[csvKey_(procName)] : null;
+          if (doc && procName && typeof amount === 'number') lines.push({ procId: p ? p.ProcID : '', name: p ? p.Name : procName, price: p ? Number(p.Price) || 0 : amount, amount: amount, doctorId: doc.DoctorID, detail: '' });
+        });
+        if (receiptNo) {
+          if (receiptTaken[receiptNo.toLowerCase()]) bad(head.line, 'เลขที่ใบเสร็จ ' + receiptNo + ' ซ้ำ');
+          else receiptTaken[receiptNo.toLowerCase()] = true;
+        }
+        if (errs.length === before) plan.push({ date: date, patient: patient, sales: salesRow, payment: payment || CSV_PAY_METHODS_[0], detail: detail, receiptNo: receiptNo, otherLabel: otherLabel, otherAmount: otherAmount, lines: lines });
+      });
+
+      var res = csvResult_(errs, { dryRun: dryRun, count: plan.length }, { lines: rows.length });
+      if (errs.length || dryRun) return res;
+
+      var ids = nextSeqBlock_('RECORD', plan.length, 6), now = nowStr_(), objs = [], dayKeys = {};
+      plan.forEach(function (v, i) {
+        var amount = round2_(v.lines.reduce(function (sum, l) { return sum + l.amount; }, 0));
+        var salesPct = v.sales ? Number(v.sales.CommissionRate) || 0 : 0;
+        var obj = {
+          RID: 'R' + ids[i], Date: v.date, PatientID: v.patient.ID, PatientName: patientFullName_(v.patient), Phone: v.patient.Phone, ServiceCategory: '', Detail: v.detail,
+          SalesID: v.sales ? v.sales.SalesID : '', SalesName: v.sales ? v.sales.Name : '', PaymentMethod: v.payment, SuppliesJSON: '[]', UseCanula: 'FALSE', CanulaAmount: 0, CanulaJSON: '[]',
+          Amount: amount, Status: 'paid', ReceiptNo: v.receiptNo, Note: CSV_NOTE_, CreatedBy: session.username, CreatedAt: now, UpdatedAt: now,
+          OtherAmount: v.otherAmount, SalesCommissionPct: salesPct, SalesShare: round2_(amount * salesPct / 100), VisitStatus: 'completed',
+          UsePromo: 'FALSE', PromoJSON: '[]', PromoAmount: 0, UseMedicine: 'FALSE', MedicineJSON: '[]', MedicineAmount: 0, UseOralMed: 'FALSE', OralMedJSON: '[]', OralMedAmount: 0,
+          UseOther: v.otherAmount ? 'TRUE' : 'FALSE', OtherItemsJSON: JSON.stringify(v.otherAmount ? [{ label: v.otherLabel, amount: v.otherAmount }] : []), SupplierPayAmount: v.otherAmount,
+          OpdImageFileId: '', UseSupplies: 'FALSE', UseOwnMed: 'FALSE', OwnMedJSON: '[]', UseDepositUse: 'FALSE', DepositUseJSON: '[]', UseMessenger: 'FALSE', MessengerJSON: '[]',
+          StockApplied: 'FALSE', UseProcedure: 'TRUE', ProcedureJSON: JSON.stringify(v.lines), WithdrawJSON: '[]'
+        };
+        applyDoctorShares_(obj, buildDoctorShares_(v.lines.map(function (l) { return { doctorId: l.doctorId, base: l.amount }; }), doctorById));
+        v.lines.forEach(function (l) { dayKeys[l.doctorId + '|' + v.date] = [l.doctorId, v.date]; });
+        objs.push(obj);
+      });
+      appendRows_(recSheet, CONFIG.HEADERS.Records, objs);
+      // the doctor's daily minimum (a top-up lands on the day's last visit), exactly as for a saved visit
+      beginWriteScope_();
+      var all = getRows_(recSheet);
+      Object.keys(dayKeys).forEach(function (k) { recomputeDoctorDayShares_(dayKeys[k][0], dayKeys[k][1], all); });
+      writeAudit_(session, 'IMPORT', 'Records', '', objs.length + ' ครั้ง (' + rows.length + ' แถว)');
+      bumpDashboardCacheVersion_();
+      return res;
+    } finally {
+      endWriteScope_();
+      lock.releaseLock();
+    }
+  });
+}
+
+/* ---- 2. ประวัติการจัดยา-เบิกยา — rows {line, date, hn, phone, sales, item, qty, cost, note} ---- */
+function importWithdrawalsCsv(token, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'admin');
+    var rows = csvRows_(payload), dryRun = !!payload.dryRun;
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    beginWriteScope_();
+    try {
+      var idx = csvPatientIndex_();
+      var sales = {}, meds = {};
+      getRows_(getSheet_(CONFIG.SHEETS.SALES)).forEach(function (r) { sales[csvKey_(r.Name)] = r; });
+      getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (r) { if (stockTypeOf_(r) === 'medicine') meds[csvKey_(r.Name)] = r; });
+      var recSheet = getSheet_(CONFIG.SHEETS.RECORDS);
+      var paidByDay = {}; // patientId|date -> the first paid visit (an imported or older one)
+      getRows_(recSheet).filter(function (r) { return r.Status === 'paid'; })
+        .sort(function (a, b) { return String(a.CreatedAt).localeCompare(String(b.CreatedAt)); })
+        .forEach(function (r) { var k = r.PatientID + '|' + dateStr_(r.Date); if (!paidByDay[k]) paidByDay[k] = r; });
+
+      var errs = [], groups = [], byKey = {};
+      rows.forEach(function (r) {
+        var bad = function (m) { errs.push({ line: r.line, message: m }); };
+        var date = csvDate_(r.date);
+        if (!date) return bad(date === null ? 'วันที่ไม่ถูกต้อง (ค.ศ. ปปปป-ดด-วว): ' + csvTrim_(r.date) : 'ไม่มีวันที่');
+        var found = csvFindPatient_(idx, r.hn, r.phone);
+        if (found.error) return bad(found.error);
+        var sr = sales[csvKey_(r.sales)];
+        if (!csvTrim_(r.sales)) return bad('ไม่มีชื่อเซลล์');
+        if (!sr) return bad('ไม่พบเซลล์ "' + csvTrim_(r.sales) + '" ในตั้งค่า');
+        var item = meds[csvKey_(r.item)];
+        if (!csvTrim_(r.item)) return bad('ไม่มีชื่อยา');
+        if (!item) return bad('ไม่พบยา "' + csvTrim_(r.item) + '" ในรายการยาสต๊อกคลีนิค — เพิ่มยาในสต๊อกก่อน');
+        var qty = csvNum_(r.qty);
+        if (qty === '' || qty === null || qty <= 0) return bad('จำนวนต้องมากกว่า 0: ' + csvTrim_(r.qty));
+        var cost = csvNum_(r.cost);
+        if (cost === null) return bad('ราคาทุน/หน่วยไม่ถูกต้อง: ' + csvTrim_(r.cost));
+        var key = found.p.ID + '|' + date + '|' + sr.SalesID;
+        if (!byKey[key]) { byKey[key] = { patient: found.p, date: date, sales: sr, lines: [] }; groups.push(byKey[key]); }
+        byKey[key].lines.push({ item: item, qty: qty, cost: cost === '' ? Number(item.CostPrice) || 0 : cost, note: csvTrim_(r.note) });
+      });
+
+      var lineCount = groups.reduce(function (n, g) { return n + g.lines.length; }, 0);
+      var res = csvResult_(errs, { dryRun: dryRun, count: lineCount }, { visits: groups.length });
+      if (errs.length || dryRun) return res;
+
+      var wIds = nextSeqBlock_('WITHDRAW', lineCount, 5), bIds = nextSeqBlock_('WITHDRAW_BATCH', groups.length, 5);
+      var newRecs = nextSeqBlock_('RECORD', groups.filter(function (g) { return !paidByDay[g.patient.ID + '|' + g.date]; }).length, 6);
+      var wdRows = [], recObjs = [], now = nowStr_(), w = 0;
+      groups.forEach(function (g, gi) {
+        var existing = paidByDay[g.patient.ID + '|' + g.date], rid = existing ? existing.RID : 'R' + newRecs.shift();
+        var items = g.lines.map(function (l) {
+          var wid = 'WD' + wIds[w++];
+          wdRows.push({
+            WithdrawID: wid, Date: g.date, PatientID: g.patient.ID, PatientName: patientFullName_(g.patient), Phone: g.patient.Phone, SalesID: g.sales.SalesID, SalesName: g.sales.Name,
+            ItemID: l.item.ItemID, ItemName: l.item.Name, Qty: l.qty, UnitCost: l.cost, Amount: round2_(l.qty * l.cost), Note: l.note || CSV_NOTE_, CreatedBy: session.username, CreatedAt: now,
+            BatchID: 'WB' + bIds[gi], RecordID: rid, PhotoFileIds: '[]'
+          });
+          return { withdrawId: wid, itemId: l.item.ItemID, name: l.item.Name, qtyDispensed: l.qty, qtyUsed: l.qty, qtyDeposit: 0, expiry: '' };
+        });
+        if (existing) {
+          existing.WithdrawJSON = JSON.stringify(parseLineItems_(existing.WithdrawJSON).concat(items)); // chained: a later group of the same visit adds to it
+          if (!existing._new) updateRowByIndex_(recSheet, CONFIG.HEADERS.Records, existing._row, Object.assign({}, existing, { UpdatedAt: now }));
+        } else {
+          var rec = {
+            RID: rid, Date: g.date, PatientID: g.patient.ID, PatientName: patientFullName_(g.patient), Phone: g.patient.Phone, Detail: 'ประวัติจัดยา-เบิกยา (นำเข้า)',
+            SalesID: g.sales.SalesID, SalesName: g.sales.Name, Status: 'paid', PaymentMethod: '', ReceiptNo: '', Note: CSV_NOTE_, CreatedBy: session.username, CreatedAt: now, UpdatedAt: now,
+            SalesCommissionPct: Number(g.sales.CommissionRate) || 0, SalesShare: 0, VisitStatus: 'completed', StockApplied: 'FALSE', WithdrawJSON: JSON.stringify(items)
+          };
+          applyDoctorShares_(rec, []);
+          recObjs.push(rec);
+          rec._new = true;
+          paidByDay[g.patient.ID + '|' + g.date] = rec; // a later group of the same patient and day joins it
+        }
+      });
+      appendRows_(getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS), CONFIG.HEADERS.MedWithdrawals, wdRows);
+      appendRows_(recSheet, CONFIG.HEADERS.Records, recObjs);
+      writeAudit_(session, 'IMPORT', 'MedWithdrawals', '', wdRows.length + ' รายการ');
+      bumpDashboardCacheVersion_();
+      return res;
+    } finally {
+      endWriteScope_();
+      lock.releaseLock();
+    }
+  });
+}
+
+/* ---- ลบข้อมูลตัวอย่าง: empties the business data (like clearAllData), after the admin types username + password again ---- */
+var CLEAR_SHEET_LABELS_ = [
+  ['PATIENTS', 'คนไข้'], ['RECORDS', 'บันทึกการรักษา'], ['MED_WITHDRAWALS', 'จัดยา-เบิกยา'], ['MED_DEPOSITS', 'ยาฝาก'], ['STOCK', 'สินค้าสต๊อก (เวชภัณฑ์ / ยา / ยาทาน)'],
+  ['STOCK_LOG', 'ประวัติการเคลื่อนไหวสต๊อก'], ['EXPENSES', 'ค่าใช้จ่าย'], ['ORDERS', 'ใบสั่งซื้อ'], ['ORDER_LINES', 'รายการในใบสั่งซื้อ'], ['DOCTORS', 'แพทย์'], ['SALES', 'เซลล์'],
+  ['PROMOTIONS', 'โปรโมชัน'], ['PROCEDURES', 'รายการค่าหัตถการ'], ['CATEGORIES', 'หมวดหมู่'], ['DAILY_SUMMARY', 'สรุปรายวัน'], ['AUDIT_LOG', 'ประวัติการใช้งานระบบ (Audit)']
+];
+function getClearDataPreview(token) {
+  return safeCall_(function () {
+    requireAuth_(token, 'admin');
+    var counts = CLEAR_SHEET_LABELS_.map(function (p) {
+      var sh = getSheet_(CONFIG.SHEETS[p[0]]);
+      return { label: p[1], rows: Math.max(0, sh.getLastRow() - 1) };
+    });
+    var backups = Math.max(0, getSheet_(CONFIG.SHEETS.BACKUPS).getLastRow() - 1);
+    return { ok: true, data: { counts: counts, total: counts.reduce(function (n, c) { return n + c.rows; }, 0), backups: backups } };
+  });
+}
+function clearDemoData(token, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'admin');
+    payload = payload || {};
+    var user = findStaffRow_(getRows_(getSheet_(CONFIG.SHEETS.STAFF)), session.staffId, { username: session.username });
+    if (String(payload.username || '').trim().toLowerCase() !== String(user.Username).toLowerCase()) throw ValidationError_('ชื่อผู้ใช้ไม่ตรงกับบัญชีที่ล็อกอินอยู่');
+    if (hashPassword_(String(payload.password || ''), user.PasswordSalt) !== user.PasswordHash) throw ValidationError_('รหัสผ่านไม่ถูกต้อง');
+    // Sample data is never backed up: a Backups row means real data was archived — this button is not for that system.
+    if (getSheet_(CONFIG.SHEETS.BACKUPS).getLastRow() > 1) throw ValidationError_('ระบบนี้เคย Backup ข้อมูลจริงแล้ว — ไม่อนุญาตให้ใช้ฟังก์ชันลบข้อมูลตัวอย่าง');
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var before = getClearDataPreview(token).data.total;
+      clearBusinessData_();
+      writeAudit_(session, 'CLEAR', 'DemoData', '', 'ลบข้อมูลตัวอย่าง ' + before + ' แถว');
+      return { ok: true, message: 'ลบข้อมูลตัวอย่างแล้ว (' + before + ' แถว) — เก็บบัญชีผู้ใช้และข้อมูลบริษัทไว้' };
+    } finally {
+      lock.releaseLock();
+    }
+  });
+}
+
+/* ---- ลบข้อมูลรายการที่สร้างก่อนวันนี้: the transactional rows made before today go; master data (แพทย์ เซลล์ โปรโมชัน หมวดหมู่ หัตถการ สินค้าสต๊อก), accounts and settings stay ---- */
+var OLD_DATA_SHEETS_ = [
+  ['Patients', 'PATIENTS', 'คนไข้'], ['Records', 'RECORDS', 'บันทึกการรักษา'], ['MedWithdrawals', 'MED_WITHDRAWALS', 'จัดยา-เบิกยา'], ['MedDeposits', 'MED_DEPOSITS', 'ยาฝาก'],
+  ['StockLog', 'STOCK_LOG', 'ประวัติการเคลื่อนไหวสต๊อก'], ['Expenses', 'EXPENSES', 'ค่าใช้จ่าย'], ['Orders', 'ORDERS', 'ใบสั่งซื้อ'], ['OrderLines', 'ORDER_LINES', 'รายการในใบสั่งซื้อ'],
+  ['AuditLog', 'AUDIT_LOG', 'ประวัติการใช้งานระบบ (Audit)']
+];
+/** What would go for rows created before `cutoff` (yyyy-MM-dd): {del:{sheet:[rows]}, keep:{sheet:[rows]}}. Reads only. */
+function oldDataPlan_(cutoff) {
+  var S = CONFIG.SHEETS, rows = {};
+  OLD_DATA_SHEETS_.forEach(function (b) { rows[b[0]] = getRows_(getSheet_(S[b[1]])); });
+  // "created": the CreatedAt stamp (the row's own Date / Timestamp when it has none); a row with no date at all stays
+  var old = function (r, col) { var d = dateStr_(r.CreatedAt) || dateStr_(r[col || 'Date']); return !!d && d < cutoff; };
+  var plan = { del: {}, keep: {}, cutoff: cutoff };
+  var split = function (name, fn) {
+    plan.del[name] = []; plan.keep[name] = [];
+    rows[name].forEach(function (r) { (fn(r) ? plan.del[name] : plan.keep[name]).push(r); });
+  };
+  var rids = {}, goneRid = {};
+  rows.Records.forEach(function (r) { rids[r.RID] = true; });
+  split('Records', function (r) { var o = old(r); if (o) goneRid[r.RID] = true; return o; });
+  // a line / lot follows its record; one without a record (or whose record is gone already) goes when it is old enough
+  var byRecord = function (col) { return function (x) { if (x.RecordID && rids[x.RecordID]) return !!goneRid[x.RecordID]; return old(x, col); }; };
+  split('MedWithdrawals', byRecord('Date'));
+  split('MedDeposits', byRecord('Date'));
+  // each item's latest StockLog entry stays: it is the item's balance
+  var latest = {};
+  rows.StockLog.forEach(function (l) {
+    var cur = latest[l.ItemID];
+    if (!cur || dateStr_(l.Date) > dateStr_(cur.Date) || (dateStr_(l.Date) === dateStr_(cur.Date) && String(l.CreatedAt) > String(cur.CreatedAt))) latest[l.ItemID] = l;
+  });
+  split('StockLog', function (l) { return old(l) && latest[l.ItemID] !== l; });
+  split('Expenses', function (e) { return old(e); });
+  var goneOrder = {};
+  split('Orders', function (o) { var m = old(o); if (m) goneOrder[o.PoID] = true; return m; });
+  split('OrderLines', function (l) { return !!goneOrder[l.PoID]; });
+  split('AuditLog', function (a) { return old(a, 'Timestamp'); });
+  // a patient stays while a row that stays still points at them
+  var used = {};
+  ['Records', 'MedWithdrawals', 'MedDeposits'].forEach(function (n) { plan.keep[n].forEach(function (r) { if (r.PatientID) used[r.PatientID] = true; }); });
+  split('Patients', function (p) { return old(p) && !used[p.ID]; });
+  return plan;
+}
+function oldDataCounts_(plan) {
+  return OLD_DATA_SHEETS_.map(function (b) { return { label: b[2], rows: plan.del[b[0]].length }; });
+}
+function getOldDataPreview(token) {
+  return safeCall_(function () {
+    requireAuth_(token, 'admin');
+    var cutoff = todayStr_(), plan = oldDataPlan_(cutoff);
+    var counts = oldDataCounts_(plan);
+    var backups = Math.max(0, getSheet_(CONFIG.SHEETS.BACKUPS).getLastRow() - 1);
+    return { ok: true, data: { cutoff: cutoff, counts: counts, total: counts.reduce(function (n, c) { return n + c.rows; }, 0), backups: backups } };
+  });
+}
+function deleteOldData(token, payload) {
+  return safeCall_(function () {
+    var session = requireAuth_(token, 'admin');
+    payload = payload || {};
+    var user = findStaffRow_(getRows_(getSheet_(CONFIG.SHEETS.STAFF)), session.staffId, { username: session.username });
+    if (String(payload.username || '').trim().toLowerCase() !== String(user.Username).toLowerCase()) throw ValidationError_('ชื่อผู้ใช้ไม่ตรงกับบัญชีที่ล็อกอินอยู่');
+    if (hashPassword_(String(payload.password || ''), user.PasswordSalt) !== user.PasswordHash) throw ValidationError_('รหัสผ่านไม่ถูกต้อง');
+    if (getSheet_(CONFIG.SHEETS.BACKUPS).getLastRow() > 1) throw ValidationError_('ระบบนี้เคย Backup ข้อมูลจริงแล้ว — ไม่อนุญาตให้ใช้ฟังก์ชันลบข้อมูลตัวอย่าง');
+    var lock = LockService.getScriptLock();
+    lock.waitLock(30000);
+    try {
+      var cutoff = todayStr_(), plan = oldDataPlan_(cutoff), total = 0;
+      OLD_DATA_SHEETS_.forEach(function (b) { total += plan.del[b[0]].length; });
+      if (!total) throw ValidationError_('ไม่มีข้อมูลที่สร้างก่อนวันที่ ' + cutoff + ' ให้ลบ');
+      // each sheet is rewritten with only the rows that stay (counters are untouched, so ids are never reused)
+      OLD_DATA_SHEETS_.forEach(function (b) {
+        if (!plan.del[b[0]].length) return;
+        var headers = CONFIG.HEADERS[b[0]], sh = getSheet_(CONFIG.SHEETS[b[1]]);
+        var keep = backupValues_(b[0], headers, plan.keep[b[0]]);
+        var last = sh.getLastRow();
+        if (last > 1) sh.getRange(2, 1, last - 1, headers.length).clearContent();
+        if (keep.length) {
+          resetNumberFormats_(sh, headers, 2, keep.length);
+          backupWriteBlocks_(sh, headers, keep);
+        }
+      });
+      writeAudit_(session, 'CLEAR', 'OldData', '', 'ลบข้อมูลที่สร้างก่อน ' + cutoff + ' · ' + total + ' แถว');
+      invalidatePatientsLiteCache_();
+      invalidateStockLiteCache_();
+      bumpDashboardCacheVersion_();
+      return { ok: true, message: 'ลบข้อมูลที่สร้างก่อนวันที่ ' + cutoff + ' แล้ว (' + total + ' แถว)' };
     } finally {
       lock.releaseLock();
     }
