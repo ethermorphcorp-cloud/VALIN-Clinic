@@ -5602,7 +5602,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
 
   function settingsTemplate() {
     var tabDefs = [{ id: 'doctors', label: 'แพทย์ / เซลล์' }, { id: 'categories', label: 'หมวดหมู่' }, { id: 'clinic', label: 'ข้อมูลบริษัท' }];
-    if (isAdmin()) tabDefs.push({ id: 'staff', label: 'ตั้งค่าพนักงาน' }, { id: 'backup', label: 'สำรองข้อมูล' }, { id: 'import', label: 'นำเข้า / ลบข้อมูลตัวอย่าง' });
+    if (isAdmin()) tabDefs.push({ id: 'staff', label: 'ตั้งค่าพนักงาน' }, { id: 'backup', label: 'สำรองข้อมูล' }, { id: 'import', label: 'นำเข้าข้อมูล' });
     var bar = tabBar(tabDefs, state.settings.tab, 'set-tab');
     var body;
     switch (state.settings.tab) {
@@ -5637,6 +5637,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
 
   /* ---- นำเข้าข้อมูลเดิม (CSV) + ลบข้อมูลตัวอย่าง ---- */
+  // The two "delete data" cards are hidden now that the sample data is gone; set true to show them again.
+  var SHOW_DELETE_TOOLS = false;
   // cols: [key sent to the server, header in the file, required, what to put]. Dates are ค.ศ. (ปปปป-ดด-วว or วว/ดด/ปปปป).
   var IMPORT_KINDS = {
     patients: {
@@ -5687,6 +5689,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '4. ข้อมูลที่นำเข้าเป็นประวัติ (ชำระแล้ว) <b>ไม่ตัดสต๊อก</b> — ตั้งจำนวนสต๊อกที่หน้า จัดการสินค้า/บริการ > อัพเดตสต๊อก</div></div>' +
       cards +
       '<input type="file" id="importFileInput" accept=".csv,text/csv" style="display:none">' +
+      (!SHOW_DELETE_TOOLS ? '' :
       '<div class="card" style="' + card + ';border-color:var(--red-dark)">' +
         '<div style="font-size:15px;font-weight:700;margin-bottom:6px;color:var(--red-dark)">ลบข้อมูลตัวอย่าง</div>' +
         '<div style="font-size:12.5px;color:var(--text-2);line-height:1.7;margin-bottom:10px">ล้างข้อมูลทั้งหมดของระบบ (คนไข้ บันทึกการรักษา จัดยา-เบิกยา ยาฝาก สต๊อก ค่าใช้จ่าย ใบสั่งซื้อ แพทย์ เซลล์ โปรโมชัน หมวดหมู่ หัตถการ ฯลฯ) ' +
@@ -5697,7 +5700,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<div style="font-size:12.5px;color:var(--text-2);line-height:1.7;margin-bottom:10px">ลบ<b>รายการ</b>ที่สร้างก่อนวันนี้ (คนไข้ บันทึกการรักษา จัดยา-เบิกยา ยาฝาก ประวัติสต๊อก ค่าใช้จ่าย ใบสั่งซื้อ ประวัติการใช้งาน) — ' +
           '<b>เก็บ</b>ข้อมูลหลัก (แพทย์ เซลล์ โปรโมชัน หมวดหมู่ หัตถการ สินค้าสต๊อก) บัญชีผู้ใช้ ข้อมูลบริษัท และข้อมูลที่สร้างตั้งแต่วันนี้ · คนไข้ที่ยังมีรายการของวันนี้อ้างอิงอยู่จะไม่ถูกลบ · ' +
           'ลบแล้วกู้คืนไม่ได้ ต้องยืนยันด้วยชื่อผู้ใช้และรหัสผ่านของคุณ · ใช้ไม่ได้ถ้าระบบเคย Backup ข้อมูลจริงแล้ว</div>' +
-        '<button class="btn" data-action="clear-old" style="border-color:var(--red-dark);color:var(--red-dark)"><span class="ms">history</span> ตรวจสอบและลบข้อมูลก่อนวันนี้</button></div>';
+        '<button class="btn" data-action="clear-old" style="border-color:var(--red-dark);color:var(--red-dark)"><span class="ms">history</span> ตรวจสอบและลบข้อมูลก่อนวันนี้</button></div>');
   }
   /** The template: the header row + one example row (starts with # so it is skipped). */
   function importTemplate(kind) {
