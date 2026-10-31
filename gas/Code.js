@@ -366,6 +366,9 @@ var CONFIG = {
     // หน้าสต๊อกมือถือ: the key that signs its 24-hour links (made on first use), and optionally the web app /exec URL the
     // links should use (otherwise the URL of the deployment that makes the link).
     STOCK_LINK_SECRET: 'STOCK_LINK_SECRET',
+    // PUBLIC_URL: the address the stock-page links start with (default: the GitHub Pages wrapper, STOCK_PAGE_BASE_URL_); 'off' = use
+    // APP_URL / this deployment's /exec URL instead (that page shows Apps Script's banner).
+    PUBLIC_URL: 'PUBLIC_URL',
     APP_URL: 'APP_URL'
   },
   CACHE: {
@@ -6210,9 +6213,18 @@ function isStockLinkTokenValid_(token) {
   if (!(expiry > Date.now())) return false;
   return stockLinkSig_(parts[0]) === parts[1];
 }
+/** docs/index.html on GitHub Pages: opens this web app full-screen in an iframe (no Apps Script banner) and passes the ?query on. */
+var STOCK_PAGE_BASE_URL_ = 'https://ethermorphcorp-cloud.github.io/VALIN-Clinic/';
+/** What the stock-page links start with: PUBLIC_URL, else the Pages wrapper; 'off' = the /exec URL (APP_URL, else this deployment's). */
+function stockBaseUrl_() {
+  var props = PropertiesService.getScriptProperties();
+  var pub = String(props.getProperty(CONFIG.PROPS.PUBLIC_URL) || '').trim();
+  if (pub.toLowerCase() === 'off') return props.getProperty(CONFIG.PROPS.APP_URL) || ScriptApp.getService().getUrl();
+  return pub || STOCK_PAGE_BASE_URL_;
+}
 /** The link to the stock page (fresh 24-hour token), optionally opened on a search. */
 function stockPageUrl_(q) {
-  var base = PropertiesService.getScriptProperties().getProperty(CONFIG.PROPS.APP_URL) || ScriptApp.getService().getUrl();
+  var base = stockBaseUrl_();
   return base + '?page=stock&t=' + encodeURIComponent(makeStockLinkToken_()) + (q ? '&q=' + encodeURIComponent(q) : '');
 }
 /** Every stock item for the page: name, category, unit, type, qty, min (no cost). */
@@ -6239,7 +6251,7 @@ function renderStockPage_(token, q) {
   tpl.clinicName = getClinicName_();
   tpl.logoUrl = tpl.valid ? getClinicLogoUrl_() : '';
   tpl.updated = nowThai_();
-  tpl.selfUrl = (PropertiesService.getScriptProperties().getProperty(CONFIG.PROPS.APP_URL) || ScriptApp.getService().getUrl()) +
+  tpl.selfUrl = stockBaseUrl_() +
     '?page=stock&t=' + encodeURIComponent(String(token || '')) + (q ? '&q=' + encodeURIComponent(tpl.q) : '');
   tpl.itemsJson = tpl.valid ? JSON.stringify(stockViewItems_()).replace(/</g, '\\u003c') : '[]';
   return tpl.evaluate()
@@ -6528,7 +6540,7 @@ function checkLineSetup(token) {
     // 2. APP_URL
     var appUrl = String(props.getProperty(CONFIG.PROPS.APP_URL) || '');
     var thisUrl = ''; try { thisUrl = ScriptApp.getService().getUrl() || ''; } catch (e) { thisUrl = ''; }
-    if (!appUrl) add('APP_URL', 'warn', 'ยังไม่ได้ตั้ง — ลิงก์หน้าสต๊อกจะใช้ ' + (thisUrl ? short(thisUrl) : 'URL ของ deployment ที่สร้างลิงก์'));
+    if (!appUrl) add('APP_URL', 'warn', 'ยังไม่ได้ตั้ง — ลิงก์หน้าสต๊อกใช้ ' + short(stockBaseUrl_()));
     else if (!/^https:\/\/script\.google\.com\/(a\/[^/]+\/)?macros\/s\/[^/\s]+\/exec$/.test(appUrl)) add('APP_URL', 'error', 'รูปแบบไม่ถูกต้อง — ต้องเป็น https://script.google.com/macros/s/…/exec (ไม่มีช่องว่างหรือ / ต่อท้าย)');
     else add('APP_URL', 'ok', short(appUrl));
     // 3. the webhook registered in LINE
