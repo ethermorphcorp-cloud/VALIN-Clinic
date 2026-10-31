@@ -6212,7 +6212,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<td><div style="font-weight:700">' + esc(s.name) + (!s.active ? ' <span class="tag-badge" style="background:var(--red-soft);font-size:10px;vertical-align:middle">ระงับ</span>' : '') + '</div>' +
           (s.role ? '<div style="font-size:11.5px;color:var(--muted);margin-top:2px">' + esc(s.role) + '</div>' : '') + '</td>' +
         '<td style="color:var(--text-2)">' + esc(s.username) + '</td>' +
-        '<td>' + (s.level === 'admin' ? '<span class="tag-badge" style="background:var(--accent-soft);color:var(--accent-hover)">ADMIN</span>' : '<span class="tag-badge" style="background:var(--hover-bg);color:var(--text-2)">STAFF</span>') + '</td>' +
+        '<td style="color:var(--text-2);font-size:12px;word-break:break-all;max-width:190px">' + (s.lineId ? esc(s.lineId) : '<span style="color:var(--muted)">—</span>') + '</td>' +
+        '<td style="text-align:center"><input type="checkbox" data-action-change="staff-line-notify" data-arg="' + esc(s.row) + '" ' + (s.lineNotify ? 'checked' : '') + (s.lineId ? '' : ' disabled title="กรอก LINE ID ก่อน"') + ' style="width:16px;height:16px;cursor:pointer"></td>' +
+        '<td>' + (s.level === 'admin' ? '<span class="tag-badge" style="background:#E9E4F8;color:#5B3FA8">ADMIN</span>' : '<span class="tag-badge" style="background:var(--green-soft);color:var(--green-dark)">STAFF</span>') + '</td>' +
         '<td style="text-align:right;white-space:nowrap">' +
           '<button class="btn" data-action="reset-password" data-arg="' + esc(s.row) + '" title="รีเซ็ตรหัสผ่าน"><span class="ms">lock_reset</span></button> ' +
           '<button class="btn" data-action="edit-staff" data-arg="' + esc(s.row) + '"><span class="ms">edit</span></button> ' +
@@ -6225,10 +6227,15 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '</div>' +
       '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">' +
         '<table class="table" style="width:100%;border-collapse:collapse">' +
-          '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">รหัส</th><th>ชื่อพนักงาน</th><th>Username</th><th>สิทธิ์</th><th style="text-align:right;padding-right:14px">จัดการ</th></tr></thead>' +
+          '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)"><th style="padding:10px 12px">รหัส</th><th>ชื่อพนักงาน</th><th>Username</th><th>LINE ID</th><th style="text-align:center">รับข้อมูลผ่าน LINE</th><th>สิทธิ์</th><th style="text-align:right;padding-right:14px">จัดการ</th></tr></thead>' +
           '<tbody>' + rows + '</tbody></table></div>' + localPagerHtml(staffPg, 'staff');
   }
-  function newStaffModal() { openModal('staff', { name: '', role: '', username: '', lineId: '', level: 'staff', active: true }); }
+  function toggleStaffLineNotify(row, on) {
+    var s = staffByRow(row);
+    if (!s) return;
+    call('saveStaff', session.token, Object.assign({}, s, { lineNotify: !!on })).then(function () { toast('success', on ? 'จะส่งข้อมูลผ่าน LINE ให้ ' + s.name : 'ไม่ส่งข้อมูลผ่าน LINE ให้ ' + s.name); loadStaff(); }, function () { loadStaff(); });
+  }
+  function newStaffModal() { openModal('staff', { name: '', role: '', username: '', lineId: '', lineNotify: false, level: 'staff', active: true }); }
   // Staff rows are addressed by sheet row (listStaff's `row`): StaffIDs can repeat in a hand-edited sheet.
   function staffByRow(row) { return (state.settings.staff || []).filter(function (x) { return String(x.row) === String(row); })[0]; }
   function editStaffModal(row) { var s = staffByRow(row); if (s) openModal('staff', Object.assign({}, s)); }
@@ -6253,6 +6260,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return modalHeader(d.id ? 'แก้ไขผู้ใช้งาน' : 'เพิ่มผู้ใช้งาน') +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + field('ชื่อ', bindInput('name')) + field('ตำแหน่ง', bindInput('role')) + '</div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + field('ชื่อผู้ใช้ (Username)', bindInput('username')) + field('LINE ID', bindInput('lineId')) + '</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">' + bindInput('lineNotify', 'checkbox') + '<label>รับข้อมูลผ่าน LINE <span style="color:var(--muted);font-size:11.5px">(LINE ส่งสรุป/แจ้งเตือนสต๊อกให้เฉพาะคนที่ติ๊ก — ต้องกรอก LINE ID)</span></label></div>' +
       field('สิทธิ์การเข้าถึง', bindSelect('level', [{ value: 'staff', label: 'พนักงาน' }, { value: 'admin', label: 'ผู้ดูแลระบบ' }])) +
       (d.id ? '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">' + bindInput('active', 'checkbox') + '<label>เปิดใช้งานบัญชีนี้</label></div>' : '<div style="font-size:11.5px;color:var(--muted);margin-bottom:10px">รหัสผ่านเริ่มต้น: 12345</div>') +
       saveBtn();
@@ -6666,6 +6674,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (el && el.getAttribute('data-action-change') === 'dash-range') onDashRangeChange();
     if (el && el.getAttribute('data-action-change') === 'backup-cutoff') { state.backup.cutoff = el.value; state.backup.preview = null; render(); }
     if (el && el.getAttribute('data-action-change') === 'backup-select') { state.backup.selected = el.value; render(); }
+    if (el && el.getAttribute('data-action-change') === 'staff-line-notify') { toggleStaffLineNotify(el.getAttribute('data-arg'), el.checked); return; }
     if (el && el.getAttribute('data-action-change') === 'board-date') { state.board.date = el.value || todayStr(); state.board.data = null; render(); loadBoard(); }
   });
 

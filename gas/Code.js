@@ -314,7 +314,9 @@ var CONFIG = {
     // stored, so it can never drift.
     Promotions: ['PromoID', 'Name', 'Price', 'DoctorSharePct', 'Status', 'CreatedAt', 'UpdatedAt'],
     Categories: ['CategoryID', 'Type', 'Name', 'SortOrder'],
-    Staff: ['StaffID', 'Name', 'Role', 'Username', 'PasswordHash', 'PasswordSalt', 'LineID', 'Level', 'Active', 'CreatedAt'],
+    // LineNotify: TRUE/FALSE — whether this person gets the LINE pushes (blank on rows from before the column = TRUE for admins, FALSE for staff,
+    // which is who got them before; see staffLineNotify_).
+    Staff: ['StaffID', 'Name', 'Role', 'Username', 'PasswordHash', 'PasswordSalt', 'LineID', 'Level', 'Active', 'CreatedAt', 'LineNotify'],
     ClinicSettings: ['Key', 'Value'],
     Counters: ['Key', 'LastSeq'],
     AuditLog: ['Timestamp', 'User', 'Action', 'Entity', 'EntityID', 'Detail'],
@@ -1741,7 +1743,7 @@ function listStaff(token) {
     requireAuth_(token, 'admin');
     var rows = getRows_(getSheet_(CONFIG.SHEETS.STAFF));
     return { ok: true, data: rows.map(function (s) {
-      return { id: s.StaffID, name: s.Name, role: s.Role, username: s.Username, lineId: s.LineID, level: s.Level, active: !isFalse_(s.Active), row: s._row };
+      return { id: s.StaffID, name: s.Name, role: s.Role, username: s.Username, lineId: s.LineID, lineNotify: staffLineNotify_(s), level: s.Level, active: !isFalse_(s.Active), row: s._row };
     }) };
   });
 }
@@ -1759,6 +1761,10 @@ function saveStaff(token, staff) {
     if (usernameTaken) throw ValidationError_('ชื่อผู้ใช้นี้ถูกใช้แล้ว');
 
     var isNew = !staff.id;
+    var lineId = String(staff.lineId || '').trim();
+    var existingRow = isNew ? null : findStaffRow_(rows, staff.id, { row: staff.row });
+    var notify = staff.lineNotify === undefined ? (existingRow ? staffLineNotify_(existingRow) : false) : (staff.lineNotify === true || String(staff.lineNotify).toUpperCase() === 'TRUE');
+    if (notify && !lineId) throw ValidationError_('กรอก LINE ID ก่อน จึงจะเลือก "รับข้อมูลผ่าน LINE" ได้');
     if (isNew) {
       var salt = Utilities.getUuid();
       // Skip IDs already in the sheet, in case the STAFF counter is behind hand-added rows.
@@ -1766,19 +1772,19 @@ function saveStaff(token, staff) {
       do { staffId = 'S' + nextSeq_('STAFF', 4); } while (rows.some(function (s) { return String(s.StaffID) === staffId; }));
       var obj = {
         StaffID: staffId, Name: staff.name, Role: staff.role || '', Username: staff.username,
-        PasswordHash: hashPassword_('12345', salt), PasswordSalt: salt, LineID: staff.lineId || '',
-        Level: staff.level, Active: 'TRUE', CreatedAt: nowStr_()
+        PasswordHash: hashPassword_('12345', salt), PasswordSalt: salt, LineID: lineId,
+        Level: staff.level, Active: 'TRUE', CreatedAt: nowStr_(), LineNotify: notify ? 'TRUE' : 'FALSE'
       };
       appendRow_(sheet, CONFIG.HEADERS.Staff, obj);
       invalidateMasterCache_();
       writeAudit_(session, 'CREATE', 'Staff', obj.StaffID, obj.Name);
       return { ok: true, data: obj, message: 'สร้างผู้ใช้ใหม่แล้ว รหัสผ่านเริ่มต้นคือ 12345' };
     } else {
-      var existing = findStaffRow_(rows, staff.id, { row: staff.row });
+      var existing = existingRow;
       var rowIndex = existing._row;
       var updated = Object.assign({}, existing, {
         Name: staff.name, Role: staff.role || '', Username: staff.username,
-        LineID: staff.lineId || '', Level: staff.level, Active: staff.active === false ? 'FALSE' : 'TRUE'
+        LineID: lineId, Level: staff.level, Active: staff.active === false ? 'FALSE' : 'TRUE', LineNotify: notify ? 'TRUE' : 'FALSE'
       });
       updateRowByIndex_(sheet, CONFIG.HEADERS.Staff, rowIndex, updated);
       invalidateMasterCache_();
@@ -6078,9 +6084,16 @@ function seedDemoData(token) {
    the project notes for that still-open question).
    ====================================================================== */
 
-/** Round 22: every Staff row this round's "ส่งข้อมูลไป LINE" push should
- *  target — admin-level (`Level === 'admin'`), Active, and with a
- *  non-empty LineID. Returns `{lineId, name}` objects (Round 24: added
+/** Whether a Staff row gets the LINE pushes: its LineNotify checkbox (ตั้งค่าพนักงาน > รับข้อมูลผ่าน LINE). A blank cell
+ *  (a row from before the column existed) keeps the old rule: admins yes, staff no. */
+function staffLineNotify_(r) {
+  var v = r.LineNotify;
+  if (v === '' || v === undefined || v === null) return r.Level === 'admin';
+  return !isFalse_(v);
+}
+
+/** Every Staff row the LINE pushes (ส่งข้อมูลไป LINE, stock notices, ...) go to — Active, with a non-empty LineID, and
+ *  "รับข้อมูลผ่าน LINE" ticked (any level; it used to be every admin). Returns `{lineId, name}` objects (Round 24: added
  *  `name` so the caller can tell the user WHO the push actually went to,
  *  not just how many — see sendLineDailySummary below). Deliberately
  *  mirrors findLineAuthorizedStaff_()'s Active-row check below for
@@ -6088,7 +6101,7 @@ function seedDemoData(token) {
  *  pushes). */
 function getLineAdminTargets_() {
   return getRows_(getSheet_(CONFIG.SHEETS.STAFF)).filter(function (r) {
-    return r.Level === 'admin' &&
+    return staffLineNotify_(r) &&
       r.LineID && String(r.LineID).trim() &&
       (r.Active === true || String(r.Active).toUpperCase() === 'TRUE');
   }).map(function (r) { return { lineId: String(r.LineID).trim(), name: r.Name || '(ไม่มีชื่อ)' }; });
@@ -6419,7 +6432,7 @@ function pushLineToAdmins_(messages) {
     var channelToken = PropertiesService.getScriptProperties().getProperty(CONFIG.PROPS.LINE_CHANNEL_ACCESS_TOKEN);
     if (!channelToken) return { sent: 0, skipped: 'ยังไม่ได้ตั้งค่า LINE' };
     var targets = getLineAdminTargets_();
-    if (!targets.length) return { sent: 0, skipped: 'ยังไม่มีผู้ดูแลที่กรอก LINE ID' };
+    if (!targets.length) return { sent: 0, skipped: 'ยังไม่มีใครติ๊ก "รับข้อมูลผ่าน LINE" (พร้อม LINE ID)' };
     var resp = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/multicast', {
       method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + channelToken },
       payload: JSON.stringify({ to: targets.map(function (t) { return t.lineId; }), messages: messages.slice(0, 5) }), muteHttpExceptions: true
@@ -6454,7 +6467,7 @@ function sendLineDailySummary(token, dateStr) {
     if (!channelToken) throw new Error('ยังไม่ได้ตั้งค่า LINE_CHANNEL_ACCESS_TOKEN ใน Script Properties');
 
     var targets = getLineAdminTargets_();
-    if (!targets.length) throw new Error('ยังไม่มีผู้ดูแลระบบ (Level = admin) ที่กรอก LINE ID ไว้ในหน้าตั้งค่าพนักงาน — กรุณาให้แอดมินอย่างน้อย 1 คนพิมพ์ "Line ID ของฉัน" ในแชท LINE เพื่อรับรหัสของตนเอง แล้วนำไปกรอกในช่อง LINE ID ของบัญชีนั้น');
+    if (!targets.length) throw new Error('ยังไม่มีใครที่รับข้อมูลผ่าน LINE — ที่ ตั้งค่าคลินิก > ตั้งค่าพนักงาน ให้พิมพ์ "Line ID ของฉัน" ในแชท LINE เพื่อรับรหัสของตนเอง แล้วนำไปกรอกในช่อง LINE ID ของบัญชีนั้น และติ๊ก "รับข้อมูลผ่าน LINE"');
     var targetIds = targets.map(function (t) { return t.lineId; });
     var targetNames = targets.map(function (t) { return t.name; });
 
@@ -6533,10 +6546,10 @@ function checkLineSetup(token) {
     }
     // 4. who gets the pushes
     var targets = getLineAdminTargets_();
-    add('ผู้รับข้อความ (admin ที่กรอก LINE ID)', targets.length ? 'ok' : 'error',
-      targets.length ? targets.length + ' คน: ' + targets.map(function (t) { return t.name; }).join(', ') : 'ยังไม่มี — กรอก LINE ID ของ admin ที่ ตั้งค่าคลินิก > ตั้งค่าพนักงาน (พิมพ์ "Line ID ของฉัน" ในแชทเพื่อดู ID)');
-    var staffWithLine = getRows_(getSheet_(CONFIG.SHEETS.STAFF)).filter(function (r) { return r.LineID && String(r.LineID).trim() && r.Level !== 'admin'; }).length;
-    if (staffWithLine) add('พนักงานทั่วไปที่ใช้คำสั่งแชทได้', 'ok', staffWithLine + ' คน (ใช้คำสั่งได้ แต่ไม่ได้รับข้อความแจ้งเตือนอัตโนมัติ)');
+    add('ผู้รับข้อความ (ติ๊ก "รับข้อมูลผ่าน LINE" และกรอก LINE ID)', targets.length ? 'ok' : 'error',
+      targets.length ? targets.length + ' คน: ' + targets.map(function (t) { return t.name; }).join(', ') : 'ยังไม่มี — กรอก LINE ID แล้วติ๊ก "รับข้อมูลผ่าน LINE" ที่ ตั้งค่าคลินิก > ตั้งค่าพนักงาน (พิมพ์ "Line ID ของฉัน" ในแชทเพื่อดู ID)');
+    var chatOnly = getRows_(getSheet_(CONFIG.SHEETS.STAFF)).filter(function (r) { return r.LineID && String(r.LineID).trim() && !staffLineNotify_(r); }).length;
+    if (chatOnly) add('ใช้คำสั่งแชทได้ แต่ไม่รับข้อความแจ้งเตือนอัตโนมัติ', 'ok', chatOnly + ' คน (กรอก LINE ID แล้ว แต่ไม่ได้ติ๊ก "รับข้อมูลผ่าน LINE")');
     // 5. link secret + the daily trigger
     add('STOCK_LINK_SECRET', 'ok', props.getProperty(CONFIG.PROPS.STOCK_LINK_SECRET) ? 'มีแล้ว (สร้างอัตโนมัติ)' : 'จะสร้างอัตโนมัติตอนสร้างลิงก์ครั้งแรก — ไม่ต้องตั้งเอง');
     try {
