@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1E3A72">
+<meta name="robots" content="noindex">
+<title>VALIN CLINIC | ระบบบริหารคลินิก</title>
+<!--
+  Opens the Apps Script web app full-screen inside this page. Apps Script puts its "สร้างโดยผู้ใช้ Google Apps Script"
+  banner only on the page it serves directly; embedded here (the app allows framing: XFrameOptionsMode.ALLOWALL) it is not shown.
+  Everything after "?" (e.g. ?page=stock&t=...) is passed on to the app.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #1E3A72; overflow: hidden; }
+  iframe { position: fixed; inset: 0; width: 100%; height: 100%; height: 100dvh; border: 0; background: #fff; }
+  noscript { color: #fff; font: 16px sans-serif; display: block; padding: 24px; }
+  noscript a { color: #fff; }
+</style>
+</head>
+<body>
+<iframe id="app" title="VALIN CLINIC" allow="camera; microphone; clipboard-read; clipboard-write; fullscreen; geolocation" referrerpolicy="no-referrer-when-downgrade"></iframe>
+<noscript>ต้องเปิด JavaScript — <a href="https://script.google.com/macros/s/AKfycbz08tq5EhnhPw0aSqhG7t0yT37mye_i9jX1B9mLxfU8mVVXVawfjTmZQlB6sLVlJu57/exec">เปิดระบบโดยตรง</a></noscript>
+<script>
+  var EXEC = 'https://script.google.com/macros/s/AKfycbz08tq5EhnhPw0aSqhG7t0yT37mye_i9jX1B9mLxfU8mVVXVawfjTmZQlB6sLVlJu57/exec';
+  document.getElementById('app').src = EXEC + location.search + location.hash;
+</script>
+</body>
+</html>
