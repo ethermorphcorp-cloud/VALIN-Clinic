@@ -72,7 +72,7 @@ button,input,textarea,select{font-family:inherit}
 .header{display:flex;align-items:center;gap:16px;padding:20px 32px;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:0;z-index:5}
 .page-title{font-size:19px;font-weight:600;color:var(--text);letter-spacing:.2px}
 .page-sub{font-size:12px;color:var(--muted);font-weight:300;margin-top:2px}
-.header-chip{display:flex;align-items:center;gap:8px;background:var(--hover-bg);border:1px solid var(--input-border);border-radius:9px;padding:8px 12px;font-size:12.5px;color:var(--text-2);cursor:pointer;white-space:nowrap}
+.header-chip{display:flex;align-items:center;gap:8px;background:var(--hover-bg);border:1px solid var(--input-border);border-radius:9px;padding:8px 12px;font-size:12.5px;color:var(--text-2);cursor:default;white-space:nowrap}
 .icon-square{width:37px;height:37px;border-radius:10px;background:var(--hover-bg);border:1px solid var(--input-border);display:flex;align-items:center;justify-content:center;color:var(--accent);cursor:pointer;position:relative;flex:none}
 .icon-square:hover{background:var(--hover-bg2)}
 .dot-badge{position:absolute;top:7px;right:8px;width:7px;height:7px;border-radius:50%;background:var(--pink)}
@@ -140,6 +140,11 @@ button,input,textarea,select{font-family:inherit}
 .modal-sub{font-size:11.5px;color:var(--muted);font-family:ui-monospace,Menlo,monospace}
 .modal-body{padding:22px;display:flex;flex-direction:column;gap:16px;max-height:66vh;overflow-y:auto}
 .modal-foot{display:flex;align-items:center;gap:10px;padding:16px 22px;border-top:1px solid var(--border-soft);background:#F6F7FC}
+/* A form's ยกเลิก / บันทึก row sticks to the bottom of the modal (which is the scroller, padding 24px), so a long form never hides its save button. */
+.modal-actions{position:sticky;bottom:-24px;z-index:4;display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin:18px -24px -24px;padding:12px 24px;
+  background:rgba(250,251,254,.92);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-top:1px solid var(--border)}
+.modal-actions-total{display:flex;align-items:baseline;gap:8px;font-size:12.5px;color:var(--muted-2);white-space:nowrap}
+.modal-actions-total b{font-size:17px;color:var(--accent-hover);font-variant-numeric:tabular-nums}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:13px}
 .grid-fit{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:13px}
 .line-row{display:grid;gap:10px;align-items:center}
@@ -180,8 +185,21 @@ button,input,textarea,select{font-family:inherit}
 .chart-row{border-top:1px solid var(--border);padding-top:22px}
 .nav-badge{margin-left:auto;min-width:20px;height:20px;padding:0 6px;border-radius:10px;background:var(--red-dark,#C0504D);color:#fff;font-size:11px;font-weight:700;display:inline-flex;align-items:center;justify-content:center;animation:navPulse 1.6s ease-in-out infinite}
 @keyframes navPulse{0%,100%{box-shadow:0 0 0 0 rgba(192,80,77,.5)}50%{box-shadow:0 0 0 6px rgba(192,80,77,0)}}
-.board-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px}
-.board-cols{display:grid;grid-template-columns:repeat(5,minmax(220px,1fr));gap:12px;align-items:start;overflow-x:auto}
+.board-stats{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+/* A status count is also a shortcut: it scrolls its column into view (useful when the five columns don't all fit). */
+.board-stat{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:var(--r-sm);cursor:pointer;text-align:left;font-family:inherit;color:var(--text);width:100%}
+.board-stat:hover{border-color:rgba(30,58,114,.22)}
+.board-stat:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(30,58,114,.18)}
+.board-stat-ic{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;flex:none}
+.board-stat-ic .ms{font-size:19px}
+.board-stat-label{font-size:12px;color:var(--muted-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1}
+.board-stat-n{font-size:20px;font-weight:700;line-height:1;font-variant-numeric:tabular-nums}
+.board-cols{display:grid;grid-template-columns:repeat(5,minmax(200px,1fr));gap:10px;align-items:start;overflow-x:auto;scroll-padding-left:2px}
+.board-col{background:var(--hover-bg);border-radius:var(--r);padding:10px;min-width:0;transition:box-shadow .3s ease}
+.board-col.flash{box-shadow:0 0 0 2px var(--accent)}
+.board-col-head{display:flex;align-items:center;gap:8px;margin:2px 4px 0}
+.board-col-head b{font-size:13px;white-space:nowrap}
+.board-col-hint{font-size:11px;color:var(--muted-2);margin:2px 4px 10px 22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chart-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .chart-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 
@@ -224,18 +242,23 @@ button,input,textarea,select{font-family:inherit}
 }
 
 /* ===================== Responsive ===================== */
-@media (max-width:1000px){
+/* Tablet landscape / small laptop: the sidebar folds to an icon rail so the board and tables get the width (labels show as tooltips). */
+@media (max-width:1200px){
   .sidebar{width:72px;padding:16px 8px}
-  .brand-name,.brand-sub,.nav-item span:not(.ms),.preview-item span:not(.ms),.side-label,.user-info{display:none}
-  .nav-item,.preview-item{justify-content:center}
+  .brand-name,.brand-sub,.nav-item span:not(.ms):not(.nav-badge),.preview-item span:not(.ms),.side-label,.user-info{display:none}
+  .nav-item,.preview-item{justify-content:center;position:relative}
   .user-card{justify-content:center}
+  .sidebar .brand img,.sidebar .brand .brand-mark{width:44px!important;height:44px!important;font-size:17px!important;border-radius:13px!important}
+  .nav-item .nav-badge{position:absolute;top:1px;right:3px;min-width:17px;height:17px;padding:0 4px;font-size:10px}
 }
 @media (max-width:1100px){
   .chart-3{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media (max-width:720px){
   .board-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .board-stat-ic{display:none}
   .board-cols{grid-template-columns:1fr}
+  .header>div:first-child{min-width:0;flex:1}
   .chart-grid,.chart-2,.chart-3{grid-template-columns:1fr}
   .header{padding:14px 14px}
   .content{padding:16px 14px 40px}
@@ -1095,7 +1118,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       var activeCls = (n.screen ? state.screen === n.screen && state.report.tab === n.tab : state.screen === n.id) ? ' active' : '';
       var badge = n.id === 'board' && state.notify.unseen > 0 ? '<span class="nav-badge" title="มีคนไข้รอชำระเงินใหม่">' + state.notify.unseen + '</span>' :
         (n.id === 'pcheck' && state.pcheck.pending > 0 ? '<span class="nav-badge" title="ใบสั่งซื้อรอตรวจรับ">' + state.pcheck.pending + '</span>' : '');
-      return sep + '<button class="nav-item' + activeCls + '" data-action="nav" data-arg="' + n.id + '">' +
+      return sep + '<button class="nav-item' + activeCls + '" data-action="nav" data-arg="' + n.id + '" title="' + esc(n.label) + '">' +
         '<span class="ms">' + n.icon + '</span><span>' + esc(n.label) + '</span>' + badge + '</button>';
     }).join('');
     var currentNav = NAV.filter(function (n) { return n.screen ? state.screen === n.screen && state.report.tab === n.tab : n.id === state.screen; })[0] || NAV[0];
@@ -1322,7 +1345,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (!state.modal) return '';
     var body = modalBody(state.modal.type);
     return '' +
-      '<div class="modal-backdrop" style="position:fixed;inset:0;background:rgba(15,27,61,.32);display:flex;align-items:center;justify-content:center;z-index:2000;padding:20px" data-action="close-modal-bg">' +
+      // A click outside the treatment-record form does not close it (a stray click would throw away every line typed in); ยกเลิก / × still do.
+      '<div class="modal-backdrop" style="position:fixed;inset:0;background:rgba(15,27,61,.32);display:flex;align-items:center;justify-content:center;z-index:2000;padding:20px"' + (state.modal.type === 'record' ? '' : ' data-action="close-modal-bg"') + '>' +
         // The treatment-record form carries the wide ยา table, so it gets 1.5x the usual width.
         '<div class="modal" style="background:var(--surface);border-radius:var(--r-lg);max-width:' + (state.modal.type === 'record' ? 960 : 640) + 'px;width:100%;max-height:88vh;overflow:auto;padding:24px">' +
           body +
@@ -1627,7 +1651,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return '<select data-bind="' + path + '" style="' + inputStyle + '" ' + (extra || '') + '>' + opts + '</select>';
   }
   function saveBtn(label) {
-    return '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px">' +
+    return '<div class="modal-actions">' +
       '<button class="btn" data-action="close-modal">ยกเลิก</button>' +
       '<button class="btn btn-primary" data-action="save-modal">' + esc(label || 'บันทึก') + '</button></div>';
   }
@@ -3076,6 +3100,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var procTotal = document.getElementById('procTotal');
     if (box) box.innerHTML = sharePreviewInnerHtml(state.draft);
     if (totalBox) totalBox.innerHTML = totalCollectedInnerHtml(state.draft);
+    var footTotal = document.getElementById('recFootTotal');
+    if (footTotal) footTotal.textContent = money(previewShares(state.draft).totalNet);
     if (procTotal) procTotal.textContent = money(procedureTotal(state.draft));
     var chgTotal = document.getElementById('chgTotal');
     if (chgTotal) chgTotal.textContent = money(chargedMedTotal(state.draft));
@@ -3677,9 +3703,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
    */
   function recordFooter(d) {
     var st = visitStatusKey(d.visitStatus);
-    var receipt = d.id && st !== 'with_doctor' ? '<button class="btn" data-action="issue-receipt" data-arg="' + esc(d.id) + '"><span class="ms">print</span> พิมพ์ใบเสร็จ</button>' : '<span></span>';
-    return '<div style="display:flex;justify-content:space-between;align-items:center;margin-top:18px;gap:8px;flex-wrap:wrap">' + receipt +
-      '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+    var receipt = d.id && st !== 'with_doctor' ? '<button class="btn" data-action="issue-receipt" data-arg="' + esc(d.id) + '"><span class="ms">print</span> พิมพ์ใบเสร็จ</button>' : '';
+    // The bar sticks to the bottom of the form, so the running ยอดรับชำระ and the save button are always in view while lines are added.
+    return '<div class="modal-actions" style="justify-content:space-between">' +
+      '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><div class="modal-actions-total"><span>ยอดรับชำระ</span><b id="recFootTotal">' + money(previewShares(d).totalNet) + '</b></div>' + receipt + '</div>' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto">' +
         '<button class="btn" data-action="close-modal">ยกเลิก</button>' +
         // With the doctor, adding the treatment IS the step to รอชำระเงิน; afterwards a save just keeps the step.
         (st === 'with_doctor'
@@ -3825,21 +3853,22 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     '</div>';
     if (!d) return head + skelBoard();
     var stats = '<div class="board-stats">' + VISIT_FLOW.map(function (st) {
-      return '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);padding:14px 16px;display:flex;align-items:center;gap:12px">' +
-        '<div style="width:44px;height:44px;border-radius:13px;background:' + VISIT_STATUS_COLOR[st] + ';display:flex;align-items:center;justify-content:center;flex:none"><span class="ms">' + icon[st] + '</span></div>' +
-        '<div><div style="font-size:12.5px;color:var(--muted)">' + esc(VISIT_STATUS_LABEL[st]) + '</div><div style="font-size:24px;font-weight:700;line-height:1.1">' + d.counts[st] + ' <span style="font-size:12px;font-weight:500;color:var(--muted)">ราย</span></div></div></div>';
+      return '<button type="button" class="card board-stat" data-action="board-jump" data-arg="' + st + '" title="ไปที่คอลัมน์ ' + esc(VISIT_STATUS_LABEL[st]) + '">' +
+        '<span class="board-stat-ic" style="background:' + VISIT_STATUS_COLOR[st] + '"><span class="ms">' + icon[st] + '</span></span>' +
+        '<span class="board-stat-label">' + esc(VISIT_STATUS_LABEL[st]) + '</span><span class="board-stat-n">' + d.counts[st] + '</span></button>';
     }).join('') + '</div>';
     var cols = '<div class="board-cols">' + VISIT_FLOW.map(function (st) {
       var cards = d.columns[st], total = cards.length, bq = String(B.q || '').trim().toLowerCase();
       // จัดยาแล้ว lists everyone still waiting (any date) — it has a search by name / phone / HN.
       if (st === 'dispensed' && bq) cards = cards.filter(function (c) { return (String(c.patientName) + ' ' + String(c.phone) + ' ' + String(c.hn)).toLowerCase().indexOf(bq) > -1; });
       var search = st === 'dispensed' ? '<div style="margin:0 0 10px">' + searchInputHtml('boardSearch', B.q, 'ค้นหาชื่อ / เบอร์โทร / HN', 'window.__valin.onBoardSearch(this.value)') + '</div>' : '';
-      return '<div style="background:var(--hover-bg);border-radius:var(--r);padding:10px;min-width:0">' +
-        '<div style="display:flex;align-items:center;gap:8px;margin:2px 4px 10px"><span style="width:10px;height:10px;border-radius:3px;background:' + VISIT_STATUS_COLOR[st] + ';border:1px solid var(--border)"></span><b style="font-size:13px">' + esc(VISIT_STATUS_LABEL[st]) + '</b>' +
-        '<span class="tag-badge" style="background:var(--surface)">' + (cards.length === total ? total : cards.length + '/' + total) + '</span><span style="font-size:11px;color:var(--muted);margin-left:auto">' + hint[st] + '</span></div>' + search +
+      return '<div class="board-col" id="boardCol-' + st + '">' +
+        '<div class="board-col-head"><span style="width:10px;height:10px;border-radius:3px;flex:none;background:' + VISIT_STATUS_COLOR[st] + ';border:1px solid var(--border)"></span><b>' + esc(VISIT_STATUS_LABEL[st]) + '</b>' +
+        '<span class="tag-badge" style="background:var(--surface)">' + (cards.length === total ? total : cards.length + '/' + total) + '</span></div>' +
+        '<div class="board-col-hint">' + hint[st] + '</div>' + search +
         '<div style="display:flex;flex-direction:column;gap:8px">' + (cards.length ? boardColumnBody(cards, st) : '<div style="text-align:center;color:var(--muted);font-size:12px;padding:18px 0">' + (total ? 'ไม่พบรายการที่ค้นหา' : 'ไม่มีรายการ') + '</div>') + '</div></div>';
     }).join('') + '</div>';
-    return head + stats + '<div style="height:14px"></div>' + cols;
+    return head + stats + '<div style="height:12px"></div>' + cols;
   }
 
   /* ---- ชำระเงิน: the last step of a treatment record ---- */
@@ -6506,6 +6535,18 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'board-pay': payRecordAction(arg); break;
       case 'board-edit-patient': editPatientFromBoard(arg); break;
       case 'board-refresh': loadBoard(); break;
+      case 'board-jump': {
+        var colEl = document.getElementById('boardCol-' + arg);
+        if (colEl) {
+          // Sideways inside the board; down the page only when the column's top is out of view (phone: one column per row), clearing the sticky header.
+          var how = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+          var wrapEl = colEl.parentNode, r = colEl.getBoundingClientRect();
+          wrapEl.scrollBy({ left: r.left - wrapEl.getBoundingClientRect().left - 2, behavior: how });
+          if (r.top < 96 || r.top > window.innerHeight - 120) window.scrollBy({ top: r.top - 104, behavior: how });
+          colEl.classList.add('flash'); setTimeout(function () { colEl.classList.remove('flash'); }, 900);
+        }
+        break;
+      }
       case 'board-today': state.board.date = todayStr(); state.board.data = null; render(); loadBoard(); break;
       case 'close-receipt-preview': case 'close-receipt-preview-bg': if (ev.target === el || action === 'close-receipt-preview') closeReceiptPreview(); break;
       case 'receipt-preview-print': receiptFrameCall('print'); break;
