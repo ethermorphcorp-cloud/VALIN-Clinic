@@ -6239,7 +6239,9 @@ function getClinicLogoUrl_() {
     var row = getRows_(getSheet_(CONFIG.SHEETS.CLINIC_SETTINGS)).filter(function (r) { return r.Key === 'logoFileId'; })[0];
     if (!row || !row.Value) return '';
     var blob = DriveApp.getFileById(row.Value).getBlob();
-    return 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
+    var uri = 'data:' + blob.getContentType() + ';base64,' + Utilities.base64Encode(blob.getBytes());
+    // The page prints it unescaped (<?!= ?>: the escaping <?= ?> turns a data: URL in src into a broken image), so only a plain image data URI goes out.
+    return /^data:image\/[a-z0-9.+-]+;base64,[A-Za-z0-9+\/=]+$/.test(uri) ? uri : '';
   } catch (e) {
     return '';
   }

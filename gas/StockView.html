@@ -56,7 +56,7 @@ body{margin:0;font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text
   </div>
 <? } else { ?>
   <div class="top"><div class="row">
-    <? if (logoUrl) { ?><img class="logo logo-img" src="<?= logoUrl ?>" alt="<?= clinicName ?>"><? } else { ?><div class="logo">VC</div><? } ?>
+    <? if (logoUrl) { ?><img class="logo logo-img" src="<?!= logoUrl ?>" alt="<?= clinicName ?>"><? } else { ?><div class="logo">VC</div><? } ?>
     <div style="min-width:0"><h1>สต๊อกทั้งหมด</h1><div class="sub"><?= clinicName ?> · อัปเดต <?= updated ?></div></div>
     <a class="refresh" href="<?= selfUrl ?>" title="โหลดใหม่"><span class="ms">refresh</span></a>
   </div></div>
