@@ -273,7 +273,7 @@ var CONFIG = {
     // overwritten by a non-admin save); Price1..Price50 = ราคาขาย per quantity
     // tier, see STOCK_PRICE_TIERS.
     // PackUnit/PackSize (optional): a bigger unit, 1 PackUnit (กล่อง) = PackSize x Unit (ขวด). Unit is the smallest one: Qty, MinQty, StockLog and
-    // CostPrice stay in it. Price1..Price50 are per PackUnit when it is set (a line of q Unit is charged q / PackSize x the price; the tiers
+    // CostPrice stay in it (CostPrice itself is per PackUnit when there is one; stockUnitCost_ divides it by PackSize). Price1..Price50 are per PackUnit when it is set (a line of q Unit is charged q / PackSize x the price; the tiers
     // count whole packs); see stockPack_. SmallPrice (optional, only with a pack): ราคาขาย per Unit for what is left after the whole packs —
     // 12 ขวด at 850/กล่อง + 200/ขวด = 2 x 850 + 2 x 200; blank = pro rata (the pack price ÷ PackSize). See packAmount_.
     Stock: ['ItemID', 'Name', 'Category', 'Unit', 'Qty', 'CreatedAt', 'UpdatedAt', 'StockType', 'MinQty', 'CostPrice', 'Price1', 'Price3', 'Price5', 'Price10', 'Price20', 'Price50', 'PackUnit', 'PackSize', 'SmallPrice'],
@@ -1857,6 +1857,8 @@ function stockPack_(s) {
   var size = Number(numOrNull_(s && s.PackSize)), unit = String((s && s.PackUnit) || '').trim();
   return size > 1 && unit ? { size: size, unit: unit } : { size: 1, unit: '' };
 }
+/** ราคาทุน per หน่วยย่อย: CostPrice is entered per PackUnit when the item has one, so it is divided by PackSize (no pack: as typed). */
+function stockUnitCost_(s) { return Math.round((Number(s && s.CostPrice) || 0) / stockPack_(s).size * 10000) / 10000; }
 /**
  * What `qty` small units cost: the whole packs at the pack price `packPrice`, the rest at `smallPrice` per small unit (blank / null =
  * the pack price ÷ size). No pack (size 1) is plain qty x price. E.g. size 5, 850 / 200: 12 -> 2 x 850 + 2 x 200 = 2100.
@@ -3007,7 +3009,7 @@ function medicineLines_(record, ctx) {
       var o = {
         itemId: it.itemId, name: String(it.name || '').trim(),
         qtyDispensed: requireNumber_(it.qtyDispensed || 0, 'จำนวนที่เบิก' + line, { min: 0 }),
-        unitCost: old ? Number(old.unitCost) || 0 : Number(ctx.stockById[it.itemId].CostPrice) || 0
+        unitCost: old ? Number(old.unitCost) || 0 : stockUnitCost_(ctx.stockById[it.itemId])
       };
       depositSplit_(o, it, line);
       if (g.charged) {
@@ -4084,7 +4086,7 @@ function saveMedWithdrawal(token, payload) {
         if (!item || stockTypeOf_(item) !== 'medicine') throw ValidationError_('กรุณาเลือกยาจากรายการสต๊อกยา' + line);
         var qty = requireNumber_(l.qty, 'จำนวน' + line, { min: 0 });
         if (!qty) throw ValidationError_('จำนวนต้องมากกว่า 0' + line);
-        var cost = Number(item.CostPrice) || 0;
+        var cost = stockUnitCost_(item);
         take[item.ItemID] = round2_((take[item.ItemID] || 0) + qty);
         return {
           Date: payload.date, PatientID: patient.ID, PatientName: patientName, Phone: patient.Phone,
@@ -4284,7 +4286,7 @@ function salesReportRows_(keep, src) {
         var s = stockById[l.itemId] || {};
         push({
           date: d, sortKey: String(r.CreatedAt), patientName: r.PatientName, salesId: r.SalesID || '', salesName: r.SalesName || '', itemId: l.itemId, itemName: l.name,
-          qty: Number(l.qtyDispensed) || 0, unitCost: l.unitCost != null ? Number(l.unitCost) || 0 : Number(s.CostPrice) || 0,
+          qty: Number(l.qtyDispensed) || 0, unitCost: l.unitCost != null ? Number(l.unitCost) || 0 : stockUnitCost_(s),
           chargedAmount: isChargedMedLine_(l) ? Number(l.amount) || 0 : 0,
           remark: (isChargedMedLine_(l) ? 'ซื้อเพิ่มหน้าคลีนิค (คิดค่ายา)' : 'ซื้อเพิ่มหน้าคลีนิค (ไม่คิดค่ายา)') + ' · บันทึกการรักษา ' + r.RID
         });
@@ -5403,7 +5405,7 @@ function importWithdrawalsCsv(token, payload) {
         if (cost === null) return bad('ราคาทุน/หน่วยไม่ถูกต้อง: ' + csvTrim_(r.cost));
         var key = found.p.ID + '|' + date + '|' + sr.SalesID;
         if (!byKey[key]) { byKey[key] = { patient: found.p, date: date, sales: sr, lines: [] }; groups.push(byKey[key]); }
-        byKey[key].lines.push({ item: item, qty: qty, cost: cost === '' ? Number(item.CostPrice) || 0 : cost, note: csvTrim_(r.note) });
+        byKey[key].lines.push({ item: item, qty: qty, cost: cost === '' ? stockUnitCost_(item) : cost, note: csvTrim_(r.note) });
       });
 
       var lineCount = groups.reduce(function (n, g) { return n + g.lines.length; }, 0);

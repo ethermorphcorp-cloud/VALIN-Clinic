@@ -4153,7 +4153,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<td>' + catBadge(s.category) + '</td>' +
       minCell +
       '<td style="white-space:nowrap">' + qtyCell + dateNote + packNote + '</td>' +
-      (isMed && showCost ? '<td>' + stockMoneyCell(s.costPrice) + '</td>' + (s.prices || []).map(function (p) { return '<td>' + stockMoneyCell(p) + '</td>'; }).join('') : '') +
+      (isMed && showCost ? '<td>' + stockMoneyCell(s.costPrice) + (s.packSize > 1 && s.costPrice != null ? '<div style="font-size:11px;color:var(--muted);white-space:nowrap">ต่อ' + esc(s.packUnit) + ' · ' + esc(money(Math.round(s.costPrice / s.packSize * 100) / 100)) + '/' + esc(s.unit) + '</div>' : '') + '</td>' + (s.prices || []).map(function (p) { return '<td>' + stockMoneyCell(p) + '</td>'; }).join('') : '') +
       actions + '</tr>';
   }
   function stockItemById(id) { return ((state.stock.list && state.stock.list.items) || []).filter(function (x) { return x.id === id; })[0]; }
@@ -4337,7 +4337,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + fieldU('ราคาขายต่อหน่วยใหญ่', 'big', optNum('prices.0')) + fieldU('ราคาขายต่อหน่วยย่อย', 'small', optNum('smallPrice')) + '</div>' +
         hint('ราคาต่อหน่วยย่อยใช้กับส่วนที่ไม่ครบหน่วยใหญ่ (เว้นว่าง = คิดตามสัดส่วน) · ไม่ได้ตั้งหน่วยใหญ่: ราคาขายคือราคาต่อหน่วย')
       : (d.type !== 'medicine' || !isAdmin()) ? '' :
-      fieldU('ราคาทุน (ต่อหน่วยย่อย)', 'small', optNum('costPrice')) +
+      fieldU('ราคาทุนต่อหน่วยใหญ่', 'big', optNum('costPrice')) +
       '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">ราคาขายต่อหน่วยใหญ่ <span style="color:var(--muted)">(ตามจำนวนหน่วยใหญ่ที่ซื้อ · ไม่ได้ตั้งหน่วยใหญ่ = ราคาต่อหน่วย)</span>' + unitTag('big') + '</label></div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">' +
         STOCK_PRICE_TIERS.map(function (t, i) { return field('จำนวน ' + t, optNum('prices.' + i)); }).join('') +
@@ -4349,7 +4349,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">' +
         field('หน่วยย่อย (เช่น ขวด)', bindInput('unit')) + field('หน่วยใหญ่ (เช่น กล่อง)', bindInput('packUnit')) + field('จำนวนหน่วยใหญ่ : หน่วยย่อย', optNum('packSize')) +
       '</div>' +
-      hint('หน่วยใหญ่ไม่บังคับ — ตั้งแล้วใส่อัตราส่วน เช่น 1 กล่อง : 5 ขวด กรอก 5 · จำนวนสต๊อก/ขั้นต่ำ/ตัดสต๊อกกรอกเป็นหน่วยย่อย แต่แสดงเป็น "2 กล่อง 2 ขวด" · ราคาทุนเป็นต่อหน่วยย่อย') +
+      hint('หน่วยใหญ่ไม่บังคับ — ตั้งแล้วใส่อัตราส่วน เช่น 1 กล่อง : 5 ขวด กรอก 5 · จำนวนสต๊อก/ขั้นต่ำ/ตัดสต๊อกกรอกเป็นหน่วยย่อย แต่แสดงเป็น "2 กล่อง 2 ขวด" · ราคาทุนกรอกต่อหน่วยใหญ่ ระบบหารด้วยอัตราส่วนเป็นราคาทุนต่อหน่วยย่อยเอง (ไม่ได้ตั้งหน่วยใหญ่ = ราคาทุนต่อหน่วย)') +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
         fieldU('จำนวนสต๊อกขั้นต่ำ (หน่วยย่อย)', 'small', optNum('minQty')) +
         // An existing item's quantity only changes through ปรับสต๊อก/อัพเดตสต๊อก (so it lands in the history).
