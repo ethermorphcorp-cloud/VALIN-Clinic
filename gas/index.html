@@ -4327,15 +4327,18 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var typeOpts = STOCK_TABS.map(function (t) { return { value: t.id, label: stockTypeLabel(t.id) }; });
     var typeLabel = stockTypeLabel(d.type);
     var optNum = function (path) { return bindInput(path, 'number', 'min="0" step="any" data-blank-ok'); };
+    // Labels end with the unit they are in (หน่วยย่อย = Unit, หน่วยใหญ่ = PackUnit); the names follow what is typed in the unit fields (see the input handler).
+    var unitTag = function (k) { return ' <b data-unit-name="' + k + '" style="color:var(--accent-hover)">' + esc(k === 'big' ? (d.packUnit || '') : (d.unit || '')) + '</b>'; };
+    var fieldU = function (label, k, inputHtml) { return '<div style="margin-bottom:12px"><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">' + esc(label) + unitTag(k) + '</label>' + inputHtml + '</div>'; };
     var hint = function (t) { return '<div style="font-size:11.5px;color:var(--muted);margin:-4px 0 12px;line-height:1.6">' + t + '</div>'; };
     // ราคาต่อหน่วยย่อย (with a หน่วยใหญ่): the price of what is left after the whole packs, e.g. 12 ขวด = 2 กล่อง × ราคาต่อกล่อง + 2 ขวด × ราคาต่อขวด.
-    var smallField = field('ราคาขายต่อหน่วยย่อย', optNum('smallPrice')) + hint('ใช้กับส่วนที่ไม่ครบหน่วยใหญ่ (เช่น 12 ขวด = 2 กล่อง + 2 ขวด) · เว้นว่าง = คิดตามสัดส่วนของราคาต่อหน่วยใหญ่ · ไม่ได้ตั้งหน่วยใหญ่ไม่ต้องกรอก');
+    var smallField = fieldU('ราคาขายต่อหน่วยย่อย', 'small', optNum('smallPrice')) + hint('ใช้กับส่วนที่ไม่ครบหน่วยใหญ่ (เช่น 12 ขวด = 2 กล่อง + 2 ขวด) · เว้นว่าง = คิดตามสัดส่วนของราคาต่อหน่วยใหญ่ · ไม่ได้ตั้งหน่วยใหญ่ไม่ต้องกรอก');
     var priceFields = d.type === 'oral'
-      ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + field('ราคาขายต่อหน่วยใหญ่', optNum('prices.0')) + field('ราคาขายต่อหน่วยย่อย', optNum('smallPrice')) + '</div>' +
+      ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + fieldU('ราคาขายต่อหน่วยใหญ่', 'big', optNum('prices.0')) + fieldU('ราคาขายต่อหน่วยย่อย', 'small', optNum('smallPrice')) + '</div>' +
         hint('ราคาต่อหน่วยย่อยใช้กับส่วนที่ไม่ครบหน่วยใหญ่ (เว้นว่าง = คิดตามสัดส่วน) · ไม่ได้ตั้งหน่วยใหญ่: ราคาขายคือราคาต่อหน่วย')
       : (d.type !== 'medicine' || !isAdmin()) ? '' :
-      field('ราคาทุน (ต่อหน่วยย่อย)', optNum('costPrice')) +
-      '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">ราคาขายต่อหน่วยใหญ่ <span style="color:var(--muted)">(ตามจำนวนหน่วยใหญ่ที่ซื้อ · ไม่ได้ตั้งหน่วยใหญ่ = ราคาต่อหน่วย)</span></label></div>' +
+      fieldU('ราคาทุน (ต่อหน่วยย่อย)', 'small', optNum('costPrice')) +
+      '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">ราคาขายต่อหน่วยใหญ่ <span style="color:var(--muted)">(ตามจำนวนหน่วยใหญ่ที่ซื้อ · ไม่ได้ตั้งหน่วยใหญ่ = ราคาต่อหน่วย)</span>' + unitTag('big') + '</label></div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">' +
         STOCK_PRICE_TIERS.map(function (t, i) { return field('จำนวน ' + t, optNum('prices.' + i)); }).join('') +
       '</div>' + smallField;
@@ -4348,9 +4351,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '</div>' +
       hint('หน่วยใหญ่ไม่บังคับ — ตั้งแล้วใส่อัตราส่วน เช่น 1 กล่อง : 5 ขวด กรอก 5 · จำนวนสต๊อก/ขั้นต่ำ/ตัดสต๊อกกรอกเป็นหน่วยย่อย แต่แสดงเป็น "2 กล่อง 2 ขวด" · ราคาทุนเป็นต่อหน่วยย่อย') +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
-        field('จำนวนสต๊อกขั้นต่ำ (หน่วยย่อย)', optNum('minQty')) +
+        fieldU('จำนวนสต๊อกขั้นต่ำ (หน่วยย่อย)', 'small', optNum('minQty')) +
         // An existing item's quantity only changes through ปรับสต๊อก/อัพเดตสต๊อก (so it lands in the history).
-        (d.id ? '' : field('จำนวนคงเหลือเริ่มต้น (หน่วยย่อย)', bindInput('qty', 'number', 'min="0"'))) +
+        (d.id ? '' : fieldU('จำนวนคงเหลือเริ่มต้น (หน่วยย่อย)', 'small', bindInput('qty', 'number', 'min="0"'))) +
       '</div>' +
       priceFields + saveBtn();
   }
@@ -6927,6 +6930,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       if (suLine[2] === 'qtyRemaining' && el.value === '') state.draft.items[Number(suLine[1])].qtyRemaining = '';
       var suCap = document.getElementById('suCap' + suLine[1]);
       if (suCap) suCap.innerHTML = stockUpdateCapHtml(state.draft.items[Number(suLine[1])]);
+      return;
+    }
+    // The stock form's unit-tagged labels follow the หน่วยย่อย / หน่วยใหญ่ names as they are typed.
+    if (state.modal && state.modal.type === 'stock' && (bindPath === 'unit' || bindPath === 'packUnit')) {
+      Array.prototype.forEach.call(document.querySelectorAll('[data-unit-name="' + (bindPath === 'unit' ? 'small' : 'big') + '"]'), function (e) { e.textContent = String(el.value || '').trim(); });
       return;
     }
     // The stock form shows ราคาทุน/ราคาขาย only for ยา, so switching type redraws it.
