@@ -77,6 +77,16 @@ body{margin:0;font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text
   var st = { q: document.getElementById('q').value || '', t: '', f: 'all', n: 40 };
   function esc(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
   function fmt(n) { return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-US'); }
+  // หน่วยใหญ่ + หน่วยย่อย: [[number, unit], ...] — 12 ขวด of a 5-ขวด กล่อง is [[2, กล่อง], [2, ขวด]]
+  function qtyParts(x, n) {
+    var s = Number(x.packSize) || 1;
+    if (!(s > 1) || !(n > 0)) return [[fmt(n), x.unit]];
+    var w = Math.floor(n / s + 1e-9), r = Math.round((n - w * s) * 100) / 100;
+    return !w ? [[fmt(r), x.unit]] : (r ? [[fmt(w), x.packUnit], [fmt(r), x.unit]] : [[fmt(w), x.packUnit]]);
+  }
+  function qtyHtml(x, n, color) {
+    return qtyParts(x, n).map(function (p) { return '<b style="color:' + color + '">' + p[0] + '</b><span class="u">' + esc(p[1]) + '</span>'; }).join(' ');
+  }
   function state(x) { return x.qty <= 0 ? 'out' : (x.min != null && x.qty < x.min ? 'warn' : 'ok'); }
   var ORDER = { out: 0, warn: 1, ok: 2 };
   function render() {
@@ -97,8 +107,8 @@ body{margin:0;font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text
     document.getElementById('list').innerHTML = !rows.length ? '<div class="empty">ไม่พบรายการ</div>' : shown.map(function (x) {
       var s = state(x);
       return '<div class="item"><span class="dot ' + s + '"></span><div style="min-width:0"><div class="nm">' + esc(x.name) + '</div>' +
-        '<div class="sm">' + T[x.type] + (x.cat ? ' · ' + esc(x.cat) : '') + (x.min != null ? ' · ขั้นต่ำ ' + fmt(x.min) : '') + '</div></div>' +
-        '<div class="qty"><b style="color:' + (s === 'out' ? 'var(--red)' : s === 'warn' ? 'var(--amber)' : 'var(--text)') + '">' + fmt(x.qty) + '</b><span class="u">' + esc(x.unit) + '</span>' +
+        '<div class="sm">' + T[x.type] + (x.cat ? ' · ' + esc(x.cat) : '') + (x.min != null ? ' · ขั้นต่ำ ' + (x.packSize > 1 ? qtyParts(x, x.min).map(function (p) { return p[0] + ' ' + esc(p[1]); }).join(' ') : fmt(x.min)) : '') + '</div></div>' +
+        '<div class="qty">' + qtyHtml(x, x.qty, s === 'out' ? 'var(--red)' : s === 'warn' ? 'var(--amber)' : 'var(--text)') +
         (s !== 'ok' ? '<div><span class="badge ' + s + '">' + (s === 'out' ? 'หมด' : 'ใกล้หมด') + '</span></div>' : '') + '</div></div>';
     }).join('') + (rows.length > shown.length ? '<button class="more" id="more">แสดงเพิ่ม (' + (rows.length - shown.length) + ')</button>' : '');
     var m = document.getElementById('more');

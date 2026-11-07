@@ -272,7 +272,11 @@ var CONFIG = {
     // ราคาทุน (admin-only — stripped from every non-admin response and never
     // overwritten by a non-admin save); Price1..Price50 = ราคาขาย per quantity
     // tier, see STOCK_PRICE_TIERS.
-    Stock: ['ItemID', 'Name', 'Category', 'Unit', 'Qty', 'CreatedAt', 'UpdatedAt', 'StockType', 'MinQty', 'CostPrice', 'Price1', 'Price3', 'Price5', 'Price10', 'Price20', 'Price50'],
+    // PackUnit/PackSize (optional): a bigger unit, 1 PackUnit (กล่อง) = PackSize x Unit (ขวด). Unit is the smallest one: Qty, MinQty, StockLog and
+    // CostPrice stay in it. Price1..Price50 are per PackUnit when it is set (a line of q Unit is charged q / PackSize x the price; the tiers
+    // count whole packs); see stockPack_. SmallPrice (optional, only with a pack): ราคาขาย per Unit for what is left after the whole packs —
+    // 12 ขวด at 850/กล่อง + 200/ขวด = 2 x 850 + 2 x 200; blank = pro rata (the pack price ÷ PackSize). See packAmount_.
+    Stock: ['ItemID', 'Name', 'Category', 'Unit', 'Qty', 'CreatedAt', 'UpdatedAt', 'StockType', 'MinQty', 'CostPrice', 'Price1', 'Price3', 'Price5', 'Price10', 'Price20', 'Price50', 'PackUnit', 'PackSize', 'SmallPrice'],
     // StockLog (round 25) — one row per item PER "อัพเดตสต๊อก" batch save; a
     // single save (one Date + one Note) can spawn several StockLog rows,
     // one per item line, sharing that Date/Note (mirrors the
@@ -340,7 +344,7 @@ var CONFIG = {
   // (see applyTextColumnFormat_), so a cell left date-formatted from earlier
   // data can't turn a quantity or price into a date.
   NUMBER_COLUMNS: {
-    Stock: ['Qty', 'MinQty', 'CostPrice', 'Price1', 'Price3', 'Price5', 'Price10', 'Price20', 'Price50'],
+    Stock: ['Qty', 'MinQty', 'CostPrice', 'Price1', 'Price3', 'Price5', 'Price10', 'Price20', 'Price50', 'PackSize', 'SmallPrice'],
     DailySummary: ['Amount', 'Count'],
     StockLog: ['QtyIn', 'QtyRemaining', 'QtyOut'],
     MedDeposits: ['QtyRemaining', 'QtyDeposited'],
@@ -1155,7 +1159,7 @@ function listAllStockLite(token) {
     if (cached) return { ok: true, data: cached };
     var rows = getRows_(getSheet_(CONFIG.SHEETS.STOCK));
     var data = rows.map(function (s) {
-      return { id: s.ItemID, name: s.Name, category: s.Category, unit: s.Unit, qty: Number(s.Qty) || 0, type: stockTypeOf_(s), prices: STOCK_PRICE_TIERS.map(function (t) { return numOrNull_(s['Price' + t]); }) };
+      return { id: s.ItemID, name: s.Name, category: s.Category, unit: s.Unit, packUnit: stockPack_(s).unit, packSize: stockPack_(s).size, smallPrice: stockPack_(s).size > 1 ? numOrNull_(s.SmallPrice) : null, qty: Number(s.Qty) || 0, type: stockTypeOf_(s), prices: STOCK_PRICE_TIERS.map(function (t) { return numOrNull_(s['Price' + t]); }) };
     });
     cachePutChunked_(CONFIG.CACHE.STOCK_LITE_KEY, data, CONFIG.CACHE.LITE_TTL);
     return { ok: true, data: data };
@@ -1847,6 +1851,32 @@ function saveClinicSettings(token, settings) {
 
 // ราคาขาย quantity tiers — one Stock column per tier (Price1, Price3, ...).
 var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
+
+/** An item's pack: {size, unit} for "1 unit = size x Unit" (e.g. 1 กล่อง = 5 ขวด), {size: 1, unit: ''} when it has none. */
+function stockPack_(s) {
+  var size = Number(numOrNull_(s && s.PackSize)), unit = String((s && s.PackUnit) || '').trim();
+  return size > 1 && unit ? { size: size, unit: unit } : { size: 1, unit: '' };
+}
+/**
+ * What `qty` small units cost: the whole packs at the pack price `packPrice`, the rest at `smallPrice` per small unit (blank / null =
+ * the pack price ÷ size). No pack (size 1) is plain qty x price. E.g. size 5, 850 / 200: 12 -> 2 x 850 + 2 x 200 = 2100.
+ */
+function packAmount_(qty, size, packPrice, smallPrice) {
+  if (!(size > 1)) return round2_(qty * packPrice);
+  var whole = Math.floor(qty / size + 1e-9), rest = qty - whole * size;
+  var each = smallPrice === '' || smallPrice == null ? packPrice / size : smallPrice;
+  return round2_(whole * packPrice + rest * each);
+}
+/**
+ * The pack a charged line is priced by: the one the client saved/picked with the line (a snapshot, so a record from before the item
+ * got a pack keeps pricing per small unit), else the item's own. A line of q small units is charged q / size x unitPrice.
+ */
+function linePack_(it, item) {
+  var cur = stockPack_(item);
+  var size = it.packSize == null || it.packSize === '' ? cur.size : Number(it.packSize);
+  if (!isFinite(size) || size < 1) size = 1;
+  return { size: size, unit: size > 1 ? (size === cur.size ? cur.unit : String(it.packUnit || '').trim().slice(0, 30)) : '' };
+}
 // StockLog.Kind values. '' (rows written before Kind existed) reads as 'update'.
 var STOCK_LOG_KINDS = { update: 1, in: 1, out: 1, set: 1, import: 1, opening: 1, record: 1, withdraw: 1, purchase: 1 };
 
@@ -1964,6 +1994,7 @@ function optionalNumber_(v, label) {
 function mapStockOut_(s, latestLog, showCost) {
   var out = {
     id: s.ItemID, name: s.Name, category: s.Category, unit: s.Unit, qty: Number(s.Qty) || 0, row: s._row,
+    packUnit: stockPack_(s).unit, packSize: stockPack_(s).size, smallPrice: stockPack_(s).size > 1 ? numOrNull_(s.SmallPrice) : null,
     type: stockTypeOf_(s),
     minQty: numOrNull_(s.MinQty),
     prices: STOCK_PRICE_TIERS.map(function (t) { return numOrNull_(s['Price' + t]); }),
@@ -1995,7 +2026,7 @@ function stockLogRow_(session, logId, date, item, kind, qtyIn, qtyOut, qtyRemain
 }
 
 /**
- * item: {id?, type, name, category, unit, minQty, costPrice, prices:[6], qty}.
+ * item: {id?, type, name, category, unit, packUnit?, packSize?, minQty, costPrice, prices:[6], qty}.
  * `qty` is only used when creating an item (written as a ยอดยกมา StockLog
  * entry); an existing item's quantity only changes through StockLog writes
  * (adjustStock / saveStockUpdate / importStockCsv), never through this form.
@@ -2018,7 +2049,17 @@ function saveStockItem(token, item) {
         if (!existing) throw ValidationError_('ไม่พบสินค้า');
       }
       var initialQty = isNew ? requireNumber_(item.qty || 0, 'จำนวนคงเหลือ', { min: 0 }) : 0;
+      // The optional bigger unit: both the name and "how many Unit in one" or neither.
+      var packUnit = String(item.packUnit || '').trim(), packSize = '', smallPrice = '';
+      if (packUnit || (item.packSize !== '' && item.packSize != null)) {
+        if (!packUnit) throw ValidationError_('กรุณากรอกชื่อหน่วยใหญ่ (เช่น กล่อง)');
+        packSize = requireNumber_(item.packSize, '1 ' + packUnit + ' เท่ากับกี่ ' + item.unit, { min: 0 });
+        if (!(packSize > 1)) throw ValidationError_('1 ' + packUnit + ' ต้องมากกว่า 1 ' + item.unit);
+        if (packUnit === String(item.unit).trim()) throw ValidationError_('หน่วยใหญ่ต้องไม่ซ้ำกับหน่วยย่อย');
+        smallPrice = optionalNumber_(item.smallPrice, 'ราคาขายต่อ' + item.unit);
+      }
       var obj = Object.assign({}, existing || {}, {
+        PackUnit: packUnit, PackSize: packSize, SmallPrice: smallPrice,
         ItemID: isNew ? ('ST' + nextSeq_('STOCK', 4)) : item.id,
         Name: item.name, Category: item.category, Unit: item.unit,
         Qty: isNew ? initialQty : (Number(existing.Qty) || 0),
@@ -2027,7 +2068,7 @@ function saveStockItem(token, item) {
         MinQty: optionalNumber_(item.minQty, 'จำนวนสต๊อกขั้นต่ำ'),
         CostPrice: isAdmin ? optionalNumber_(item.costPrice, 'ราคาทุน') : (existing ? existing.CostPrice : '')
       });
-      STOCK_PRICE_TIERS.forEach(function (t, i) { obj['Price' + t] = optionalNumber_(prices[i], 'ราคาขาย ' + t + ' ชิ้น'); });
+      STOCK_PRICE_TIERS.forEach(function (t, i) { obj['Price' + t] = optionalNumber_(prices[i], 'ราคาขาย ' + t + ' ' + (packUnit || 'ชิ้น')); });
       delete obj._row;
 
       if (isNew) {
@@ -2970,9 +3011,15 @@ function medicineLines_(record, ctx) {
       };
       depositSplit_(o, it, line);
       if (g.charged) {
+        // qtyDispensed is in the stock's smallest unit; unitPrice is per pack when the line has one (1 กล่อง = 5 ขวด -> 5 ขวด = 1 กล่อง).
+        var pk = linePack_(it, ctx.stockById[it.itemId]);
         o.charged = true;
         o.unitPrice = requireNumber_(it.unitPrice || 0, 'ราคาต่อหน่วย' + line, { min: 0 });
-        o.amount = round2_(o.qtyDispensed * o.unitPrice);
+        if (pk.size > 1) {
+          o.packSize = pk.size; o.packUnit = pk.unit;
+          o.smallPrice = optionalNumber_(it.smallPrice, 'ราคาต่อหน่วยย่อย' + line); // '' = pro rata
+        }
+        o.amount = packAmount_(o.qtyDispensed, pk.size, o.unitPrice, o.smallPrice);
       } else {
         o.unitPrice = 0;
         o.amount = 0;
@@ -3000,7 +3047,13 @@ function oralMedLines_(record, ctx) {
     var qty = requireNumber_(it.qty || 0, 'จำนวน' + line, { min: 0 });
     if (!qty) throw ValidationError_('จำนวนต้องมากกว่า 0' + line);
     var unitPrice = requireNumber_(it.unitPrice || 0, 'ราคา/หน่วย' + line, { min: 0 });
-    var o = { itemId: item.ItemID, name: item.Name, qty: qty, unit: item.Unit || '', unitPrice: unitPrice, amount: round2_(qty * unitPrice) };
+    var pk = linePack_(it, item); // qty is in the smallest unit, unitPrice per pack (see medicineLines_)
+    var o = { itemId: item.ItemID, name: item.Name, qty: qty, unit: item.Unit || '', unitPrice: unitPrice };
+    if (pk.size > 1) {
+      o.packSize = pk.size; o.packUnit = pk.unit;
+      o.smallPrice = optionalNumber_(it.smallPrice, 'ราคาต่อหน่วยย่อย' + line);
+    }
+    o.amount = packAmount_(qty, pk.size, unitPrice, o.smallPrice);
     out.items.push(o);
     out.total += o.amount;
   });
@@ -6230,7 +6283,7 @@ function stockPageUrl_(q) {
 /** Every stock item for the page: name, category, unit, type, qty, min (no cost). */
 function stockViewItems_() {
   return getRows_(getSheet_(CONFIG.SHEETS.STOCK)).map(function (r) {
-    return { name: String(r.Name || ''), cat: String(r.Category || ''), unit: String(r.Unit || ''), type: stockTypeOf_(r), qty: Number(r.Qty) || 0, min: numOrNull_(r.MinQty) };
+    return { name: String(r.Name || ''), cat: String(r.Category || ''), unit: String(r.Unit || ''), packUnit: stockPack_(r).unit, packSize: stockPack_(r).size, type: stockTypeOf_(r), qty: Number(r.Qty) || 0, min: numOrNull_(r.MinQty) };
   });
 }
 /** The company logo (ตั้งค่าคลินิก > ข้อมูลบริษัท) as a data URI for pages served without a login; '' when there is none. */
@@ -6273,6 +6326,17 @@ var STOCK_TYPE_TH_ = { medicine: 'ยา', oral: 'ยาทาน', supply: 'เ
 var LINE_ROWS_MAX_ = 30; // a bubble has a size limit; longer lists end with "และอีก N รายการ"
 
 function qtyFmt_(n) { return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-US'); }
+/**
+ * A stock quantity (small units) as หน่วยใหญ่ + หน่วยย่อย — "2 กล่อง 2 ขวด" — for x = {unit, packUnit, packSize}. Without a pack, or at 0 /
+ * below, it is the number and the unit (bare: the number only).
+ */
+function qtyPackText_(qty, x, bare) {
+  var n = Number(qty) || 0, size = Number(x && x.packSize) || 1, unit = (x && x.unit) || '';
+  if (!(size > 1) || n <= 0) return qtyFmt_(n) + (!bare && unit ? ' ' + unit : '');
+  var whole = Math.floor(n / size + 1e-9), rest = round2_(n - whole * size);
+  if (!whole) return qtyFmt_(rest) + ' ' + unit;
+  return qtyFmt_(whole) + ' ' + x.packUnit + (rest ? ' ' + qtyFmt_(rest) + ' ' + unit : '');
+}
 function lineText_(text, o) { return Object.assign({ type: 'text', text: String(text === '' || text == null ? '-' : text), size: 'sm', color: '#1C2440', wrap: true }, o || {}); }
 function lineHeader_(title, sub, color) {
   return { type: 'box', layout: 'vertical', backgroundColor: color || '#1E3A72', paddingAll: '16px', contents: [
@@ -6282,7 +6346,7 @@ function lineHeader_(title, sub, color) {
 }
 /** {itemId, name, type, unit, min, before, after, delta} for one item whose stock went from `before` to `after`. */
 function stockMove_(item, before, after) {
-  return { itemId: item.ItemID, name: item.Name, type: stockTypeOf_(item), unit: item.Unit || '', min: numOrNull_(item.MinQty),
+  return { itemId: item.ItemID, name: item.Name, type: stockTypeOf_(item), unit: item.Unit || '', packUnit: stockPack_(item).unit, packSize: stockPack_(item).size, min: numOrNull_(item.MinQty),
     before: round2_(before), after: round2_(after), delta: round2_(after - before) };
 }
 function isLowStock_(qty, min) { return qty <= 0 || (min != null && qty < min); }
@@ -6291,7 +6355,7 @@ function isLowStock_(qty, min) { return qty <= 0 || (min != null && qty < min); 
 function lowStockItems_() {
   var typeOrder = { medicine: 0, oral: 1, supply: 2 };
   return getRows_(getSheet_(CONFIG.SHEETS.STOCK)).map(function (s) {
-    return { name: s.Name, type: stockTypeOf_(s), unit: s.Unit || '', qty: Number(s.Qty) || 0, min: numOrNull_(s.MinQty) };
+    return { name: s.Name, type: stockTypeOf_(s), unit: s.Unit || '', packUnit: stockPack_(s).unit, packSize: stockPack_(s).size, qty: Number(s.Qty) || 0, min: numOrNull_(s.MinQty) };
   }).filter(function (x) { return isLowStock_(x.qty, x.min); }).sort(function (a, b) {
     var ra = a.min ? a.qty / a.min : (a.qty <= 0 ? -1 : 1), rb = b.min ? b.qty / b.min : (b.qty <= 0 ? -1 : 1);
     return typeOrder[a.type] - typeOrder[b.type] || ra - rb || String(a.name).localeCompare(String(b.name), 'th');
@@ -6334,8 +6398,8 @@ function buildLowStockMessage_(items, clinicName, url) {
       list.forEach(function (x) {
         body.push({ type: 'box', layout: 'horizontal', margin: 'sm', contents: [
           lineText_(x.name, { size: 'sm', flex: 6 }),
-          lineText_(qtyFmt_(x.qty) + (x.unit ? ' ' + x.unit : ''), { size: 'sm', weight: 'bold', align: 'end', flex: 3, color: x.qty <= 0 ? '#AC4143' : '#B4791E' }),
-          lineText_(x.min == null ? '-' : qtyFmt_(x.min), { size: 'sm', align: 'end', flex: 3, color: '#8891AC' })
+          lineText_(qtyPackText_(x.qty, x), { size: 'sm', weight: 'bold', align: 'end', flex: 3, color: x.qty <= 0 ? '#AC4143' : '#B4791E' }),
+          lineText_(x.min == null ? '-' : qtyPackText_(x.min, x, true), { size: 'sm', align: 'end', flex: 3, color: '#8891AC' })
         ] });
       });
     });
@@ -6391,8 +6455,8 @@ function buildStockSearchMessage_(q, found, clinicName, url) {
       var color = x.qty <= 0 ? '#AC4143' : (isLowStock_(x.qty, x.min) ? '#B4791E' : '#1C2440');
       body.push({ type: 'box', layout: 'horizontal', margin: 'md', contents: [
         { type: 'box', layout: 'vertical', flex: 6, contents: [lineText_(x.name, { size: 'sm' }), lineText_(STOCK_TYPE_TH_[x.type] + (x.cat ? ' · ' + x.cat : ''), { size: 'xxs', color: '#8891AC' })] },
-        lineText_(qtyFmt_(x.qty) + (x.unit ? ' ' + x.unit : ''), { size: 'sm', weight: 'bold', align: 'end', flex: 3, color: color }),
-        lineText_(x.min == null ? '-' : qtyFmt_(x.min), { size: 'sm', align: 'end', flex: 3, color: '#8891AC' })] });
+        lineText_(qtyPackText_(x.qty, x), { size: 'sm', weight: 'bold', align: 'end', flex: 3, color: color }),
+        lineText_(x.min == null ? '-' : qtyPackText_(x.min, x, true), { size: 'sm', align: 'end', flex: 3, color: '#8891AC' })] });
     });
     if (found.length > shown.length) body.push(lineText_('และอีก ' + (found.length - shown.length) + ' รายการ — กดดูทั้งหมดด้านล่าง', { size: 'xs', color: '#8891AC', margin: 'lg' }));
   }
@@ -6420,9 +6484,9 @@ function buildStockChangeMessage_(info, clinicName) {
     body.push({ type: 'box', layout: 'horizontal', margin: 'md', contents: [
       { type: 'box', layout: 'vertical', flex: 6, contents: [
         lineText_(m.name, { size: 'sm' }),
-        lineText_(STOCK_TYPE_TH_[m.type] + (low ? ' · ' + (m.after <= 0 ? 'หมด' : 'ต่ำกว่าขั้นต่ำ ' + qtyFmt_(m.min)) : ''), { size: 'xxs', color: low ? '#AC4143' : '#8891AC' })] },
-      lineText_((m.delta > 0 ? '+' : (m.delta < 0 ? '−' : '')) + qtyFmt_(Math.abs(m.delta)), { size: 'sm', weight: 'bold', align: 'end', flex: 3, color: m.delta > 0 ? '#357552' : (m.delta < 0 ? '#AC4143' : '#8891AC') }),
-      lineText_(qtyFmt_(m.after) + (m.unit ? ' ' + m.unit : ''), { size: 'sm', align: 'end', flex: 3, weight: 'bold', color: low ? '#AC4143' : '#1C2440' })
+        lineText_(STOCK_TYPE_TH_[m.type] + (low ? ' · ' + (m.after <= 0 ? 'หมด' : 'ต่ำกว่าขั้นต่ำ ' + qtyPackText_(m.min, m, true)) : ''), { size: 'xxs', color: low ? '#AC4143' : '#8891AC' })] },
+      lineText_((m.delta > 0 ? '+' : (m.delta < 0 ? '−' : '')) + qtyPackText_(Math.abs(m.delta), m, true), { size: 'sm', weight: 'bold', align: 'end', flex: 3, color: m.delta > 0 ? '#357552' : (m.delta < 0 ? '#AC4143' : '#8891AC') }),
+      lineText_(qtyPackText_(m.after, m), { size: 'sm', align: 'end', flex: 3, weight: 'bold', color: low ? '#AC4143' : '#1C2440' })
     ] });
   });
   if (moves.length > shown.length) body.push(lineText_('และอีก ' + (moves.length - shown.length) + ' รายการ', { size: 'xs', color: '#8891AC', margin: 'lg' }));

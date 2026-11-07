@@ -1437,7 +1437,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var exact = items.some(function (s) { return s.name.toLowerCase() === ql; });
     return items.filter(function (s) { return !ql || exact || (s.name + ' ' + (s.category || '')).toLowerCase().indexOf(ql) > -1; }).map(function (s) {
       var left = Number(s.qty) || 0;
-      return { value: s.id, label: s.name, sub: left > 0 ? 'คงเหลือ ' + left + (s.unit ? ' ' + s.unit : '') : 'หมด', subWarn: left <= 0 };
+      return { value: s.id, label: s.name, sub: left > 0 ? 'คงเหลือ ' + qtyText(left, s) : 'หมด', subWarn: left <= 0 };
     });
   }
   function openMedPicker(el) {
@@ -2570,9 +2570,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         return esc(m.name) + ('qtyDispensed' in m ? ' ×' + esc(m.qtyDispensed) + ' (ใช้ ' + esc(m.qtyUsed) + ' · ฝาก ' + esc(m.qtyDeposit) + (m.expiry ? ' หมดอายุ ' + esc(m.expiry) : '') + ')' : '');
       }) +
       chipGroup('medication', 'รายการซื้อยาเพิ่มหน้าคลีนิค (คิดค่ายา)', r.chargedMedItems, function (m) {
-        return esc(m.name) + ('qtyDispensed' in m ? ' ×' + esc(m.qtyDispensed) + ' @ ' + money(m.unitPrice) + ' (ใช้ ' + esc(m.qtyUsed) + ' · ฝาก ' + esc(m.qtyDeposit) + (m.expiry ? ' หมดอายุ ' + esc(m.expiry) : '') + ')' : '') + ' · ' + money(m.amount);
+        return esc(m.name) + ('qtyDispensed' in m ? ' ×' + esc(m.qtyDispensed) + ' @ ' + money(m.unitPrice) + (m.packSize > 1 ? '/' + esc(m.packUnit) + (m.smallPrice != null && m.smallPrice !== '' ? ' · เศษ ' + money(m.smallPrice) : '') : '') + ' (ใช้ ' + esc(m.qtyUsed) + ' · ฝาก ' + esc(m.qtyDeposit) + (m.expiry ? ' หมดอายุ ' + esc(m.expiry) : '') + ')' : '') + ' · ' + money(m.amount);
       }) +
-      chipGroup('medication', 'รายการจ่ายยาทาน', r.useOralMed ? r.oralMedItems : [], function (m) { return esc(m.name) + ' ×' + esc(m.qty) + (m.unit ? ' ' + esc(m.unit) : '') + ' @ ' + money(m.unitPrice) + ' · ' + money(m.amount); }) +
+      chipGroup('medication', 'รายการจ่ายยาทาน', r.useOralMed ? r.oralMedItems : [], function (m) { return esc(m.name) + ' ×' + esc(m.qty) + (m.unit ? ' ' + esc(m.unit) : '') + ' @ ' + money(m.unitPrice) + (m.packSize > 1 ? '/' + esc(m.packUnit) + (m.smallPrice != null && m.smallPrice !== '' ? ' · ' + money(m.smallPrice) + '/' + esc(m.unit || '') : '') : '') + ' · ' + money(m.amount); }) +
       chipGroup('vaccines', 'รายการ Canula (เข็มทู่)', r.useCanula ? r.canulaItems : [], function (c) { return esc(c.name || 'Canula') + ' ×' + esc(c.qty) + (c.unitPrice != null && c.unitPrice !== '' ? ' @ ' + money(c.unitPrice) : '') + ' · ' + money(c.amount); }) +
       chipGroup('medication', 'รายการถือยาเข้า', r.ownMedItems, function (m) { return esc(m.name) + ' ×' + esc(m.qty); }) +
       chipGroup('medication', 'รายการใช้ยาฝาก', r.depositUseItems, function (m) { return esc(m.name) + ' ×' + esc(m.qty); }) +
@@ -3005,11 +3005,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return d.useOralMed ? Math.round((d.oralMedItems || []).reduce(function (s, l) { return s + (Number(l.amount) || 0); }, 0) * 100) / 100 : 0;
   }
   function newOralLine() { return { itemId: '', name: '', qty: 1, unitPrice: '', amount: 0 }; }
-  function recalcOralLine(line) { line.amount = Math.round((Number(line.qty) || 0) * (Number(line.unitPrice) || 0) * 100) / 100; }
+  function recalcOralLine(line) { line.amount = packAmount(Number(line.qty) || 0, linePack(line).size, Number(line.unitPrice) || 0, line.smallPrice); }
   function oralStockItem(itemId) { return stockItemsOfType('oral').filter(function (x) { return x.id === itemId; })[0]; }
   /** Fills an รายการจ่ายยาทาน line's ราคา/หน่วย from the item's ราคาขาย until the user types their own price. */
   function applyAutoOralPrice(line, i) {
-    if (!line.itemId || (Number(line.unitPrice) && !line._autoPrice)) return;
+    if (!line.itemId) return;
+    applyAutoSmallPrice(line, oralStockItem(line.itemId), 'oralMedItems.' + i);
+    if (Number(line.unitPrice) && !line._autoPrice) return;
     var item = oralStockItem(line.itemId), p = item && (item.prices || [])[0];
     if (p == null || p === '') return;
     line.unitPrice = Number(p); line._autoPrice = true;
@@ -3020,11 +3022,17 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function patchOralRow(i) {
     var line = state.draft.oralMedItems[i], item = line.itemId ? oralStockItem(line.itemId) : null;
     var cap = document.getElementById('oralCap' + i), tot = document.getElementById('oralTotal' + i);
+    var qCap = document.getElementById('oralQtyCap' + i), pCap = document.getElementById('oralPriceCap' + i), unitName = item && item.unit || '';
+    var sCap = document.getElementById('oralSmallCap' + i), sWrap = document.getElementById('oralSmallWrap' + i);
+    if (qCap) qCap.textContent = unitName + packQtyNote(line, Number(line.qty) || 0, unitName);
+    if (pCap) pCap.textContent = packPriceCap(line, unitName);
+    if (sCap) sCap.textContent = packSmallCap(line, unitName);
+    if (sWrap) sWrap.style.display = linePack(line).size > 1 ? '' : 'none';
     if (cap) cap.innerHTML = oralCaptionHtml(line, item);
     if (tot) tot.textContent = money(line.amount || 0);
   }
   function oralCaptionHtml(line, item) {
-    if (line.itemId && item) return esc((item.unit ? 'หน่วย ' + item.unit + ' · ' : '') + 'คงเหลือ ' + (Number(item.qty) || 0));
+    if (line.itemId && item) return esc((item.unit ? 'หน่วย ' + item.unit + ' · ' : '') + 'คงเหลือ ' + qtyText(item.qty, item, !(item.packSize > 1)));
     return String(line.name || '').trim() ? '<span style="color:var(--red-dark)">เลือกยาจากรายการยาทาน</span>' : 'พิมพ์เพื่อค้นหายาทาน';
   }
   function previewShares(d) {
@@ -3145,7 +3153,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var nameCap = (line.itemId ? esc(s ? (s.category || '') : '') : (String(line.name || '').trim() ? warn('เลือกยาจากรายการสต๊อก') : 'พิมพ์เพื่อค้นหายา'));
     return {
       dispNameCap: nameCap,
-      dispQdCap: esc(unit),
+      dispQdCap: esc(unit + packQtyNote(line, qd, unit)),
+      dispPriceCap: esc(packPriceCap(line, unit)),
+      dispSmallCap: esc(packSmallCap(line, unit)),
       dispQuCap: qu > qd ? warn('เกินจำนวนที่เบิก') : esc(unit),
       // The deposited part becomes a ยาฝาก lot; its วันหมดอายุ is typed right here.
       dispDep: line.qtyDeposit > 0
@@ -3161,12 +3171,57 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var qd = Number(line.qtyDispensed) || 0, qu = Number(line.qtyUsed) || 0;
     line.qtyDeposit = Math.max(0, Math.round((qd - qu) * 100) / 100);
     if (group === 'chargedMedItems') { // คิดค่ายา: จำนวนที่เบิก × ราคาต่อหน่วย
-      line.amount = Math.round(qd * (Number(line.unitPrice) || 0) * 100) / 100;
+      line.amount = packAmount(qd, linePack(line).size, Number(line.unitPrice) || 0, line.smallPrice);
     } else {
       line.unitPrice = 0; // ซื้อยาเพิ่ม (ไม่คิดค่ายา)
       line.amount = 0;
     }
   }
+  /**
+   * หน่วยใหญ่/หน่วยย่อย: an item can have a pack ("1 กล่อง = 5 ขวด"). Quantities stay in the small unit (ขวด: what leaves Stock); ราคาขาย is
+   * per pack, so a line of q small units costs q ÷ size × price, and the price tiers count packs. A line remembers its pack (packSize/
+   * packUnit, set when the item is picked and saved with the record), so a record from before the item had a pack stays priced per ขวด.
+   */
+  function packOf(item) { var n = Number(item && item.packSize); return n > 1 && item.packUnit ? { size: n, unit: item.packUnit } : { size: 1, unit: '' }; }
+  function setLinePack(line, item) { var p = packOf(item); line.packSize = p.size; line.packUnit = p.unit; line._autoSmall = true; }
+  /** Same rule as packAmount_ in Code.js: whole packs at the pack price, the rest at smallPrice per small unit (blank = pack price ÷ size). */
+  function packAmount(qty, size, packPrice, smallPrice) {
+    if (!(size > 1)) return Math.round(qty * packPrice * 100) / 100;
+    var whole = Math.floor(qty / size + 1e-9), rest = qty - whole * size;
+    var each = smallPrice === '' || smallPrice == null ? packPrice / size : Number(smallPrice) || 0;
+    return Math.round((whole * packPrice + rest * each) * 100) / 100;
+  }
+  /** Fills a line's ราคาต่อหน่วยย่อย from the item's, until the user types their own. */
+  function applyAutoSmallPrice(line, item, bind) {
+    if (line._autoSmall === false) return;
+    line.smallPrice = linePack(line).size > 1 && item && item.smallPrice != null ? Number(item.smallPrice) : '';
+    var el = document.querySelector('[data-bind="' + bind + '.smallPrice"]');
+    if (el) el.value = line.smallPrice;
+  }
+  function linePack(line) { var n = Number(line && line.packSize); return n > 1 ? { size: n, unit: line.packUnit || '' } : { size: 1, unit: '' }; }
+  function packNum(n) { return String(Math.round(n * 100) / 100); }
+  /**
+   * A stock quantity (in small units) as หน่วยใหญ่ + หน่วยย่อย: "2 กล่อง 2 ขวด" (item = anything with unit/packUnit/packSize). Without a pack
+   * it is the number and its unit (bare: the number only); zero/negative stays in small units.
+   */
+  function qtyText(qty, item, bare) {
+    var n = Number(qty) || 0, p = packOf(item), unit = item && item.unit || '';
+    if (!(p.size > 1) || n <= 0) return packNum(n) + (!bare && unit ? ' ' + unit : '');
+    var whole = Math.floor(n / p.size + 1e-9), rest = Math.round((n - whole * p.size) * 100) / 100;
+    if (!whole) return packNum(rest) + ' ' + unit;
+    return whole + ' ' + p.unit + (rest ? ' ' + packNum(rest) + ' ' + unit : '');
+  }
+  /** Caption under a ราคา input: what the price is per ('' when the line has no pack). */
+  function packPriceCap(line, unitName) { var p = linePack(line); return p.size > 1 ? 'ต่อ 1 ' + p.unit + ' (' + p.size + ' ' + unitName + ')' : ''; }
+  /** ' (= 2 กล่อง 2 ขวด)' under a quantity in small units ('' when the line has no pack or less than one pack). */
+  function packQtyNote(line, qty, unitName) {
+    var p = linePack(line), whole = Math.floor(qty / p.size + 1e-9);
+    if (!(p.size > 1) || !(whole > 0)) return '';
+    var rest = Math.round((qty - whole * p.size) * 100) / 100;
+    return ' (= ' + whole + ' ' + p.unit + (rest ? ' ' + packNum(rest) + ' ' + unitName : '') + ')';
+  }
+  /** Caption under the ราคาต่อหน่วยย่อย input. */
+  function packSmallCap(line, unitName) { var p = linePack(line); return p.size > 1 ? 'ต่อ' + unitName + ' (ส่วนที่ไม่ครบ ' + p.unit + ')' : ''; }
   /** ราคาขาย per unit of a stock item for `qty` units: the largest priced tier <= qty, else the smallest priced one (null when it has no price). */
   function tierUnitPrice(item, qty) {
     var pick = null, first = null;
@@ -3180,8 +3235,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
   /** Fills a คิดค่ายา line's ราคาต่อหน่วย from the stock's ราคาขาย (by quantity) until the user types their own price. */
   function applyAutoUnitPrice(line, i) {
-    if (!line.itemId || (Number(line.unitPrice) && !line._autoPrice)) return;
-    var p = tierUnitPrice(medicineStockItem(line.itemId) || {}, Number(line.qtyDispensed) || 0);
+    if (!line.itemId) return;
+    applyAutoSmallPrice(line, medicineStockItem(line.itemId), 'chargedMedItems.' + i);
+    if (Number(line.unitPrice) && !line._autoPrice) return;
+    var p = tierUnitPrice(medicineStockItem(line.itemId) || {}, Math.floor((Number(line.qtyDispensed) || 0) / linePack(line).size + 1e-9)); // tiers count whole packs
     if (p == null) return;
     line.unitPrice = Number(p); line._autoPrice = true;
     var el = document.querySelector('[data-bind="chargedMedItems.' + i + '.unitPrice"]');
@@ -3193,6 +3250,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var line = state.draft[group][i];
     var parts = dispenseDynamicHtml(line, i, group);
     Object.keys(parts).forEach(function (k) { var el = document.getElementById(dispId(group, k, i)); if (el) el.innerHTML = parts[k]; });
+    var wrap = document.getElementById(dispId(group, 'dispSmallWrap', i)); // the ต่อหน่วยย่อย price only shows for an item with a pack
+    if (wrap) wrap.style.display = linePack(line).size > 1 ? '' : 'none';
   }
   /**
    * What each ยาฝาก item can still give this record: {itemId: {qty, name}} —
@@ -3478,7 +3537,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
             dispCell(numInput(p + 'qtyDispensed', m.qtyDispensed) + dispCap(dispId('chargedMedItems', 'dispQdCap', i), dyn.dispQdCap)),
             dispCell(numInput(p + 'qtyUsed', m.qtyUsed) + dispCap(dispId('chargedMedItems', 'dispQuCap', i), dyn.dispQuCap)),
             dispCell('<div id="' + dispId('chargedMedItems', 'dispDep', i) + '" style="padding-top:8px">' + dyn.dispDep + '</div>' + dispCap(dispId('chargedMedItems', 'dispDepCap', i), dyn.dispDepCap), 'center'),
-            dispCell(numInput(p + 'unitPrice', m.unitPrice, 'ราคา/หน่วย')),
+            dispCell(numInput(p + 'unitPrice', m.unitPrice, 'ราคา/หน่วย') + dispCap(dispId('chargedMedItems', 'dispPriceCap', i), dyn.dispPriceCap) +
+              '<div id="' + dispId('chargedMedItems', 'dispSmallWrap', i) + '" style="margin-top:6px' + (linePack(m).size > 1 ? '' : ';display:none') + '">' +
+                numInput(p + 'smallPrice', m.smallPrice, 'ราคา/หน่วยย่อย') + dispCap(dispId('chargedMedItems', 'dispSmallCap', i), dyn.dispSmallCap) + '</div>', 'right'),
             dispCell('<div id="' + dispId('chargedMedItems', 'dispTotal', i) + '" style="font-size:13px;font-weight:700;padding-top:9px">' + dyn.dispTotal + '</div>', 'right'),
             removeBtn('remove-charged-med-row', i)
           ]);
@@ -3547,8 +3608,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           var p = 'oralMedItems.' + i + '.', item = m.itemId ? oralStockItem(m.itemId) : null;
           return '<div style="display:grid;grid-template-columns:' + ORAL_COLS + ';gap:8px;align-items:start;padding:10px 12px;border-top:1px solid var(--border)">' +
             dispCell('<input type="text" id="oralPick' + i + '" data-med-pick="oral" autocomplete="off" placeholder="ค้นหายาทาน" value="' + esc(m.name) + '" data-bind="' + p + 'name" style="' + inputStyle + '">' + dispCap('oralCap' + i, oralCaptionHtml(m, item))) +
-            dispCell(numInput(p + 'qty', m.qty, 'จำนวน')) +
-            dispCell(numInput(p + 'unitPrice', m.unitPrice, 'ราคา/หน่วย')) +
+            dispCell(numInput(p + 'qty', m.qty, 'จำนวน') + dispCap('oralQtyCap' + i, esc((item && item.unit || '') + packQtyNote(m, Number(m.qty) || 0, item && item.unit || '')))) +
+            dispCell(numInput(p + 'unitPrice', m.unitPrice, 'ราคา/หน่วย') + dispCap('oralPriceCap' + i, esc(packPriceCap(m, item && item.unit || ''))) +
+              '<div id="oralSmallWrap' + i + '" style="margin-top:6px' + (linePack(m).size > 1 ? '' : ';display:none') + '">' +
+                numInput(p + 'smallPrice', m.smallPrice, 'ราคา/หน่วยย่อย') + dispCap('oralSmallCap' + i, esc(packSmallCap(m, item && item.unit || ''))) + '</div>', 'right') +
             dispCell('<div id="oralTotal' + i + '" style="font-size:13px;font-weight:700;padding-top:9px">' + money(m.amount || 0) + '</div>', 'right') +
             removeBtn('remove-oral-row', i) +
           '</div>';
@@ -3734,6 +3797,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var payload = Object.assign({}, state.draft, { complete: !!complete });
     Object.keys(payload).forEach(function (k) { if (k.charAt(0) === '_') delete payload[k]; }); // client-only (_patientQuery, _deposits, ...)
     payload.canulaAmount = canulaTotal(state.draft);
+    ['chargedMedItems', 'oralMedItems'].forEach(function (k) {
+      payload[k] = (payload[k] || []).map(function (l) { var p = linePack(l); return Object.assign({}, l, { packSize: p.size, packUnit: p.unit, smallPrice: p.size > 1 && l.smallPrice != null ? l.smallPrice : '' }); });
+    });
     call('saveRecord', session.token, payload).then(function (res) {
       if (complete && res.data && state.notify.known) state.notify.known[res.data.id] = true; // our own move to รอชำระเงิน is not news to us
       toast('success', 'บันทึกข้อมูลการรักษาแล้ว'); closeModal(); refreshStockSuggestCache();
@@ -4025,6 +4091,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var low = s.minQty != null ? qty <= s.minQty : qty <= 10;
     var qtyBadge = qty < 0 ? ' <span class="tag-badge" style="background:var(--red-soft);color:var(--red-dark)">ติดลบ</span>' : qty === 0 ? ' <span class="tag-badge" style="background:var(--red-soft);color:var(--red-dark)">หมด</span>' : (low ? ' <span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark)">ใกล้หมด</span>' : '');
     var dateNote = s.latestDate ? '<div style="font-size:11px;color:var(--muted)">อัพเดตล่าสุด ' + esc(s.latestDate) + '</div>' : '<div style="font-size:11px;color:var(--muted)">ยังไม่มีประวัติ</div>';
+    var minCell = s.packSize > 1 && s.minQty != null ? '<td>' + esc(qtyText(s.minQty, s)) + '</td>' : '<td>' + stockNumCell(s.minQty) + '</td>';
+    var packNote = s.packSize > 1 ? '<div style="font-size:11px;color:var(--muted)">รวม ' + esc(packNum(qty)) + ' ' + esc(s.unit) + ' · 1 ' + esc(s.packUnit) + ' = ' + esc(s.packSize) + ' ' + esc(s.unit) + '</div>' +
+      (s.smallPrice != null && showCost ? '<div style="font-size:11px;color:var(--muted)">ราคาต่อ' + esc(s.unit) + ' ' + esc(money(s.smallPrice)) + '</div>' : '') : '';
     // One "จัดการ" button per row opening the shared portal dropdown (see openStockActions).
     var actions = '<td style="text-align:right;white-space:nowrap">' +
       '<button class="btn" id="stockAct_' + esc(s.id) + '" data-action="dd-stock-actions" data-arg="' + esc(s.id) + '">จัดการ <span class="ms">expand_more</span></button>' +
@@ -4034,17 +4103,17 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       return rowOpen +
         '<td style="padding:10px 12px">' + esc(s.name) + '</td>' +
         '<td>' + catBadge(s.category) + '</td>' +
-        '<td>' + stockNumCell(s.minQty) + '</td>' +
-        '<td style="white-space:nowrap">' + esc(qty) + qtyBadge + dateNote + '</td>' +
+        minCell +
+        '<td style="white-space:nowrap">' + esc(s.packSize > 1 ? qtyText(qty, s) : qty) + qtyBadge + dateNote + packNote + '</td>' +
         '<td>' + esc(s.unit) + '</td>' +
-        '<td>' + stockMoneyCell((s.prices || [])[0]) + '</td>' +
+        '<td>' + stockMoneyCell((s.prices || [])[0]) + (s.packSize > 1 ? '<div style="font-size:11px;color:var(--muted)">ต่อ ' + esc(s.packUnit) + (s.smallPrice != null ? ' · ' + esc(money(s.smallPrice)) + '/' + esc(s.unit) : '') + '</div>' : '') + '</td>' +
         actions + '</tr>';
     }
     return rowOpen +
       '<td style="padding:10px 12px">' + esc(s.name) + '</td>' +
       '<td>' + catBadge(s.category) + '</td>' +
-      '<td>' + stockNumCell(s.minQty) + '</td>' +
-      '<td style="white-space:nowrap">' + esc(qty) + ' ' + esc(s.unit) + qtyBadge + dateNote + '</td>' +
+      minCell +
+      '<td style="white-space:nowrap">' + esc(qtyText(qty, s)) + qtyBadge + dateNote + packNote + '</td>' +
       (isMed && showCost ? '<td>' + stockMoneyCell(s.costPrice) + '</td>' + (s.prices || []).map(function (p) { return '<td>' + stockMoneyCell(p) + '</td>'; }).join('') : '') +
       actions + '</tr>';
   }
@@ -4112,16 +4181,16 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
             '<td style="' + td + ';padding-left:10px">' + esc(l.date) + '</td>' +
             '<td style="padding:8px 6px">' + detail + '</td>' +
             '<td style="' + td + '">' + esc(l.createdBy || '-') + '</td>' +
-            '<td style="' + td + ';text-align:right;color:var(--green-dark)">' + (l.qtyIn ? '+' + esc(l.qtyIn) : '-') + '</td>' +
-            '<td style="' + td + ';text-align:right;color:var(--red-dark)">' + (l.qtyOut ? '-' + esc(l.qtyOut) : '-') + '</td>' +
-            '<td style="' + td + ';text-align:right;font-weight:600">' + esc(l.qtyRemaining) + '</td></tr>';
+            '<td style="' + td + ';text-align:right;color:var(--green-dark)">' + (l.qtyIn ? '+' + esc(qtyText(l.qtyIn, it, true)) : '-') + '</td>' +
+            '<td style="' + td + ';text-align:right;color:var(--red-dark)">' + (l.qtyOut ? '-' + esc(qtyText(l.qtyOut, it, true)) : '-') + '</td>' +
+            '<td style="' + td + ';text-align:right;font-weight:600">' + esc(qtyText(l.qtyRemaining, it, true)) + '</td></tr>';
         }).join('') + '</tbody></table>' + localPagerHtml(logPg, 'stockLog'));
     var qty = it.latestQtyRemaining != null ? it.latestQtyRemaining : it.qty;
     var body = '' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;padding:18px 22px;border-bottom:1px solid var(--border);flex:none">' +
         '<div><div style="font-size:16px;font-weight:700">' + esc(it.name) + '</div>' +
         '<div style="font-size:12px;color:var(--muted);margin-top:2px">ประวัติการเคลื่อนไหว (แก้ไขไม่ได้) · ' + esc(stockTypeLabel(it.type)) + (it.category ? ' · ' + esc(it.category) : '') + '</div>' +
-        '<div style="font-size:13px;margin-top:6px">' + 'คงเหลือ <b>' + esc(qty) + ' ' + esc(it.unit) + '</b>' + (it.depositQty ? ' · ฝาก <b>' + esc(it.depositQty) + ' ' + esc(it.unit) + '</b>' : '') + '</div></div>' +
+        '<div style="font-size:13px;margin-top:6px">' + 'คงเหลือ <b>' + esc(qtyText(qty, it)) + '</b>' + (it.depositQty ? ' · ฝาก <b>' + esc(qtyText(it.depositQty, it)) + '</b>' : '') + '</div></div>' +
         '<button data-action="close-stock-panel" style="border:none;background:none;cursor:pointer"><span class="ms">close</span></button>' +
       '</div>' +
       '<div style="flex:1;overflow:auto;padding:12px 16px">' + table + '</div>' +
@@ -4196,14 +4265,14 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
 
   /* ---- เพิ่ม/แก้ไข รายการ ---- */
   function newStockModal() {
-    openModal('stock', { type: state.stock.type, name: '', category: (state.master.stockCategories[0] || {}).name || '', unit: '', minQty: '', qty: 0, costPrice: '', prices: STOCK_PRICE_TIERS.map(function () { return ''; }) });
+    openModal('stock', { type: state.stock.type, name: '', category: (state.master.stockCategories[0] || {}).name || '', unit: '', packUnit: '', packSize: '', smallPrice: '', minQty: '', qty: 0, costPrice: '', prices: STOCK_PRICE_TIERS.map(function () { return ''; }) });
   }
   function editStockModal(id) {
     var s = stockItemById(id);
     if (!s) return;
     var blank = function (v) { return v == null ? '' : v; };
     openModal('stock', Object.assign({}, s, {
-      minQty: blank(s.minQty), costPrice: blank(s.costPrice),
+      minQty: blank(s.minQty), costPrice: blank(s.costPrice), packUnit: s.packUnit || '', packSize: s.packSize > 1 ? s.packSize : '', smallPrice: blank(s.smallPrice),
       prices: STOCK_PRICE_TIERS.map(function (t, i) { return blank((s.prices || [])[i]); })
     }));
   }
@@ -4219,20 +4288,30 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var typeOpts = STOCK_TABS.map(function (t) { return { value: t.id, label: stockTypeLabel(t.id) }; });
     var typeLabel = stockTypeLabel(d.type);
     var optNum = function (path) { return bindInput(path, 'number', 'min="0" step="any" data-blank-ok'); };
-    var priceFields = d.type === 'oral' ? field('ราคาขาย (ต่อหน่วย)', optNum('prices.0')) : (d.type !== 'medicine' || !isAdmin()) ? '' :
-      field('ราคาทุน', optNum('costPrice')) +
-      '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">ราคาขาย</label></div>' +
+    var hint = function (t) { return '<div style="font-size:11.5px;color:var(--muted);margin:-4px 0 12px;line-height:1.6">' + t + '</div>'; };
+    // ราคาต่อหน่วยย่อย (with a หน่วยใหญ่): the price of what is left after the whole packs, e.g. 12 ขวด = 2 กล่อง × ราคาต่อกล่อง + 2 ขวด × ราคาต่อขวด.
+    var smallField = field('ราคาขายต่อหน่วยย่อย', optNum('smallPrice')) + hint('ใช้กับส่วนที่ไม่ครบหน่วยใหญ่ (เช่น 12 ขวด = 2 กล่อง + 2 ขวด) · เว้นว่าง = คิดตามสัดส่วนของราคาต่อหน่วยใหญ่ · ไม่ได้ตั้งหน่วยใหญ่ไม่ต้องกรอก');
+    var priceFields = d.type === 'oral'
+      ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + field('ราคาขายต่อหน่วยใหญ่', optNum('prices.0')) + field('ราคาขายต่อหน่วยย่อย', optNum('smallPrice')) + '</div>' +
+        hint('ราคาต่อหน่วยย่อยใช้กับส่วนที่ไม่ครบหน่วยใหญ่ (เว้นว่าง = คิดตามสัดส่วน) · ไม่ได้ตั้งหน่วยใหญ่: ราคาขายคือราคาต่อหน่วย')
+      : (d.type !== 'medicine' || !isAdmin()) ? '' :
+      field('ราคาทุน (ต่อหน่วยย่อย)', optNum('costPrice')) +
+      '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">ราคาขายต่อหน่วยใหญ่ <span style="color:var(--muted)">(ตามจำนวนหน่วยใหญ่ที่ซื้อ · ไม่ได้ตั้งหน่วยใหญ่ = ราคาต่อหน่วย)</span></label></div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">' +
-        STOCK_PRICE_TIERS.map(function (t, i) { return field('จำนวน ' + t + ' ชิ้น', optNum('prices.' + i)); }).join('') +
-      '</div>';
+        STOCK_PRICE_TIERS.map(function (t, i) { return field('จำนวน ' + t, optNum('prices.' + i)); }).join('') +
+      '</div>' + smallField;
     return modalHeader(d.id ? 'แก้ไข' + typeLabel : 'เพิ่ม' + typeLabel + 'ใหม่') +
       field('ประเภทสต๊อก', bindSelect('type', typeOpts)) +
       field('ชื่อ' + typeLabel, bindInput('name')) +
+      field('หมวดหมู่', bindSelect('category', catOpts)) +
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">' +
+        field('หน่วยย่อย (เช่น ขวด)', bindInput('unit')) + field('หน่วยใหญ่ (เช่น กล่อง)', bindInput('packUnit')) + field('จำนวนหน่วยใหญ่ : หน่วยย่อย', optNum('packSize')) +
+      '</div>' +
+      hint('หน่วยใหญ่ไม่บังคับ — ตั้งแล้วใส่อัตราส่วน เช่น 1 กล่อง : 5 ขวด กรอก 5 · จำนวนสต๊อก/ขั้นต่ำ/ตัดสต๊อกกรอกเป็นหน่วยย่อย แต่แสดงเป็น "2 กล่อง 2 ขวด" · ราคาทุนเป็นต่อหน่วยย่อย') +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
-        field('หมวดหมู่', bindSelect('category', catOpts)) + field('หน่วยนับ', bindInput('unit')) +
-        field('จำนวนสต๊อกขั้นต่ำ', optNum('minQty')) +
+        field('จำนวนสต๊อกขั้นต่ำ (หน่วยย่อย)', optNum('minQty')) +
         // An existing item's quantity only changes through ปรับสต๊อก/อัพเดตสต๊อก (so it lands in the history).
-        (d.id ? '' : field('จำนวนคงเหลือเริ่มต้น', bindInput('qty', 'number', 'min="0"'))) +
+        (d.id ? '' : field('จำนวนคงเหลือเริ่มต้น (หน่วยย่อย)', bindInput('qty', 'number', 'min="0"'))) +
       '</div>' +
       priceFields + saveBtn();
   }
@@ -4245,7 +4324,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var s = stockItemById(id) || (state.stock.panel && state.stock.panel.item);
     if (!s) return;
     var qty = s.latestQtyRemaining != null ? s.latestQtyRemaining : s.qty;
-    openModal('stockadjust', { itemId: s.id, itemName: s.name, unit: s.unit, type: s.type, current: qty, date: todayStr(), kind: 'in', qty: 0, note: '' });
+    openModal('stockadjust', { itemId: s.id, itemName: s.name, unit: s.unit, packUnit: s.packUnit || '', packSize: s.packSize || 1, type: s.type, current: qty, date: todayStr(), kind: 'in', qty: 0, note: '' });
   }
   function stockAdjustResult(d) {
     var q = Number(d.qty) || 0, cur = Number(d.current) || 0;
@@ -4254,7 +4333,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /** Live "คงเหลือหลังปรับ" line — patched in place by the input listener (see STOCK_ADJUST_LIVE_PATHS) so typing never re-renders the modal. */
   function stockAdjustPreviewHtml(d) {
     var after = stockAdjustResult(d);
-    return 'คงเหลือปัจจุบัน <b>' + esc(d.current) + '</b> → หลังปรับ <b style="color:' + (after < 0 ? 'var(--red-dark)' : 'var(--green-dark)') + '">' + esc(after) + '</b> ' + esc(d.unit) +
+    return 'คงเหลือปัจจุบัน <b>' + esc(qtyText(d.current, d, true)) + '</b> → หลังปรับ <b style="color:' + (after < 0 ? 'var(--red-dark)' : 'var(--green-dark)') + '">' + esc(qtyText(after, d, true)) + '</b> ' + esc(d.packSize > 1 && after > 0 ? '' : d.unit) +
       (after < 0 ? '<div style="color:var(--red-dark);font-size:12px;margin-top:4px">สต๊อกจะติดลบ — บันทึกได้ แต่ควรอัพเดตสต๊อกให้ตรงกับของจริง</div>' : '');
   }
   function stockAdjustModalBody() {
@@ -4264,7 +4343,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
         field('วันที่', bindInput('date', 'date')) + field('ประเภทการปรับ', bindSelect('kind', kindOpts)) +
       '</div>' +
-      field(d.kind === 'set' ? (d.type === 'medicine' ? 'จำนวนคงเหลือที่นับได้ (ไม่รวมยาฝาก)' : 'จำนวนคงเหลือที่นับได้') : 'จำนวน', bindInput('qty', 'number', 'min="0" step="any"')) +
+      field((d.kind === 'set' ? (d.type === 'medicine' ? 'จำนวนคงเหลือที่นับได้ (ไม่รวมยาฝาก)' : 'จำนวนคงเหลือที่นับได้') : 'จำนวน') + (d.packSize > 1 ? ' (กรอกเป็น' + d.unit + ')' : ''), bindInput('qty', 'number', 'min="0" step="any"')) +
       '<div id="stockAdjustPreview" style="background:var(--hover-bg);border-radius:var(--r-sm);padding:10px 14px;margin-bottom:12px;font-size:13px">' + stockAdjustPreviewHtml(d) + '</div>' +
       field('หมายเหตุ / รายละเอียด', bindTextarea('note', 2)) + saveBtn();
   }
@@ -4401,11 +4480,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function stockUpdateCapHtml(it) {
     var st = it.itemId ? (state.suggestCache.stock || []).filter(function (x) { return x.id === it.itemId; })[0] : null;
     if (!st) return '';
-    var cur = Number(st.qty) || 0, base = 'ในระบบ <b>' + esc(cur) + '</b>' + (st.unit ? ' ' + esc(st.unit) : '');
+    var cur = Number(st.qty) || 0, base = 'ในระบบ <b>' + esc(qtyText(cur, st)) + '</b>' + (st.packSize > 1 ? ' · กรอกเป็น' + esc(st.unit) : '');
     if (it.qtyRemaining === '' || it.qtyRemaining == null || isNaN(Number(it.qtyRemaining))) return base;
     var d = Math.round((Number(it.qtyRemaining) - cur) * 100) / 100;
     return base + ' → ' + (d === 0 ? '<span style="color:var(--muted)">ไม่เปลี่ยน (ไม่บันทึก)</span>'
-      : d > 0 ? '<b style="color:var(--green-dark)">เพิ่ม ' + esc(d) + '</b>' : '<b style="color:var(--red-dark)">ลด ' + esc(-d) + '</b>');
+      : d > 0 ? '<b style="color:var(--green-dark)">เพิ่ม ' + esc(qtyText(d, st, true)) + '</b>' : '<b style="color:var(--red-dark)">ลด ' + esc(qtyText(-d, st, true)) + '</b>');
   }
   function stockUpdateModalBody() {
     var d = state.draft;
@@ -6752,9 +6831,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   // value the staff already typed/edited.
   var PROMO_PICK_RE = /^promoItems\.(\d+)\.promoId$/;
   var STOCK_NAME_PICK_RE = /^(supplies|medicineItems|chargedMedItems|oralMedItems)\.(\d+)\.name$/;
-  var ORAL_FIELD_RE = /^oralMedItems\.(\d+)\.(qty|unitPrice)$/;
+  var ORAL_FIELD_RE = /^oralMedItems\.(\d+)\.(qty|unitPrice|smallPrice)$/;
   var CANULA_FIELD_RE = /^canulaItems\.(\d+)\.(qty|unitPrice)$/;
-  var DISPENSE_FIELD_RE = /^(medicineItems|chargedMedItems)\.(\d+)\.(qtyDispensed|qtyUsed|unitPrice)$/;
+  var DISPENSE_FIELD_RE = /^(medicineItems|chargedMedItems)\.(\d+)\.(qtyDispensed|qtyUsed|unitPrice|smallPrice)$/;
   document.addEventListener('input', function (ev) {
     var el = ev.target;
     var bindPath = el.getAttribute && el.getAttribute('data-bind');
@@ -6828,6 +6907,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       var stockItem = stockItemsOfType(stockPick[1] === 'supplies' ? 'supply' : (stockPick[1] === 'oralMedItems' ? 'oral' : 'medicine')).filter(function (s) { return s.name === val; })[0];
       if (stockLine) {
         stockLine.itemId = stockItem ? stockItem.id : '';
+        if (stockPick[1] !== 'supplies') setLinePack(stockLine, stockItem);
         if (stockItem && stockPick[1] === 'supplies' && stockItem.unit) {
           stockLine.unit = stockItem.unit;
           var unitEl = document.querySelector('[data-bind="supplies.' + stockPick[2] + '.unit"]');
@@ -6868,6 +6948,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (oralField) {
       var oLine = state.draft.oralMedItems[Number(oralField[1])];
       if (oralField[2] === 'unitPrice') oLine._autoPrice = false; // typed by hand: stop following the item's ราคาขาย
+      if (oralField[2] === 'smallPrice') oLine._autoSmall = false;
       recalcOralLine(oLine); patchOralRow(Number(oralField[1])); updateRecordPreview();
       return;
     }
@@ -6875,6 +6956,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (dispense) {
       var dGroup = dispense[1], dIdx = Number(dispense[2]), dLine = state.draft[dGroup][dIdx];
       if (dispense[3] === 'unitPrice') dLine._autoPrice = false; // typed by hand: stop following the stock's ราคาขาย
+      if (dispense[3] === 'smallPrice') dLine._autoSmall = false;
       recalcDispenseLine(dLine, dGroup);
       if (dGroup === 'chargedMedItems' && dispense[3] === 'qtyDispensed') { applyAutoUnitPrice(dLine, dIdx); recalcDispenseLine(dLine, dGroup); }
       patchDispenseRow(dIdx, dGroup);
