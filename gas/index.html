@@ -3022,12 +3022,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function patchOralRow(i) {
     var line = state.draft.oralMedItems[i], item = line.itemId ? oralStockItem(line.itemId) : null;
     var cap = document.getElementById('oralCap' + i), tot = document.getElementById('oralTotal' + i);
-    var qCap = document.getElementById('oralQtyCap' + i), pCap = document.getElementById('oralPriceCap' + i), unitName = item && item.unit || '';
-    var sCap = document.getElementById('oralSmallCap' + i), sWrap = document.getElementById('oralSmallWrap' + i);
-    if (qCap) qCap.textContent = unitName + packQtyNote(line, Number(line.qty) || 0, unitName);
-    if (pCap) pCap.textContent = packPriceCap(line, unitName);
-    if (sCap) sCap.textContent = packSmallCap(line, unitName);
-    if (sWrap) sWrap.style.display = linePack(line).size > 1 ? '' : 'none';
+    var unitName = item && item.unit || '';
+    patchPackCols('pkO' + i, 'oralMedItems.' + i + '.', line, Number(line.qty) || 0, unitName, 'oralTotal' + i);
     if (cap) cap.innerHTML = oralCaptionHtml(line, item);
     if (tot) tot.textContent = money(line.amount || 0);
   }
@@ -3139,7 +3135,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
 
   /* ---- Record modal: ยา zone helpers ---- */
   var DISPENSE_COLS = 'minmax(170px,1fr) 84px 84px 138px 40px';
-  var CHARGED_COLS = 'minmax(150px,1fr) 70px 70px 120px 86px 98px 40px'; // + ราคาต่อหน่วย, จำนวนเงินรวม
+  var CHARGED_COLS = 'minmax(150px,1fr) 70px 70px 120px 96px 104px 112px 40px'; // + แยกหน่วย (ใหญ่/ย่อย), ราคาต่อหน่วย, จำนวนเงินรวม
   function medicineStockItem(itemId) { return stockItemsOfType('medicine').filter(function (x) { return x.id === itemId; })[0]; }
   /** The two ยา groups of the record form: medicineItems (ไม่คิดค่ายา) and chargedMedItems (คิดค่ายา); element ids of the charged one carry a "chg" prefix. */
   function dispId(group, key, i) { return (group === 'chargedMedItems' ? 'chg' : '') + key + i; }
@@ -3153,9 +3149,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var nameCap = (line.itemId ? esc(s ? (s.category || '') : '') : (String(line.name || '').trim() ? warn('เลือกยาจากรายการสต๊อก') : 'พิมพ์เพื่อค้นหายา'));
     return {
       dispNameCap: nameCap,
-      dispQdCap: esc(unit + packQtyNote(line, qd, unit)),
-      dispPriceCap: esc(packPriceCap(line, unit)),
-      dispSmallCap: esc(packSmallCap(line, unit)),
+      dispQdCap: esc(unit),
       dispQuCap: qu > qd ? warn('เกินจำนวนที่เบิก') : esc(unit),
       // The deposited part becomes a ยาฝาก lot; its วันหมดอายุ is typed right here.
       dispDep: line.qtyDeposit > 0
@@ -3211,22 +3205,54 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (!whole) return packNum(rest) + ' ' + unit;
     return whole + ' ' + p.unit + (rest ? ' ' + packNum(rest) + ' ' + unit : '');
   }
-  /** Caption under a ราคา input: what the price is per ('' when the line has no pack). */
-  function packPriceCap(line, unitName) { var p = linePack(line); return p.size > 1 ? 'ต่อ 1 ' + p.unit + ' (' + p.size + ' ' + unitName + ')' : ''; }
-  /** ' (= 2 กล่อง 2 ขวด)' under a quantity in small units ('' when the line has no pack or less than one pack). */
-  function packQtyNote(line, qty, unitName) {
-    var p = linePack(line), whole = Math.floor(qty / p.size + 1e-9);
-    if (!(p.size > 1) || !(whole > 0)) return '';
-    var rest = Math.round((qty - whole * p.size) * 100) / 100;
-    return ' (= ' + whole + ' ' + p.unit + (rest ? ' ' + packNum(rest) + ' ' + unitName : '') + ')';
-  }
   /** Both ways for an item with a pack: '2 กล่อง 2 ขวด (12 ขวด)'; as qtyText when it has none. */
   function qtyBoth(qty, item) {
     var t = qtyText(qty, item);
     return packOf(item).size > 1 && Number(qty) > 0 ? t + ' (' + packNum(Number(qty)) + ' ' + item.unit + ')' : t;
   }
-  /** Caption under the ราคาต่อหน่วยย่อย input. */
-  function packSmallCap(line, unitName) { var p = linePack(line); return p.size > 1 ? 'ต่อ' + unitName + ' (ส่วนที่ไม่ครบ ' + p.unit + ')' : ''; }
+  /**
+   * The pack columns of a priced line: quantity split | price | amount, one sub-row per unit — หน่วยใหญ่ (whole packs × pack price) and
+   * หน่วยย่อย (the rest × small price) — with the line total under the amounts. Sub-rows share one height so the three columns line up.
+   * id = element-id prefix ('pkC' + row for คิดค่ายา, 'pkO' + row for ยาทาน); see patchPackCols.
+   */
+  var PACK_SUB = 'display:flex;align-items:center;min-height:40px;margin-bottom:6px;font-size:13px';
+  function packSplit(line, qty) {
+    var p = linePack(line);
+    if (!(p.size > 1)) return null;
+    var whole = Math.floor(qty / p.size + 1e-9), rest = Math.round((qty - whole * p.size) * 100) / 100;
+    var bigAmt = Math.round(whole * (Number(line.unitPrice) || 0) * 100) / 100;
+    return { packUnit: p.unit, whole: whole, rest: rest, bigAmt: bigAmt, smallAmt: Math.round(((Number(line.amount) || 0) - bigAmt) * 100) / 100 };
+  }
+  function packTotalStyle(has) { return 'font-size:13px;font-weight:700;' + (has ? 'padding-top:8px;border-top:1px solid var(--border)' : 'padding-top:9px'); }
+  function packColsHtml(id, bind, line, qty, unitName, totalId, totalHtml, numInput) {
+    var sp = packSplit(line, qty), off = sp ? '' : ';display:none';
+    var off2 = sp && sp.rest > 0 ? '' : ';display:none'; // the หน่วยย่อย sub-row only when there is a remainder
+    var sub = function (key, text, extra) { return '<div id="' + id + key + '" style="' + PACK_SUB + (extra || '') + '">' + text + '</div>'; };
+    return {
+      split: '<div id="' + id + 'SplitWrap" style="padding-top:0' + off + '">' +
+        sub('Split1', sp ? esc(sp.whole + ' ' + sp.packUnit) : '') + sub('Split2', sp ? esc(packNum(sp.rest) + ' ' + unitName) : '', off2) + '</div>',
+      price: numInput(bind + 'unitPrice', line.unitPrice, sp ? 'ราคา/' + sp.packUnit : 'ราคา/หน่วย') +
+        '<div id="' + id + 'SmallWrap" style="margin-top:6px' + off2 + '">' + numInput(bind + 'smallPrice', line.smallPrice, 'ราคา/' + unitName) + '</div>',
+      amount: '<div id="' + id + 'AmtWrap" style="' + off.slice(1) + '">' +
+        sub('Amt1', sp ? money(sp.bigAmt) : '', ';justify-content:flex-end') + sub('Amt2', sp ? money(sp.smallAmt) : '', ';justify-content:flex-end' + off2) + '</div>' +
+        '<div id="' + totalId + '" style="' + packTotalStyle(!!sp) + '">' + totalHtml + '</div>'
+    };
+  }
+  /** Re-draws a line's pack columns while typing (no render, so the caret stays put). */
+  function patchPackCols(id, bind, line, qty, unitName, totalId) {
+    var sp = packSplit(line, qty), show = function (k, on, disp) { var e = document.getElementById(id + k); if (e) e.style.display = on ? (disp || '') : 'none'; };
+    var text = function (k, t) { var e = document.getElementById(id + k); if (e) e.textContent = t; };
+    var rest = !!sp && sp.rest > 0; // no remainder (an exact number of packs) or no pack: the หน่วยย่อย row is hidden
+    show('SplitWrap', !!sp); show('AmtWrap', !!sp); show('SmallWrap', rest); show('Split2', rest, 'flex'); show('Amt2', rest, 'flex');
+    if (sp) {
+      text('Split1', sp.whole + ' ' + sp.packUnit); text('Split2', packNum(sp.rest) + ' ' + unitName);
+      text('Amt1', money(sp.bigAmt)); text('Amt2', money(sp.smallAmt));
+    }
+    var big = document.querySelector('[data-bind="' + bind + 'unitPrice"]'), small = document.querySelector('[data-bind="' + bind + 'smallPrice"]');
+    if (big) big.placeholder = sp ? 'ราคา/' + sp.packUnit : 'ราคา/หน่วย';
+    if (small) small.placeholder = 'ราคา/' + unitName;
+    var tot = document.getElementById(totalId); if (tot) tot.style.cssText = packTotalStyle(!!sp);
+  }
   /** ราคาขาย per unit of a stock item for `qty` units: the largest priced tier <= qty, else the smallest priced one (null when it has no price). */
   function tierUnitPrice(item, qty) {
     var pick = null, first = null;
@@ -3255,8 +3281,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var line = state.draft[group][i];
     var parts = dispenseDynamicHtml(line, i, group);
     Object.keys(parts).forEach(function (k) { var el = document.getElementById(dispId(group, k, i)); if (el) el.innerHTML = parts[k]; });
-    var wrap = document.getElementById(dispId(group, 'dispSmallWrap', i)); // the ต่อหน่วยย่อย price only shows for an item with a pack
-    if (wrap) wrap.style.display = linePack(line).size > 1 ? '' : 'none';
+    if (group === 'chargedMedItems') { // the pack columns (split / prices / amounts) only show for an item with a pack
+      var ms = line.itemId ? medicineStockItem(line.itemId) : null;
+      patchPackCols('pkC' + i, 'chargedMedItems.' + i + '.', line, Number(line.qtyDispensed) || 0, ms && ms.unit || '', dispId(group, 'dispTotal', i));
+    }
   }
   /**
    * What each ยาฝาก item can still give this record: {itemId: {qty, name}} —
@@ -3525,27 +3553,28 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // จำนวนเงินรวม (= จำนวนที่เบิก × ราคาต่อหน่วย), which is added to the ยอดรับชำระ.
     var chargedMedRows = !d.chargedMedItems.length ? '' :
       '<div style="border:1px solid var(--border);border-radius:var(--r-sm);overflow:hidden;margin-bottom:8px;overflow-x:auto">' +
-        '<div style="min-width:640px">' +
+        '<div style="min-width:800px">' +
         '<div style="display:grid;grid-template-columns:' + CHARGED_COLS + ';gap:8px;padding:8px 12px;background:var(--hover-bg)">' +
           headCell('รายการยา', 'จากสต๊อกยา') + headCell('จำนวนที่เบิก', 'ตัดสต๊อก') + headCell('จำนวนที่ใช้', 'ใช้วันนี้') +
-          headCell('จำนวนฝาก', 'เบิก − ใช้ · วันหมดอายุ', 'center') + headCell('ราคาต่อหน่วย', 'บาท', 'right') + headCell('จำนวนเงินรวม', 'บาท', 'right') + '<div></div>' +
+          headCell('จำนวนฝาก', 'เบิก − ใช้ · วันหมดอายุ', 'center') + headCell('แยกหน่วย', 'ใหญ่ / ย่อย') + headCell('ราคาต่อหน่วย', 'บาท · ใหญ่ / ย่อย', 'right') + headCell('จำนวนเงินรวม', 'บาท · ใหญ่ / ย่อย / รวม', 'right') + '<div></div>' +
         '</div>' +
         d.chargedMedItems.map(function (m, i) {
           var p = 'chargedMedItems.' + i + '.', row = function (cells) { return '<div style="display:grid;grid-template-columns:' + CHARGED_COLS + ';gap:8px;align-items:start;padding:10px 12px;border-top:1px solid var(--border)">' + cells.join('') + '</div>'; };
           if (!('qtyDispensed' in m)) {
-            return row(['<div style="grid-column:1/6;font-size:13px;padding-top:9px">' + esc(m.name || 'ยา') + ' <span style="color:var(--muted);font-size:11px">(รายการเดิม)</span></div>',
+            return row(['<div style="grid-column:1/7;font-size:13px;padding-top:9px">' + esc(m.name || 'ยา') + ' <span style="color:var(--muted);font-size:11px">(รายการเดิม)</span></div>',
               '<div style="text-align:right;font-weight:600;font-size:13px;padding-top:9px">' + money(m.amount) + '</div>', removeBtn('remove-charged-med-row', i)]);
           }
           var dyn = dispenseDynamicHtml(m, i, 'chargedMedItems');
+          var cms = m.itemId ? medicineStockItem(m.itemId) : null;
+          var pk = packColsHtml('pkC' + i, p, m, Number(m.qtyDispensed) || 0, cms && cms.unit || '', dispId('chargedMedItems', 'dispTotal', i), dyn.dispTotal, numInput);
           return row([
             dispCell('<input type="text" id="chgMedPick' + i + '" data-med-pick="medicine" autocomplete="off" placeholder="เลือกยาจากสต๊อก" value="' + esc(m.name) + '" data-bind="' + p + 'name" style="' + inputStyle + '">' + dispCap(dispId('chargedMedItems', 'dispNameCap', i), dyn.dispNameCap)),
             dispCell(numInput(p + 'qtyDispensed', m.qtyDispensed) + dispCap(dispId('chargedMedItems', 'dispQdCap', i), dyn.dispQdCap)),
             dispCell(numInput(p + 'qtyUsed', m.qtyUsed) + dispCap(dispId('chargedMedItems', 'dispQuCap', i), dyn.dispQuCap)),
             dispCell('<div id="' + dispId('chargedMedItems', 'dispDep', i) + '" style="padding-top:8px">' + dyn.dispDep + '</div>' + dispCap(dispId('chargedMedItems', 'dispDepCap', i), dyn.dispDepCap), 'center'),
-            dispCell(numInput(p + 'unitPrice', m.unitPrice, 'ราคา/หน่วย') + dispCap(dispId('chargedMedItems', 'dispPriceCap', i), dyn.dispPriceCap) +
-              '<div id="' + dispId('chargedMedItems', 'dispSmallWrap', i) + '" style="margin-top:6px' + (linePack(m).size > 1 ? '' : ';display:none') + '">' +
-                numInput(p + 'smallPrice', m.smallPrice, 'ราคา/หน่วยย่อย') + dispCap(dispId('chargedMedItems', 'dispSmallCap', i), dyn.dispSmallCap) + '</div>', 'right'),
-            dispCell('<div id="' + dispId('chargedMedItems', 'dispTotal', i) + '" style="font-size:13px;font-weight:700;padding-top:9px">' + dyn.dispTotal + '</div>', 'right'),
+            dispCell(pk.split),
+            dispCell(pk.price, 'right'),
+            dispCell(pk.amount, 'right'),
             removeBtn('remove-charged-med-row', i)
           ]);
         }).join('') +
@@ -3602,22 +3631,22 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '</div>';
 
     // รายการจ่ายยาทาน: รายการยา (searched from รายการยาทาน) | จำนวน | ราคา/หน่วย | จำนวนเงิน — charged, counted in the ยอดรับชำระ.
-    var ORAL_COLS = 'minmax(150px,1fr) 78px 100px 108px 40px';
+    var ORAL_COLS = 'minmax(150px,1fr) 78px 96px 104px 112px 40px';
     var oralRows = !d.oralMedItems.length ? '' :
       '<div style="border:1px solid var(--border);border-radius:var(--r-sm);overflow-x:auto;margin-bottom:8px">' +
-        '<div style="min-width:520px">' +
+        '<div style="min-width:660px">' +
         '<div style="display:grid;grid-template-columns:' + ORAL_COLS + ';gap:8px;padding:8px 12px;background:var(--hover-bg)">' +
-          headCell('รายการยา', 'จากรายการยาทาน') + headCell('จำนวน', '') + headCell('ราคา/หน่วย', 'บาท', 'right') + headCell('จำนวนเงิน', 'บาท', 'right') + '<div></div>' +
+          headCell('รายการยา', 'จากรายการยาทาน') + headCell('จำนวน', 'หน่วยย่อย') + headCell('แยกหน่วย', 'ใหญ่ / ย่อย') + headCell('ราคา/หน่วย', 'บาท · ใหญ่ / ย่อย', 'right') + headCell('จำนวนเงิน', 'บาท · ใหญ่ / ย่อย / รวม', 'right') + '<div></div>' +
         '</div>' +
         d.oralMedItems.map(function (m, i) {
           var p = 'oralMedItems.' + i + '.', item = m.itemId ? oralStockItem(m.itemId) : null;
+          var pk = packColsHtml('pkO' + i, p, m, Number(m.qty) || 0, item && item.unit || '', 'oralTotal' + i, money(m.amount || 0), numInput);
           return '<div style="display:grid;grid-template-columns:' + ORAL_COLS + ';gap:8px;align-items:start;padding:10px 12px;border-top:1px solid var(--border)">' +
             dispCell('<input type="text" id="oralPick' + i + '" data-med-pick="oral" autocomplete="off" placeholder="ค้นหายาทาน" value="' + esc(m.name) + '" data-bind="' + p + 'name" style="' + inputStyle + '">' + dispCap('oralCap' + i, oralCaptionHtml(m, item))) +
-            dispCell(numInput(p + 'qty', m.qty, 'จำนวน') + dispCap('oralQtyCap' + i, esc((item && item.unit || '') + packQtyNote(m, Number(m.qty) || 0, item && item.unit || '')))) +
-            dispCell(numInput(p + 'unitPrice', m.unitPrice, 'ราคา/หน่วย') + dispCap('oralPriceCap' + i, esc(packPriceCap(m, item && item.unit || ''))) +
-              '<div id="oralSmallWrap' + i + '" style="margin-top:6px' + (linePack(m).size > 1 ? '' : ';display:none') + '">' +
-                numInput(p + 'smallPrice', m.smallPrice, 'ราคา/หน่วยย่อย') + dispCap('oralSmallCap' + i, esc(packSmallCap(m, item && item.unit || ''))) + '</div>', 'right') +
-            dispCell('<div id="oralTotal' + i + '" style="font-size:13px;font-weight:700;padding-top:9px">' + money(m.amount || 0) + '</div>', 'right') +
+            dispCell(numInput(p + 'qty', m.qty, 'จำนวน') + dispCap('oralQtyCap' + i, esc(item && item.unit || ''))) +
+            dispCell(pk.split) +
+            dispCell(pk.price, 'right') +
+            dispCell(pk.amount, 'right') +
             removeBtn('remove-oral-row', i) +
           '</div>';
         }).join('') +
