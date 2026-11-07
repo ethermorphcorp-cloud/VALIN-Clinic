@@ -8,7 +8,7 @@
 <style>
 /* สต๊อกทั้งหมด — the read-only phone page the LINE buttons open (doGet ?page=stock&t=..., see renderStockPage_ in Code.gs).
    Same navy / gold glass look as the app. Everything is filtered in the browser from the list the server put in the page. */
-:root{--navy:#1E3A72;--gold:#C9A961;--text:#1C2440;--muted:#8891AC;--amber:#B4791E;--amber-soft:#FBF1DE;--red:#AC4143;--red-soft:#FBEBEB;--green:#357552;--line:rgba(30,58,114,.10)}
+:root{--navy:#1E3A72;--gold:#C9A961;--text:#1C2440;--muted:#5F6A8A;--amber:#B4791E;--amber-soft:#FBF1DE;--red:#AC4143;--red-soft:#FBEBEB;--green:#357552;--line:rgba(30,58,114,.10)}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text);background:#EEF1F9;background-image:radial-gradient(500px 360px at 0% -5%,rgba(30,58,114,.18),transparent 60%),radial-gradient(420px 320px at 100% 0%,rgba(201,169,97,.25),transparent 60%);background-attachment:fixed;min-height:100vh}
 .ms{font-family:'Material Symbols Rounded';font-size:20px;line-height:1;vertical-align:middle}
@@ -30,6 +30,10 @@ body{margin:0;font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text
 .chips{display:flex;gap:6px;margin-top:10px;overflow-x:auto;scrollbar-width:none}
 .chip{flex:none;border:1px solid var(--line);background:rgba(255,255,255,.75);border-radius:999px;padding:6px 13px;font:inherit;font-size:13px;color:#3D4568;cursor:pointer}
 .chip.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+.units{display:none;align-items:center;gap:8px;margin-top:10px;font-size:12px;color:var(--muted)}
+.seg{display:inline-flex;background:rgba(255,255,255,.75);border:1px solid var(--line);border-radius:999px;padding:2px}
+.seg button{border:none;background:none;border-radius:999px;padding:5px 14px;font:inherit;font-size:13px;color:#3D4568;cursor:pointer}
+.seg button.on{background:var(--navy);color:#fff}
 .meta{display:flex;justify-content:space-between;font-size:11.5px;color:var(--muted);padding:2px 16px 6px}
 .list{padding:0 12px 28px;display:flex;flex-direction:column;gap:8px}
 .item{display:flex;align-items:center;gap:12px;background:rgba(255,255,255,.8);border:1px solid rgba(255,255,255,.9);border-radius:16px;padding:11px 13px;box-shadow:0 2px 10px rgba(30,58,114,.05)}
@@ -68,19 +72,23 @@ body{margin:0;font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text
   <div class="sticky">
     <div class="search"><span class="ms" style="color:var(--muted)">search</span><input id="q" placeholder="ค้นหาชื่อยา / เวชภัณฑ์" autocomplete="off" value="<?= q ?>"><button class="clear" id="clear" aria-label="ล้างคำค้น"><span class="ms">close</span></button></div>
     <div class="chips"><button class="chip on" data-t="">ทั้งหมด</button><button class="chip" data-t="medicine">ยา</button><button class="chip" data-t="oral">ยาทาน</button><button class="chip" data-t="supply">เวชภัณฑ์</button></div>
+    <div class="units" id="units">แสดงจำนวนเป็น<div class="seg"><button data-u="big">หน่วยใหญ่</button><button data-u="small">หน่วยย่อย</button></div></div>
   </div>
   <div class="meta"><span id="count"></span><span>เรียง: หมด / ใกล้หมดก่อน</span></div>
   <div class="list" id="list"></div>
   <script>
   var ITEMS = <?!= itemsJson ?>;
   var T = { medicine: 'ยา', oral: 'ยาทาน', supply: 'เวชภัณฑ์' };
-  var st = { q: document.getElementById('q').value || '', t: '', f: 'all', n: 40 };
+  var st = { q: document.getElementById('q').value || '', t: '', f: 'all', n: 40, u: 'big' };
+  // หน่วยใหญ่ | หน่วยย่อย: big = "2 กล่อง 2 ขวด", small = "12 ขวด". Only offered when some item has a pack; the choice is remembered on this phone.
+  var HAS_PACK = ITEMS.some(function (x) { return x.packSize > 1; });
+  try { if (localStorage.getItem('stockUnits') === 'small') st.u = 'small'; } catch (e) { /* private mode: no memory */ }
   function esc(x) { return String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
   function fmt(n) { return (Math.round((Number(n) || 0) * 100) / 100).toLocaleString('en-US'); }
   // หน่วยใหญ่ + หน่วยย่อย: [[number, unit], ...] — 12 ขวด of a 5-ขวด กล่อง is [[2, กล่อง], [2, ขวด]]
   function qtyParts(x, n) {
     var s = Number(x.packSize) || 1;
-    if (!(s > 1) || !(n > 0)) return [[fmt(n), x.unit]];
+    if (!(s > 1) || !(n > 0) || st.u === 'small') return [[fmt(n), x.unit]];
     var w = Math.floor(n / s + 1e-9), r = Math.round((n - w * s) * 100) / 100;
     return !w ? [[fmt(r), x.unit]] : (r ? [[fmt(w), x.packUnit], [fmt(r), x.unit]] : [[fmt(w), x.packUnit]]);
   }
@@ -91,7 +99,8 @@ body{margin:0;font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text
   var ORDER = { out: 0, warn: 1, ok: 2 };
   function render() {
     var q = st.q.trim().toLowerCase();
-    var base = ITEMS.filter(function (x) { return !st.t || x.type === st.t; });
+    Array.prototype.forEach.call(document.querySelectorAll('.seg button'), function (b) { b.classList.toggle('on', b.getAttribute('data-u') === st.u); });
+    var base =ITEMS.filter(function (x) { return !st.t || x.type === st.t; });
     var rows = base.filter(function (x) {
       var s = state(x);
       return (!q || (x.name + ' ' + (x.cat || '')).toLowerCase().indexOf(q) > -1) && (st.f === 'all' || (st.f === 'low' ? s === 'warn' : s === 'out'));
@@ -114,7 +123,15 @@ body{margin:0;font-family:'Noto Sans Thai',system-ui,sans-serif;color:var(--text
     var m = document.getElementById('more');
     if (m) m.onclick = function () { st.n += 40; render(); };
   }
-  document.getElementById('q').oninput = function (e) { st.q = e.target.value; st.n = 40; render(); };
+  document.getElementById('units').style.display = HAS_PACK ? 'flex' : 'none';
+  Array.prototype.forEach.call(document.querySelectorAll('.seg button'), function (b) {
+    b.onclick = function () {
+      st.u = b.getAttribute('data-u');
+      try { localStorage.setItem('stockUnits', st.u); } catch (e) { /* ignore */ }
+      render();
+    };
+  });
+  document.getElementById('q').oninput =function (e) { st.q = e.target.value; st.n = 40; render(); };
   document.getElementById('clear').onclick = function () { st.q = ''; document.getElementById('q').value = ''; st.n = 40; render(); };
   Array.prototype.forEach.call(document.querySelectorAll('.chip'), function (c) {
     c.onclick = function () {
