@@ -1860,6 +1860,14 @@ function stockPack_(s) {
 /** ราคาทุน per หน่วยย่อย: CostPrice is entered per PackUnit when the item has one, so it is divided by PackSize (no pack: as typed). */
 function stockUnitCost_(s) { return Math.round((Number(s && s.CostPrice) || 0) / stockPack_(s).size * 10000) / 10000; }
 /**
+ * A ราคาทุน snapshot (record line / จัดยา-เบิกยา) per หน่วยย่อย. One taken before CostPrice became per PackUnit holds CostPrice as it
+ * was (the whole pack's cost now): when it equals the item's CostPrice and the item has a pack, it is divided by PackSize.
+ */
+function snapUnitCost_(cost, s) {
+  var c = Number(cost) || 0;
+  return stockPack_(s).size > 1 && c > 0 && c === (Number(s && s.CostPrice) || 0) ? stockUnitCost_(s) : c;
+}
+/**
  * What `qty` small units cost: the whole packs at the pack price `packPrice`, the rest at `smallPrice` per small unit (blank / null =
  * the pack price ÷ size). No pack (size 1) is plain qty x price. E.g. size 5, 850 / 200: 12 -> 2 x 850 + 2 x 200 = 2100.
  */
@@ -3009,7 +3017,7 @@ function medicineLines_(record, ctx) {
       var o = {
         itemId: it.itemId, name: String(it.name || '').trim(),
         qtyDispensed: requireNumber_(it.qtyDispensed || 0, 'จำนวนที่เบิก' + line, { min: 0 }),
-        unitCost: old ? Number(old.unitCost) || 0 : stockUnitCost_(ctx.stockById[it.itemId])
+        unitCost: old ? snapUnitCost_(old.unitCost, ctx.stockById[it.itemId]) : stockUnitCost_(ctx.stockById[it.itemId])
       };
       depositSplit_(o, it, line);
       if (g.charged) {
@@ -3881,7 +3889,10 @@ function mapWithdrawalOut_(w, showCost, stockById) {
     salesId: w.SalesID, salesName: w.SalesName, itemId: w.ItemID, itemName: w.ItemName, qty: Number(w.Qty) || 0,
     recordId: w.RecordID || '', note: w.Note || '', createdBy: w.CreatedBy, photoIds: parseIdList_(w.PhotoFileIds)
   };
-  if (showCost) { out.unitCost = Number(w.UnitCost) || 0; out.amount = Number(w.Amount) || 0; }
+  if (showCost) {
+    out.unitCost = snapUnitCost_(w.UnitCost, (stockById || {})[w.ItemID]);
+    out.amount = out.unitCost === (Number(w.UnitCost) || 0) ? Number(w.Amount) || 0 : round2_(out.qty * out.unitCost);
+  }
   return out;
 }
 
@@ -4275,7 +4286,7 @@ function salesReportRows_(keep, src) {
       if (!keep(d, w.SalesID)) return;
       push({
         date: d, sortKey: String(w.CreatedAt), patientName: w.PatientName, salesId: w.SalesID, salesName: w.SalesName || '', itemId: w.ItemID, itemName: w.ItemName,
-        qty: Number(w.Qty) || 0, unitCost: Number(w.UnitCost) || 0, remark: ''
+        qty: Number(w.Qty) || 0, unitCost: snapUnitCost_(w.UnitCost, stockById[w.ItemID]), remark: ''
       });
     });
     (src ? src.records : getRows_(getSheet_(CONFIG.SHEETS.RECORDS))).forEach(function (r) {
@@ -4286,7 +4297,7 @@ function salesReportRows_(keep, src) {
         var s = stockById[l.itemId] || {};
         push({
           date: d, sortKey: String(r.CreatedAt), patientName: r.PatientName, salesId: r.SalesID || '', salesName: r.SalesName || '', itemId: l.itemId, itemName: l.name,
-          qty: Number(l.qtyDispensed) || 0, unitCost: l.unitCost != null ? Number(l.unitCost) || 0 : stockUnitCost_(s),
+          qty: Number(l.qtyDispensed) || 0, unitCost: l.unitCost != null ? snapUnitCost_(l.unitCost, s) : stockUnitCost_(s),
           chargedAmount: isChargedMedLine_(l) ? Number(l.amount) || 0 : 0,
           remark: (isChargedMedLine_(l) ? 'ซื้อเพิ่มหน้าคลีนิค (คิดค่ายา)' : 'ซื้อเพิ่มหน้าคลีนิค (ไม่คิดค่ายา)') + ' · บันทึกการรักษา ' + r.RID
         });
