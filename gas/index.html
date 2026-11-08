@@ -4337,16 +4337,20 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var fieldU = function (label, k, inputHtml) { return '<div style="margin-bottom:12px"><label style="font-size:12px;color:var(--text-2);display:block;margin-bottom:4px">' + esc(label) + unitTag(k) + '</label>' + inputHtml + '</div>'; };
     var hint = function (t) { return '<div style="font-size:11.5px;color:var(--muted);margin:-4px 0 12px;line-height:1.6">' + t + '</div>'; };
     // ราคาต่อหน่วยย่อย (with a หน่วยใหญ่): the price of what is left after the whole packs, e.g. 12 ขวด = 2 กล่อง × ราคาต่อกล่อง + 2 ขวด × ราคาต่อขวด.
-    var smallField = fieldU('ราคาขายต่อหน่วยย่อย', 'small', optNum('smallPrice')) + hint('ใช้กับส่วนที่ไม่ครบหน่วยใหญ่ (เช่น 12 ขวด = 2 กล่อง + 2 ขวด) · เว้นว่าง = คิดตามสัดส่วนของราคาต่อหน่วยใหญ่ · ไม่ได้ตั้งหน่วยใหญ่ไม่ต้องกรอก');
+    // One value for the item, so it sits on the first row (จำนวน 1) of the ราคาขาย table.
+    var smallHint = 'ราคาต่อหน่วยย่อยใช้กับส่วนที่ไม่ครบหน่วยใหญ่ (เช่น 12 ขวด = 2 กล่อง + 2 ขวด) · เว้นว่าง = คิดตามสัดส่วนของราคาต่อหน่วยใหญ่ · ไม่ได้ตั้งหน่วยใหญ่: ราคาขายคือราคาต่อหน่วย ไม่ต้องกรอกราคาต่อหน่วยย่อย';
     var priceFields = d.type === 'oral'
-      ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + fieldU('ราคาขายต่อหน่วยใหญ่', 'big', optNum('prices.0')) + fieldU('ราคาขายต่อหน่วยย่อย', 'small', optNum('smallPrice')) + '</div>' +
-        hint('ราคาต่อหน่วยย่อยใช้กับส่วนที่ไม่ครบหน่วยใหญ่ (เว้นว่าง = คิดตามสัดส่วน) · ไม่ได้ตั้งหน่วยใหญ่: ราคาขายคือราคาต่อหน่วย')
+      ? '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' + fieldU('ราคาขายต่อหน่วยใหญ่', 'big', optNum('prices.0')) + fieldU('ราคาขายต่อหน่วยย่อย', 'small', optNum('smallPrice')) + '</div>' + hint(smallHint)
       : (d.type !== 'medicine' || !isAdmin()) ? '' :
       fieldU('ราคาทุนต่อหน่วยใหญ่', 'big', optNum('costPrice')) +
-      '<div style="margin-bottom:6px"><label style="font-size:12px;color:var(--text-2)">ราคาขายต่อหน่วยใหญ่ <span style="color:var(--muted)">(ตามจำนวนหน่วยใหญ่ที่ซื้อ · ไม่ได้ตั้งหน่วยใหญ่ = ราคาต่อหน่วย)</span>' + unitTag('big') + '</label></div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">' +
-        STOCK_PRICE_TIERS.map(function (t, i) { return field('จำนวน ' + t, optNum('prices.' + i)); }).join('') +
-      '</div>' + smallField;
+      '<div style="border-top:1px solid var(--border);margin:6px 0 12px"></div>' +
+      '<div style="font-size:13px;font-weight:600;margin-bottom:8px">ราคาขาย</div>' +
+      '<div style="display:grid;grid-template-columns:72px 1fr 1fr;gap:8px 12px;align-items:center;margin-bottom:10px">' +
+        '<div style="font-size:12px;color:var(--text-2)">จำนวน</div>' +
+        '<div style="font-size:12px;color:var(--text-2)">ราคาขายต่อหน่วยใหญ่' + unitTag('big') + '</div>' +
+        '<div style="font-size:12px;color:var(--text-2)">ราคาขายต่อหน่วยย่อย' + unitTag('small') + '</div>' +
+        STOCK_PRICE_TIERS.map(function (t, i) { return '<div style="font-size:13px">จำนวน ' + t + '</div><div>' + optNum('prices.' + i) + '</div><div>' + (i === 0 ? optNum('smallPrice') : '') + '</div>'; }).join('') +
+      '</div>' + hint('จำนวน = จำนวนหน่วยใหญ่เต็มที่ซื้อ (ขั้นราคา) · ' + smallHint);
     return modalHeader(d.id ? 'แก้ไข' + typeLabel : 'เพิ่ม' + typeLabel + 'ใหม่') +
       field('ประเภทสต๊อก', bindSelect('type', typeOpts)) +
       field('ชื่อ' + typeLabel, bindInput('name')) +
