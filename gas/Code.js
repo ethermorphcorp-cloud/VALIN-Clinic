@@ -1852,10 +1852,10 @@ function saveClinicSettings(token, settings) {
 // ราคาขาย quantity tiers — one Stock column per tier (Price1, Price3, ...).
 var STOCK_PRICE_TIERS = [1, 3, 5, 10, 20, 50];
 
-/** An item's pack: {size, unit} for "1 unit = size x Unit" (e.g. 1 กล่อง = 5 ขวด), {size: 1, unit: ''} when it has none. */
+/** An item's pack: {size, unit} for "1 unit = size x Unit" (e.g. 1 กล่อง = 5 ขวด; size 1 is allowed and splits nothing), {size: 1, unit: ''} when it has none. */
 function stockPack_(s) {
   var size = Number(numOrNull_(s && s.PackSize)), unit = String((s && s.PackUnit) || '').trim();
-  return size > 1 && unit ? { size: size, unit: unit } : { size: 1, unit: '' };
+  return size > 0 && unit ? { size: size, unit: unit } : { size: 1, unit: '' };
 }
 /** ราคาทุน per หน่วยย่อย: CostPrice is entered per PackUnit when the item has one, so it is divided by PackSize (no pack: as typed). */
 function stockUnitCost_(s) { return Math.round((Number(s && s.CostPrice) || 0) / stockPack_(s).size * 10000) / 10000; }
@@ -2064,8 +2064,8 @@ function saveStockItem(token, item) {
       if (packUnit || (item.packSize !== '' && item.packSize != null)) {
         if (!packUnit) throw ValidationError_('กรุณากรอกชื่อหน่วยใหญ่ (เช่น กล่อง)');
         packSize = requireNumber_(item.packSize, '1 ' + packUnit + ' เท่ากับกี่ ' + item.unit, { min: 0 });
-        if (!(packSize > 1)) throw ValidationError_('1 ' + packUnit + ' ต้องมากกว่า 1 ' + item.unit);
-        if (packUnit === String(item.unit).trim()) throw ValidationError_('หน่วยใหญ่ต้องไม่ซ้ำกับหน่วยย่อย');
+        if (!(packSize > 0)) throw ValidationError_('1 ' + packUnit + ' เท่ากับกี่ ' + item.unit + ' ต้องมากกว่า 0'); // blank/0 would divide by zero; 1 : 1 is fine
+        if (packSize !== 1 && packUnit === String(item.unit).trim()) throw ValidationError_('หน่วยใหญ่ต้องไม่ซ้ำกับหน่วยย่อย');
         smallPrice = optionalNumber_(item.smallPrice, 'ราคาขายต่อ' + item.unit);
       }
       var obj = Object.assign({}, existing || {}, {

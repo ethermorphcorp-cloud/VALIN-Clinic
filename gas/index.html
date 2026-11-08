@@ -4136,7 +4136,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var qtyCell = s.packSize > 1
       ? '<div>' + lbl('หน่วยใหญ่') + '<b>' + esc(qtyText(qty, s)) + '</b>' + qtyBadge + '</div><div>' + lbl('หน่วยย่อย') + '<b>' + esc(packNum(qty)) + ' ' + esc(s.unit) + '</b></div>'
       : esc(qty) + (s.type === 'oral' ? '' : ' ' + esc(s.unit)) + qtyBadge;
-    var packNote = s.packSize > 1 ? '<div style="font-size:11px;color:var(--muted)">1 ' + esc(s.packUnit) + ' = ' + esc(s.packSize) + ' ' + esc(s.unit) + '</div>' +
+    var packNote = s.packUnit ? '<div style="font-size:11px;color:var(--muted)">1 ' + esc(s.packUnit) + ' = ' + esc(s.packSize) + ' ' + esc(s.unit) + '</div>' +
       (s.smallPrice != null && showCost ? '<div style="font-size:11px;color:var(--muted)">ราคาต่อ' + esc(s.unit) + ' ' + esc(money(s.smallPrice)) + '</div>' : '') : '';
     // One "จัดการ" button per row opening the shared portal dropdown (see openStockActions).
     var actions = '<td style="text-align:right;white-space:nowrap">' +
@@ -4316,7 +4316,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (!s) return;
     var blank = function (v) { return v == null ? '' : v; };
     openModal('stock', Object.assign({}, s, {
-      minQty: blank(s.minQty), costPrice: blank(s.costPrice), packUnit: s.packUnit || '', packSize: s.packSize > 1 ? s.packSize : '', smallPrice: blank(s.smallPrice),
+      minQty: blank(s.minQty), costPrice: blank(s.costPrice), packUnit: s.packUnit || '', packSize: s.packUnit ? s.packSize : '', smallPrice: blank(s.smallPrice),
       prices: STOCK_PRICE_TIERS.map(function (t, i) { return blank((s.prices || [])[i]); })
     }));
   }
@@ -4358,7 +4358,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 12px">' +
         field('หน่วยย่อย (เช่น ขวด)', bindInput('unit')) + field('หน่วยใหญ่ (เช่น กล่อง)', bindInput('packUnit')) + field('จำนวนหน่วยใหญ่ : หน่วยย่อย', optNum('packSize')) +
       '</div>' +
-      hint('หน่วยใหญ่ไม่บังคับ — ตั้งแล้วใส่อัตราส่วน เช่น 1 กล่อง : 5 ขวด กรอก 5 · จำนวนสต๊อก/ขั้นต่ำ/ตัดสต๊อกกรอกเป็นหน่วยย่อย แต่แสดงเป็น "2 กล่อง 2 ขวด" · ราคาทุนกรอกต่อหน่วยใหญ่ ระบบหารด้วยอัตราส่วนเป็นราคาทุนต่อหน่วยย่อยเอง (ไม่ได้ตั้งหน่วยใหญ่ = ราคาทุนต่อหน่วย)') +
+      hint('หน่วยใหญ่ไม่บังคับ — ตั้งแล้วใส่อัตราส่วน เช่น 1 กล่อง : 5 ขวด กรอก 5 (1 : 1 กรอก 1) · จำนวนสต๊อก/ขั้นต่ำ/ตัดสต๊อกกรอกเป็นหน่วยย่อย แต่แสดงเป็น "2 กล่อง 2 ขวด" · ราคาทุนกรอกต่อหน่วยใหญ่ ระบบหารด้วยอัตราส่วนเป็นราคาทุนต่อหน่วยย่อยเอง (ไม่ได้ตั้งหน่วยใหญ่ = ราคาทุนต่อหน่วย)') +
       '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
         fieldU('จำนวนสต๊อกขั้นต่ำ หน่วยย่อย', 'small', optNum('minQty')) +
         // An existing item's quantity only changes through ปรับสต๊อก/อัพเดตสต๊อก (so it lands in the history).
