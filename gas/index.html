@@ -5088,7 +5088,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
               (i === 0 ? '<td rowspan="' + p.rows.length + '">' + esc(p.name) + '</td>' : '') +
               '<td>' + esc(r.itemName) + '</td>' +
               '<td style="text-align:right;white-space:nowrap">' + esc(r.qty) + (r.unit ? ' ' + esc(r.unit) : '') + '</td>' +
-              '<td style="text-align:right">' + money(r.unitCost) + '</td>' +
+              '<td style="text-align:right">' + money(r.unitSale) + '</td>' +
               '<td style="text-align:right;font-weight:600;color:var(--green-dark)">' + money(r.saleAmount) + '</td>' +
               '<td style="text-align:right;font-weight:600;color:var(--red-dark)">' + (r.refundAmount > 0 ? money(r.refundAmount) : '<span style="color:var(--muted);font-weight:400">-</span>') + '</td>' +
               '<td style="font-size:12px;color:var(--text-2)">' + (r.remark ? '<span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark);white-space:nowrap">' + esc(r.remark) + '</span>' : '<span style="color:var(--muted)">-</span>') + '</td>' +
@@ -5114,7 +5114,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return listCardWrap('<div style="overflow-x:auto"><table class="table stock-table vmid" style="width:100%;border-collapse:collapse">' +
       '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
         '<th style="' + RP_TH + '">วันที่</th><th style="' + RP_TH + '">ชื่อเซลล์</th><th style="' + RP_TH + '">ชื่อคนไข้</th><th style="' + RP_TH + '">รายการยา</th>' +
-        '<th style="' + RP_TH + ';text-align:right">จำนวน</th><th style="' + RP_TH + ';text-align:right">ราคาทุน/หน่วย</th><th style="' + RP_TH + ';text-align:right;color:var(--green-dark)">จำนวนเงิน<br>(เรียกเก็บจากเซลล์)</th><th style="' + RP_TH + ';text-align:right;color:var(--red-dark)">จำนวนเงิน<br>(ส่วนต่างคืนเซลล์)</th><th style="' + RP_TH + '">หมายเหตุ</th>' +
+        '<th style="' + RP_TH + ';text-align:right">จำนวน</th><th style="' + RP_TH + ';text-align:right">ราคาขาย/หน่วย</th><th style="' + RP_TH + ';text-align:right;color:var(--green-dark)">จำนวนเงิน<br>(เรียกเก็บจากเซลล์)</th><th style="' + RP_TH + ';text-align:right;color:var(--red-dark)">จำนวนเงิน<br>(ส่วนต่างคืนเซลล์)</th><th style="' + RP_TH + '">หมายเหตุ</th>' +
       '</tr></thead><tbody>' + rows + foot + '</tbody></table></div>', state.report.loading) + localPagerHtml(pg, 'report') + perSales +
       '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">เรียกเก็บจากเซลล์ (ราคาขาย): ยาจากจัดยา-เบิกยาทุกรายการ และยาที่ซื้อเพิ่มหน้าคลีนิคในบันทึกการรักษา (ระบุในหมายเหตุ) · คิดค่ายา = ราคาที่คิดลูกค้า, อื่นๆ = ราคาขายในสต๊อก (ตามขั้นจำนวน) · ราคาทุน ณ วันที่เบิก · ส่วนต่างคืนเซลล์ = ยอดที่เก็บจากลูกค้า − ราคาทุน (เฉพาะรายการซื้อยาเพิ่มหน้าคลีนิค คิดค่ายา) · คลิกที่แถวเพื่อดูตัวอย่างและดาวน์โหลด PDF ของเซลล์/วันนั้น</div>';
   }
@@ -5184,13 +5184,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       // Pivot layout: วันที่ / เซลล์ / คนไข้ shown once per group, a subtotal per (วันที่, เซลล์).
       var blocks = salesPivotBlocks(D.rows);
       table = '<thead><tr>' + th('วันที่', false, '9%') + th('ชื่อเซลล์', false, '11%') + th('ชื่อคนไข้', false, '13%') + th('รายการยา') + th('จำนวน', true, '7%') +
-        th('ราคาทุน<br>ต่อหน่วย', true, '8%') + th('จำนวนเงิน<br>(เรียกเก็บจากเซลล์)', true, '11%', '#2E7D5B') + th('จำนวนเงิน<br>(ส่วนต่างคืนเซลล์)', true, '11%', '#C0392B') + th('หมายเหตุ', false, '14%') + '</tr></thead><tbody>' +
+        th('ราคาขาย<br>ต่อหน่วย', true, '8%') + th('จำนวนเงิน<br>(เรียกเก็บจากเซลล์)', true, '11%', '#2E7D5B') + th('จำนวนเงิน<br>(ส่วนต่างคืนเซลล์)', true, '11%', '#C0392B') + th('หมายเหตุ', false, '14%') + '</tr></thead><tbody>' +
         blocks.map(function (b) {
           var firstRow = true, out = '';
           b.patients.forEach(function (p) {
             p.rows.forEach(function (r, i) {
               out += '<tr style="border-top:1px solid ' + line + '">' + td(firstRow ? '<b>' + esc(b.date) + '</b>' : '') + td(firstRow ? '<b>' + esc(b.salesName) + '</b>' : '') + td(i === 0 ? esc(p.name) : '') + td(esc(r.itemName)) +
-                td(esc(r.qty) + (r.unit ? ' ' + esc(r.unit) : ''), true) + td(baht(r.unitCost), true) + '<td style="padding:6px 8px;vertical-align:top;text-align:right;font-weight:600;color:#2E7D5B">' + baht(r.saleAmount) + '</td>' +
+                td(esc(r.qty) + (r.unit ? ' ' + esc(r.unit) : ''), true) + td(baht(r.unitSale), true) + '<td style="padding:6px 8px;vertical-align:top;text-align:right;font-weight:600;color:#2E7D5B">' + baht(r.saleAmount) + '</td>' +
                 '<td style="padding:6px 8px;vertical-align:top;text-align:right;font-weight:600;color:#C0392B">' + (r.refundAmount > 0 ? baht(r.refundAmount) : '-') + '</td>' + td(esc(r.remark || '')) + '</tr>';
               firstRow = false;
             });

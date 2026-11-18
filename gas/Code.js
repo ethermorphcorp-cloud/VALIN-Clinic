@@ -4272,6 +4272,7 @@ function salesReportRows_(keep, src) {
       // รายการซื้อยาเพิ่มหน้าคลีนิค (คิดค่ายา): what the customer paid less the ราคาทุน goes back to the sales person.
       o.chargedAmount = o.chargedAmount || 0;
       o.saleAmount = o.chargedAmount > 0 ? o.chargedAmount : stockSaleAmount_(stockById[o.itemId], o.qty); // เรียกเก็บจากเซลล์
+      o.unitSale = o.qty ? round2_(o.saleAmount / o.qty) : 0; // ราคาขาย/หน่วย (หน่วยย่อย; with a pack, the whole-pack + remainder average)
       o.refundAmount = o.chargedAmount > 0 ? round2_(o.chargedAmount - o.costAmount) : 0;
       out.push(o);
     };
