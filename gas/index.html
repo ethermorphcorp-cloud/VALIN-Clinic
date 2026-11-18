@@ -5064,11 +5064,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     sorted.forEach(function (r) {
       var key = r.date + '|' + (r.salesId || r.salesName || '-');
       var b = byKey[key];
-      if (!b) { b = byKey[key] = { key: key, date: r.date, salesId: r.salesId || '', salesName: r.salesName || '-', patients: [], rows: [], cost: 0, refund: 0 }; blocks.push(b); }
+      if (!b) { b = byKey[key] = { key: key, date: r.date, salesId: r.salesId || '', salesName: r.salesName || '-', patients: [], rows: [], sale: 0, refund: 0 }; blocks.push(b); }
       var p = b.patients[b.patients.length - 1];
       if (!p || p.name !== r.patientName) { p = { name: r.patientName, rows: [] }; b.patients.push(p); }
       p.rows.push(r); b.rows.push(r);
-      b.cost = Math.round((b.cost + (Number(r.costAmount) || 0)) * 100) / 100;
+      b.sale = Math.round((b.sale + (Number(r.saleAmount) || 0)) * 100) / 100;
       b.refund = Math.round((b.refund + (Number(r.refundAmount) || 0)) * 100) / 100;
     });
     return blocks;
@@ -5089,7 +5089,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
               '<td>' + esc(r.itemName) + '</td>' +
               '<td style="text-align:right;white-space:nowrap">' + esc(r.qty) + (r.unit ? ' ' + esc(r.unit) : '') + '</td>' +
               '<td style="text-align:right">' + money(r.unitCost) + '</td>' +
-              '<td style="text-align:right;font-weight:600;color:var(--green-dark)">' + money(r.costAmount) + '</td>' +
+              '<td style="text-align:right;font-weight:600;color:var(--green-dark)">' + money(r.saleAmount) + '</td>' +
               '<td style="text-align:right;font-weight:600;color:var(--red-dark)">' + (r.refundAmount > 0 ? money(r.refundAmount) : '<span style="color:var(--muted);font-weight:400">-</span>') + '</td>' +
               '<td style="font-size:12px;color:var(--text-2)">' + (r.remark ? '<span class="tag-badge" style="background:var(--amber-soft);color:var(--amber-dark);white-space:nowrap">' + esc(r.remark) + '</span>' : '<span style="color:var(--muted)">-</span>') + '</td>' +
             '</tr>';
@@ -5098,17 +5098,17 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         });
         // Subtotal for this (วันที่, เซลล์) — also the spot to open its preview / PDF.
         return html + '<tr' + click + ' style="cursor:pointer;background:var(--hover-bg)"><td colspan="6" style="padding:9px 12px;text-align:left;font-weight:700">รวม ' + esc(b.salesName) + ' · ' + esc(b.date) + '</td>' +
-          '<td style="text-align:right;font-weight:700;color:var(--green-dark)">' + money(b.cost) + '</td>' +
+          '<td style="text-align:right;font-weight:700;color:var(--green-dark)">' + money(b.sale) + '</td>' +
           '<td style="text-align:right;font-weight:700;color:var(--red-dark)">' + (b.refund > 0 ? money(b.refund) : '') + '</td>' +
           '<td style="color:var(--accent);font-size:12px"><span class="ms" style="font-size:16px;vertical-align:middle">picture_as_pdf</span> ดูตัวอย่าง / ดาวน์โหลด</td></tr>';
       }).join('');
     var foot = !D.rows.length ? '' :
-      '<tr style="background:var(--accent-soft);font-weight:700;border-top:2px solid var(--border)"><td colspan="6" style="padding:10px 12px;text-align:left">รวมทั้งหมด</td><td style="text-align:right;color:var(--green-dark)">' + money(D.totalCost) + '</td><td style="text-align:right;color:var(--red-dark)">' + (D.totalRefund > 0 ? money(D.totalRefund) : '') + '</td><td></td></tr>';
-    // ยอดที่คลินิกเก็บจากแต่ละเซลล์ (ราคาทุน) — shown when the report covers more than one.
+      '<tr style="background:var(--accent-soft);font-weight:700;border-top:2px solid var(--border)"><td colspan="6" style="padding:10px 12px;text-align:left">รวมทั้งหมด</td><td style="text-align:right;color:var(--green-dark)">' + money(D.totalSale) + '</td><td style="text-align:right;color:var(--red-dark)">' + (D.totalRefund > 0 ? money(D.totalRefund) : '') + '</td><td></td></tr>';
+    // ยอดที่คลินิกเก็บจากแต่ละเซลล์ (ราคาขาย) — shown when the report covers more than one.
     var perSales = (D.bySales || []).length > 1
-      ? '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;margin-top:12px"><div style="font-size:12.5px;font-weight:700;margin-bottom:6px">ยอดที่คลินิกเก็บจากแต่ละเซลล์ (ราคาทุน)</div>' +
+      ? '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);padding:12px 16px;margin-top:12px"><div style="font-size:12.5px;font-weight:700;margin-bottom:6px">ยอดที่คลินิกเก็บจากแต่ละเซลล์ (ราคาขาย)</div>' +
           D.bySales.map(function (b) {
-            return '<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0;font-size:13px"><span>' + esc(b.salesName) + '</span><span><b style="color:var(--green-dark)">' + money(b.cost) + '</b>' + (b.refund > 0 ? ' <span style="color:var(--muted);font-size:12px">· ส่วนต่างคืนเซลล์</span> <b style="color:var(--red-dark)">' + money(b.refund) + '</b>' : '') + '</span></div>';
+            return '<div style="display:flex;justify-content:space-between;gap:12px;padding:3px 0;font-size:13px"><span>' + esc(b.salesName) + '</span><span><b style="color:var(--green-dark)">' + money(b.sale) + '</b>' + (b.refund > 0 ? ' <span style="color:var(--muted);font-size:12px">· ส่วนต่างคืนเซลล์</span> <b style="color:var(--red-dark)">' + money(b.refund) + '</b>' : '') + '</span></div>';
           }).join('') + '</div>'
       : '';
     return listCardWrap('<div style="overflow-x:auto"><table class="table stock-table vmid" style="width:100%;border-collapse:collapse">' +
@@ -5116,7 +5116,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '<th style="' + RP_TH + '">วันที่</th><th style="' + RP_TH + '">ชื่อเซลล์</th><th style="' + RP_TH + '">ชื่อคนไข้</th><th style="' + RP_TH + '">รายการยา</th>' +
         '<th style="' + RP_TH + ';text-align:right">จำนวน</th><th style="' + RP_TH + ';text-align:right">ราคาทุน/หน่วย</th><th style="' + RP_TH + ';text-align:right;color:var(--green-dark)">จำนวนเงิน<br>(เรียกเก็บจากเซลล์)</th><th style="' + RP_TH + ';text-align:right;color:var(--red-dark)">จำนวนเงิน<br>(ส่วนต่างคืนเซลล์)</th><th style="' + RP_TH + '">หมายเหตุ</th>' +
       '</tr></thead><tbody>' + rows + foot + '</tbody></table></div>', state.report.loading) + localPagerHtml(pg, 'report') + perSales +
-      '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">เรียกเก็บจากเซลล์ (ราคาทุน): ยาจากจัดยา-เบิกยาทุกรายการ และยาที่ซื้อเพิ่มหน้าคลีนิคในบันทึกการรักษา (ระบุในหมายเหตุ) · ราคาทุน ณ วันที่เบิก · ส่วนต่างคืนเซลล์ = ยอดที่เก็บจากลูกค้า − ราคาทุน (เฉพาะรายการซื้อยาเพิ่มหน้าคลีนิค คิดค่ายา) · คลิกที่แถวเพื่อดูตัวอย่างและดาวน์โหลด PDF ของเซลล์/วันนั้น</div>';
+      '<div style="font-size:11.5px;color:var(--muted);margin-top:8px">เรียกเก็บจากเซลล์ (ราคาขาย): ยาจากจัดยา-เบิกยาทุกรายการ และยาที่ซื้อเพิ่มหน้าคลีนิคในบันทึกการรักษา (ระบุในหมายเหตุ) · คิดค่ายา = ราคาที่คิดลูกค้า, อื่นๆ = ราคาขายในสต๊อก (ตามขั้นจำนวน) · ราคาทุน ณ วันที่เบิก · ส่วนต่างคืนเซลล์ = ยอดที่เก็บจากลูกค้า − ราคาทุน (เฉพาะรายการซื้อยาเพิ่มหน้าคลีนิค คิดค่ายา) · คลิกที่แถวเพื่อดูตัวอย่างและดาวน์โหลด PDF ของเซลล์/วันนั้น</div>';
   }
 
   /* ---- PDF ---- */
@@ -5190,18 +5190,18 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           b.patients.forEach(function (p) {
             p.rows.forEach(function (r, i) {
               out += '<tr style="border-top:1px solid ' + line + '">' + td(firstRow ? '<b>' + esc(b.date) + '</b>' : '') + td(firstRow ? '<b>' + esc(b.salesName) + '</b>' : '') + td(i === 0 ? esc(p.name) : '') + td(esc(r.itemName)) +
-                td(esc(r.qty) + (r.unit ? ' ' + esc(r.unit) : ''), true) + td(baht(r.unitCost), true) + '<td style="padding:6px 8px;vertical-align:top;text-align:right;font-weight:600;color:#2E7D5B">' + baht(r.costAmount) + '</td>' +
+                td(esc(r.qty) + (r.unit ? ' ' + esc(r.unit) : ''), true) + td(baht(r.unitCost), true) + '<td style="padding:6px 8px;vertical-align:top;text-align:right;font-weight:600;color:#2E7D5B">' + baht(r.saleAmount) + '</td>' +
                 '<td style="padding:6px 8px;vertical-align:top;text-align:right;font-weight:600;color:#C0392B">' + (r.refundAmount > 0 ? baht(r.refundAmount) : '-') + '</td>' + td(esc(r.remark || '')) + '</tr>';
               firstRow = false;
             });
           });
-          return out + '<tr style="background:' + soft + ';border-top:1px solid ' + line + ';font-weight:700"><td colspan="6" style="padding:7px 8px;text-align:left">รวม ' + esc(b.salesName) + ' · ' + esc(b.date) + '</td>' + '<td style="padding:7px 8px;text-align:right;color:#2E7D5B">' + baht(b.cost) + '</td><td style="padding:7px 8px;text-align:right;color:#C0392B">' + (b.refund > 0 ? baht(b.refund) : '') + '</td><td></td></tr>';
+          return out + '<tr style="background:' + soft + ';border-top:1px solid ' + line + ';font-weight:700"><td colspan="6" style="padding:7px 8px;text-align:left">รวม ' + esc(b.salesName) + ' · ' + esc(b.date) + '</td>' + '<td style="padding:7px 8px;text-align:right;color:#2E7D5B">' + baht(b.sale) + '</td><td style="padding:7px 8px;text-align:right;color:#C0392B">' + (b.refund > 0 ? baht(b.refund) : '') + '</td><td></td></tr>';
         }).join('') + '</tbody>';
       // ยอดที่เก็บจากแต่ละเซลล์ (when the report covers several), then the grand total.
-      totals = ((D.bySales || []).length > 1 ? D.bySales.map(function (b) { return ['เก็บจาก ' + b.salesName, b.cost]; }) : []).concat([
-        ['ยอดเรียกเก็บจากเซลล์ (บาท)', D.totalCost],
+      totals = ((D.bySales || []).length > 1 ? D.bySales.map(function (b) { return ['เก็บจาก ' + b.salesName, b.sale]; }) : []).concat([
+        ['ยอดเรียกเก็บจากเซลล์ (บาท)', D.totalSale],
         ['ยอดส่วนต่างคืนเซลล์ (บาท)', D.totalRefund],
-        ['ยอดสุทธิ (บาท)', Math.round(((Number(D.totalCost) || 0) - (Number(D.totalRefund) || 0)) * 100) / 100]
+        ['ยอดสุทธิ (บาท)', Math.round(((Number(D.totalSale) || 0) - (Number(D.totalRefund) || 0)) * 100) / 100]
       ]);
     } else {
       table = '<thead><tr>' + th('วันที่', false, '12%') + th('ชื่อคนไข้', false, '20%') + th('ชื่อเซลล์', false, '15%') + th('รายละเอียด (ตามใบเสร็จ)') + th('จำนวนเงิน', true, '14%') + '</tr></thead><tbody>' +
@@ -5248,7 +5248,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (blockKey && rp.dataTab === 'sales') {
       var block = salesPivotBlocks(D.rows).filter(function (b) { return b.key === blockKey; })[0];
       if (!block) return;
-      D = { rows: block.rows, totalQty: block.rows.reduce(function (x, r) { return x + (Number(r.qty) || 0); }, 0), totalCost: block.cost, totalRefund: block.refund, bySales: [{ salesName: block.salesName, cost: block.cost, refund: block.refund }] };
+      D = { rows: block.rows, totalQty: block.rows.reduce(function (x, r) { return x + (Number(r.qty) || 0); }, 0), totalSale: block.sale, totalRefund: block.refund, bySales: [{ salesName: block.salesName, sale: block.sale, refund: block.refund }] };
       scope = { salesName: block.salesName, range: block.date };
       filename = 'รายงานรายเซลล์-' + block.salesName + '-' + block.date + '.pdf';
     }
