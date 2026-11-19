@@ -104,27 +104,30 @@ var otherBg = '#FFF8E5';
 // (previously its own standalone bold row between cards) — matches the
 // reference script's ยอดขาย card, which groups the client count together
 // with the payment-method breakdown under one "sales" heading.
-var cashRows = [
-  flexRow_('เงินสด', moneyFmt_(s.cashAmount) + ' บาท', { margin: 'xs' }),
-  flexRow_('เงินโอน', moneyFmt_(s.transferAmount) + ' บาท', { margin: 'xs' })
-].concat(s.cardAmount ? [flexRow_('บัตรเครดิต', moneyFmt_(s.cardAmount) + ' บาท', { margin: 'xs' })] : [])
- .concat([flexRow_('จำนวนเคส', s.patientCount + ' คน', { margin: 'xs', weight: 'bold' })]);
+// Rows and groups that come to 0 are left out (nonZero_), so the card shows only what happened that day; ยอดชำระทั้งหมด, จำนวนเคส
+// and ยอดสุทธิ / จำนวนเงินทั้งหมด always show.
+function nonZero_(n) { return Math.round((Number(n) || 0) * 100) !== 0; }
+var cashRows = []
+  .concat(nonZero_(s.cashAmount) ? [flexRow_('เงินสด', moneyFmt_(s.cashAmount) + ' บาท', { margin: 'xs' })] : [])
+  .concat(nonZero_(s.transferAmount) ? [flexRow_('เงินโอน', moneyFmt_(s.transferAmount) + ' บาท', { margin: 'xs' })] : [])
+  .concat(nonZero_(s.cardAmount) ? [flexRow_('บัตรเครดิต', moneyFmt_(s.cardAmount) + ' บาท', { margin: 'xs' })] : [])
+  .concat([flexRow_('จำนวนเคส', s.patientCount + ' คน', { margin: 'xs', weight: 'bold' })]);
 
-var doctorRows = s.doctorShares.map(function (d) {
+var doctorRows = s.doctorShares.filter(function (d) { return nonZero_(d.amount); }).map(function (d) {
   return flexRow_(d.name + (d.topped ? ' *' : ''), moneyFmt_(d.amount) + ' บาท', { margin: 'xs' });
 });
 var doctorFootnote = s.hasToppedDoctor
   ? [{ type: 'text', text: '* ได้รับตามยอดขั้นต่ำที่คลินิกรับประกัน', size: 'xxs', color: '#B4791E', margin: 'sm', wrap: true }]
   : [];
 
-var salesRows = s.salesShares.map(function (d) {
+var salesRows = s.salesShares.filter(function (d) { return nonZero_(d.amount); }).map(function (d) {
   return flexRow_(d.name, moneyFmt_(d.amount) + ' บาท', { margin: 'xs' });
 });
 
 // Round 18 item 1: itemized "Pro A (x1)" rows from the new promoItems
 // breakdown (computeDailySummaryDetail_, Code.gs) — same data the day
 // panel's item 3 shows.
-var promoRows = (s.promoItems || []).map(function (p) {
+var promoRows = (s.promoItems || []).filter(function (p) { return nonZero_(p.amount); }).map(function (p) {
   return flexRow_(p.name + ' (x' + p.qty + ')', moneyFmt_(p.amount) + ' บาท', { margin: 'xs' });
 });
 
@@ -139,9 +142,9 @@ var promoRows = (s.promoItems || []).map(function (p) {
 // as "• amount - note"); the amber card background (otherBg) is applied at
 // the flexGroup_ call site below.
 var medicineItems = s.medicineItems || [];
-var otherRows = medicineItems.map(function (m) {
+var otherRows = medicineItems.filter(function (m) { return nonZero_(m.amount); }).map(function (m) {
   return flexRow_('•  ' + (m.name || 'ยา') + ' (' + m.patientName + ')', moneyFmt_(m.amount) + ' บาท', { margin: 'xs', labelColor: '#8891AC' });
-}).concat(s.otherItems.map(function (o) {
+}).concat(s.otherItems.filter(function (o) { return nonZero_(o.amount); }).map(function (o) {
   return flexRow_('•  ' + (o.name || 'อื่นๆ') + ' (' + o.patientName + ')', moneyFmt_(o.amount) + ' บาท', { margin: 'xs', labelColor: '#8891AC' });
 }));
 
@@ -162,10 +165,9 @@ var netGroup = {
   cornerRadius: '10px', backgroundColor: netPositive ? '#E7F5EC' : '#FBEBEB',
   contents: [
     flexRow_('ยอดสุทธิ', moneyFmt_(s.clinicNet) + ' บาท', { weight: 'bold', size: 'md', labelColor: netPositive ? '#357552' : '#AC4143', valueColor: netPositive ? '#357552' : '#AC4143' }),
-    flexRow_('จำนวนเงินทั้งหมด', moneyFmt_(s.totalCollected) + ' บาท', { margin: 'sm' }),
-    flexRow_('− ส่วนแบ่งแพทย์', moneyFmt_(s.doctorTotal) + ' บาท', { margin: 'xs' }),
-    flexRow_('− ส่วนแบ่งเซลล์', moneyFmt_(s.salesTotal) + ' บาท', { margin: 'xs' })
-  ]
+    flexRow_('จำนวนเงินทั้งหมด', moneyFmt_(s.totalCollected) + ' บาท', { margin: 'sm' })
+  ].concat(nonZero_(s.doctorTotal) ? [flexRow_('− ส่วนแบ่งแพทย์', moneyFmt_(s.doctorTotal) + ' บาท', { margin: 'xs' })] : [])
+   .concat(nonZero_(s.salesTotal) ? [flexRow_('− ส่วนแบ่งเซลล์', moneyFmt_(s.salesTotal) + ' บาท', { margin: 'xs' })] : [])
 };
 
 // Round 20 item 2: ยอด canula, previously a standalone bold row, now wraps
@@ -180,13 +182,13 @@ var canulaGroup = {
 
 var bodyContents = [
   flexGroup_('ยอดชำระทั้งหมด', moneyFmt_(s.totalCollected) + ' บาท', cashRows, '', { bg: cardBg }),
-  doctorGroup,
-  flexGroup_('ส่วนแบ่งเซลล์ ทั้งหมด', moneyFmt_(s.salesTotal) + ' บาท', salesRows, 'ไม่มีรายการ', { bg: cardBg }),
-  canulaGroup,
-  flexGroup_('ยอดรายการโปรหน้าคลีนิค', moneyFmt_(s.promoAmountTotal) + ' บาท', promoRows, 'ไม่มีรายการ', { bg: cardBg }),
-  flexGroup_('รายการอื่นๆ', moneyFmt_(s.supplierPayTotal) + ' บาท', otherRows, 'ไม่มีรายการ', { bg: otherBg }),
+  nonZero_(s.doctorTotal) ? doctorGroup : null,
+  nonZero_(s.salesTotal) ? flexGroup_('ส่วนแบ่งเซลล์ ทั้งหมด', moneyFmt_(s.salesTotal) + ' บาท', salesRows, '', { bg: cardBg }) : null,
+  nonZero_(s.canulaTotal) ? canulaGroup : null,
+  nonZero_(s.promoAmountTotal) ? flexGroup_('ยอดรายการโปรหน้าคลีนิค', moneyFmt_(s.promoAmountTotal) + ' บาท', promoRows, '', { bg: cardBg }) : null,
+  nonZero_(s.supplierPayTotal) ? flexGroup_('รายการอื่นๆ', moneyFmt_(s.supplierPayTotal) + ' บาท', otherRows, '', { bg: otherBg }) : null,
   netGroup
-];
+].filter(Boolean);
 ?><?!= JSON.stringify({
   type: 'flex',
   // Round 19 item 1: ยอดสุทธิ reverted to meaning clinicNet again (see

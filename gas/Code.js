@@ -4608,6 +4608,7 @@ function receiveOrder(token, payload) {
     requireDateStr_(payload.date, 'วันที่รับของ');
     var got = {};
     (Array.isArray(payload.lines) ? payload.lines : []).forEach(function (l) { if (l && l.id) got[l.id] = l.qtyReceived; });
+    var notice = null;
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     try {
@@ -4631,14 +4632,17 @@ function receiveOrder(token, payload) {
         Status: 'received', StockApplied: 'TRUE', TotalAmount: round2_(total), ReceivedDate: payload.date,
         ReceivedBy: session.name || session.username, ReceivedAt: nowStr_(), ReceiveNote: String(payload.note || '').trim().slice(0, 500)
       });
-      applyStockEffects_(session, {}, orderEffects_(obj, newLines, stockIdSet_()), 'ตรวจรับใบสั่งซื้อ ' + order.PoID + ' · ' + order.Supplier, 'purchase');
+      var moves = applyStockEffects_(session, {}, orderEffects_(obj, newLines, stockIdSet_()), 'ตรวจรับใบสั่งซื้อ ' + order.PoID + ' · ' + order.Supplier, 'purchase');
       newLines.forEach(function (l) { updateRowByIndex_(lineSheet, CONFIG.HEADERS.OrderLines, l._row, l); });
       updateRowByIndex_(orderSheet, CONFIG.HEADERS.Orders, order._row, obj);
       writeAudit_(session, 'RECEIVE', 'Order', order.PoID, order.Supplier + (short ? ' รับไม่ครบ ' + short + ' รายการ' : ' รับครบ'));
       bumpDashboardCacheVersion_();
+      notice = { title: 'เพิ่มสต๊อกคลีนิค', date: payload.date, by: session, moves: moves,
+        sub: ['ตรวจรับ ' + order.PoID + ' · ' + order.Supplier, short ? 'รับไม่ครบ ' + short + ' รายการ' : 'รับครบ', obj.ReceiveNote] };
       return { ok: true, data: mapOrderCheckOut_(obj, newLines, null) };
     } finally {
       lock.releaseLock();
+      if (notice) notifyStockChange_(notice); // pushed right away (one LINE message per admin); also counted in the daily สต๊อกที่มีการเปลี่ยนแปลงวันนี้
     }
   });
 }
@@ -6342,11 +6346,12 @@ function qtyPackText_(qty, x, bare) {
   return qtyFmt_(whole) + ' ' + x.packUnit + (rest ? ' ' + qtyFmt_(rest) + ' ' + unit : '');
 }
 function lineText_(text, o) { return Object.assign({ type: 'text', text: String(text === '' || text == null ? '-' : text), size: 'sm', color: '#1C2440', wrap: true }, o || {}); }
+/** sub: one line, or an array of lines (blank ones left out). */
 function lineHeader_(title, sub, color) {
+  var subs = [].concat(sub).filter(function (t) { return t != null && t !== ''; });
   return { type: 'box', layout: 'vertical', backgroundColor: color || '#1E3A72', paddingAll: '16px', contents: [
-    lineText_(title, { color: '#FFFFFF', weight: 'bold', size: 'lg' }),
-    lineText_(sub, { color: '#E2E6EE', size: 'xs', margin: 'sm' })
-  ] };
+    lineText_(title, { color: '#FFFFFF', weight: 'bold', size: 'lg' })
+  ].concat(subs.map(function (t, i) { return lineText_(t, { color: '#E2E6EE', size: 'xs', margin: i ? 'xs' : 'sm' }); })) };
 }
 /** {itemId, name, type, unit, min, before, after, delta} for one item whose stock went from `before` to `after`. */
 function stockMove_(item, before, after) {
@@ -6483,7 +6488,7 @@ function buildStockSearchMessage_(q, found, clinicName, url) {
   };
 }
 
-/** Flex: ปรับจำนวนสต๊อก — info {title, sub, date, by (session), moves:[stockMove_]}; each row: name (type) | +/− change | คงเหลือ. */
+/** Flex: ปรับจำนวนสต๊อก — info {title, sub (a line or lines), date, by (session), moves:[stockMove_ (+ detail)]}; each row: name (type · detail) | +/− change | คงเหลือ. */
 function buildStockChangeMessage_(info, clinicName) {
   var moves = info.moves || [], shown = moves.slice(0, LINE_ROWS_MAX_);
   var inQty = 0, outQty = 0;
@@ -6499,7 +6504,7 @@ function buildStockChangeMessage_(info, clinicName) {
     body.push({ type: 'box', layout: 'horizontal', margin: 'md', contents: [
       { type: 'box', layout: 'vertical', flex: 6, contents: [
         lineText_(m.name, { size: 'sm' }),
-        lineText_(STOCK_TYPE_TH_[m.type] + (low ? ' · ' + (m.after <= 0 ? 'หมด' : 'ต่ำกว่าขั้นต่ำ ' + qtyPackText_(m.min, m, true)) : ''), { size: 'xxs', color: low ? '#AC4143' : '#8891AC' })] },
+        lineText_(STOCK_TYPE_TH_[m.type] + (m.detail ? ' · ' + m.detail : '') + (low ? ' · ' + (m.after <= 0 ? 'หมด' : 'ต่ำกว่าขั้นต่ำ ' + qtyPackText_(m.min, m, true)) : ''), { size: 'xxs', color: low ? '#AC4143' : '#8891AC' })] },
       lineText_((m.delta > 0 ? '+' : (m.delta < 0 ? '−' : '')) + qtyPackText_(Math.abs(m.delta), m, true), { size: 'sm', weight: 'bold', align: 'end', flex: 3, color: m.delta > 0 ? '#357552' : (m.delta < 0 ? '#AC4143' : '#8891AC') }),
       lineText_(qtyPackText_(m.after, m), { size: 'sm', align: 'end', flex: 3, weight: 'bold', color: low ? '#AC4143' : '#1C2440' })
     ] });
@@ -6514,27 +6519,58 @@ function buildStockChangeMessage_(info, clinicName) {
     type: 'flex',
     altText: (clinicName || 'VALIN CLINIC') + ' ' + info.title + ' ' + moves.length + ' รายการ',
     contents: { type: 'bubble', size: 'mega',
-      header: lineHeader_(info.title, [info.sub, 'วันที่ ' + (info.date || todayStr_()), by ? 'โดย ' + by : ''].filter(Boolean).join(' · '), '#1E3A72'),
+      header: lineHeader_(info.title, [].concat(info.sub || []).concat(['วันที่ ' + (info.date || todayStr_()) + (by ? ' · โดย ' + by : '')]), '#1E3A72'),
       body: { type: 'box', layout: 'vertical', paddingAll: '16px', contents: body } }
   };
 }
 
+/** Pushes messages (max 5) to the admins with a LINE ID. Returns {sent, skipped}; never throws. */
+function pushLineToAdmins_(messages) {
+  try {
+    var channelToken = PropertiesService.getScriptProperties().getProperty(CONFIG.PROPS.LINE_CHANNEL_ACCESS_TOKEN);
+    if (!channelToken) return { sent: 0, skipped: 'ยังไม่ได้ตั้งค่า LINE' };
+    var targets = getLineAdminTargets_();
+    if (!targets.length) return { sent: 0, skipped: 'ยังไม่มีใครติ๊ก "รับข้อมูลผ่าน LINE" (พร้อม LINE ID)' };
+    var resp = UrlFetchApp.fetch('https://api.line.me/v2/bot/message/multicast', {
+      method: 'post', contentType: 'application/json', headers: { Authorization: 'Bearer ' + channelToken },
+      payload: JSON.stringify({ to: targets.map(function (t) { return t.lineId; }), messages: messages.slice(0, 5) }), muteHttpExceptions: true
+    });
+    if (resp.getResponseCode() >= 300) { console.error('LINE push failed: ' + resp.getContentText()); return { sent: 0, skipped: 'LINE ' + resp.getResponseCode() }; }
+    return { sent: targets.length };
+  } catch (e) {
+    console.error('LINE push error: ' + e);
+    return { sent: 0, skipped: String(e) };
+  }
+}
+/** After ตรวจรับใบสั่งซื้อ: tell the admins on LINE what came in (no-op without LINE set up; never throws). */
+function notifyStockChange_(info) {
+  try {
+    if (!info.moves || !info.moves.length) return;
+    pushLineToAdmins_([buildStockChangeMessage_(info, getClinicName_())]);
+  } catch (e) { console.error('notifyStockChange_: ' + e); }
+}
 /**
- * The day's stock changes from ปรับสต๊อก / อัพเดตสต๊อก / ตรวจรับใบสั่งซื้อ (saved that day, CreatedAt), one per item: [stockMove_] with the
- * day's net change and คงเหลือ = now. They go out once with the daily LINE summary instead of a push per save (LINE's monthly quota).
+ * The day's stock changes (StockLog rows saved that day, CreatedAt; not a new item's opening stock), one per item: [stockMove_] with the
+ * day's net change, คงเหลือ = now, and detail = the net per source — รับ (ตรวจรับใบสั่งซื้อ), ใช้ (บันทึกการรักษา / จัดยา-เบิกยา),
+ * ปรับ (ปรับ/อัพเดต/นำเข้าสต๊อก). They go out once with the daily LINE summary (LINE's monthly quota).
  */
 function dayStockMoves_(date) {
-  var kinds = { 'in': 1, out: 1, set: 1, update: 1, purchase: 1 }, net = {}, order = [];
+  var bucket = { purchase: 'รับ', record: 'ใช้', withdraw: 'ใช้' }, sum = {}, order = [];
   getRows_(getSheet_(CONFIG.SHEETS.STOCK_LOG)).forEach(function (l) {
-    if (dateStr_(l.CreatedAt) !== date || !kinds[l.Kind || 'update']) return;
-    if (!(l.ItemID in net)) { net[l.ItemID] = 0; order.push(l.ItemID); }
-    net[l.ItemID] += (Number(l.QtyIn) || 0) - (Number(l.QtyOut) || 0);
+    if (dateStr_(l.CreatedAt) !== date || l.Kind === 'opening') return;
+    var a = sum[l.ItemID];
+    if (!a) { a = sum[l.ItemID] = { net: 0, 'รับ': 0, 'ใช้': 0, 'ปรับ': 0 }; order.push(l.ItemID); }
+    var d = (Number(l.QtyIn) || 0) - (Number(l.QtyOut) || 0);
+    a.net += d;
+    a[bucket[l.Kind] || 'ปรับ'] += d;
   });
   var byId = {};
   getRows_(getSheet_(CONFIG.SHEETS.STOCK)).forEach(function (s) { byId[s.ItemID] = s; });
-  return order.filter(function (id) { return byId[id] && round2_(net[id]); }).map(function (id) {
-    var q = Number(byId[id].Qty) || 0;
-    return stockMove_(byId[id], q - net[id], q);
+  return order.filter(function (id) { return byId[id] && round2_(sum[id].net); }).map(function (id) {
+    var q = Number(byId[id].Qty) || 0, a = sum[id], m = stockMove_(byId[id], q - a.net, q);
+    m.detail = ['รับ', 'ใช้', 'ปรับ'].filter(function (k) { return round2_(a[k]); })
+      .map(function (k) { return k + ' ' + (a[k] > 0 ? '+' : '−') + qtyPackText_(Math.abs(round2_(a[k])), m, true); }).join(' · ');
+    return m;
   });
 }
 
@@ -6565,7 +6601,7 @@ function sendLineDailySummary(token, dateStr) {
     try { messages.push(buildLowStockMessage_(lowStockItems_(), clinicName, stockLinkSafe_())); } catch (e) { console.error('low-stock message: ' + e); } // the summary still goes
     try {
       var moves = dayStockMoves_(date);
-      if (moves.length) messages.push(buildStockChangeMessage_({ title: 'สต๊อกคลีนิคที่ปรับวันนี้', sub: 'ปรับ/อัพเดตสต๊อก · ตรวจรับใบสั่งซื้อ', date: date, moves: moves }, clinicName));
+      if (moves.length) messages.push(buildStockChangeMessage_({ title: 'สต๊อกที่มีการเปลี่ยนแปลงวันนี้', sub: 'รับ = ตรวจรับใบสั่งซื้อ · ใช้ = การรักษา/จัดยา · ปรับ = ปรับ/อัพเดตสต๊อก', date: date, moves: moves }, clinicName));
     } catch (e) { console.error('stock-change message: ' + e); }
 
     // LINE's multicast endpoint accepts up to 500 user ids in a single
