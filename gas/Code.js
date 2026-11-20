@@ -4280,7 +4280,7 @@ function salesReportRows_(keep, src) {
       o.charged = !!o.charged;
       o.customerAmount = o.charged ? o.chargedAmount : 0;
       o.refundAmount = o.charged ? round2_(o.customerAmount - o.rateAmount) : 0;
-      o.saleAmount = o.charged ? o.chargedAmount : o.rateAmount; // the dashboard's รายได้จากเซลล์
+      o.saleAmount = o.charged ? o.chargedAmount : o.rateAmount; // คิดค่ายา: the customer's, else the เรทส่งคลีนิค (dashboard / backups use rateAmount = ยอดเรียกเก็บจากเซลล์)
       out.push(o);
     };
     (src ? src.withdrawals : getRows_(getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS))).forEach(function (w) {
@@ -4756,7 +4756,7 @@ function getDashboardData(token, opts) {
     var salesRows = salesReportRows_(function () { return true; });
     var periodSalesRows = salesRows.filter(function (o) { return o.date >= dateFrom && o.date <= dateTo; });
     var customerRevenue = periodRecords.reduce(function (s, r) { return s + recordTotalCollected_(r); }, 0) + arch.m.customerRevenue;
-    var salesIncome = periodSalesRows.reduce(function (s, o) { return s + o.saleAmount; }, 0) + arch.m.salesIncome;
+    var salesIncome = periodSalesRows.reduce(function (s, o) { return s + o.rateAmount; }, 0) + arch.m.salesIncome;
     var totalRevenue = round2_(customerRevenue + salesIncome);
     var expenseFromExpenses = periodExpenses.reduce(function (s, r) { return s + (Number(r.Amount) || 0); }, 0) + arch.expenseTotal;
     var expenseFromOrders = periodOrders.reduce(function (s, r) { return s + (Number(r.TotalAmount) || 0); }, 0) + arch.m.orders;
@@ -4782,7 +4782,7 @@ function getDashboardData(token, opts) {
     var monthlyRevenue = {}, monthlyExpense = {};
     months.forEach(function (m) { monthlyRevenue[m] = 0; monthlyExpense[m] = 0; });
     paidRecords.forEach(function (r) { var m = monthKey_(dateStr_(r.Date)); if (monthlyRevenue[m] !== undefined) monthlyRevenue[m] += recordTotalCollected_(r); });
-    salesRows.forEach(function (o) { var m = monthKey_(o.date); if (monthlyRevenue[m] !== undefined) monthlyRevenue[m] += o.saleAmount; });
+    salesRows.forEach(function (o) { var m = monthKey_(o.date); if (monthlyRevenue[m] !== undefined) monthlyRevenue[m] += o.rateAmount; });
     paidRecords.forEach(function (r) { var m = monthKey_(dateStr_(r.Date)); if (monthlyExpense[m] !== undefined) monthlyExpense[m] += (Number(r.DoctorShare) || 0) + (Number(r.SalesShare) || 0); });
     allExpenses.forEach(function (r) { var m = monthKey_(dateStr_(r.Date)); if (monthlyExpense[m] !== undefined) monthlyExpense[m] += Number(r.Amount) || 0; });
     allOrders.forEach(function (r) { var m = monthKey_(dateStr_(r.Date)); if (monthlyExpense[m] !== undefined) monthlyExpense[m] += Number(r.TotalAmount) || 0; });
@@ -7135,7 +7135,7 @@ function backupSummaryRows_(plan, backupId) {
   plan.move.Expenses.forEach(function (e) { add(dateStr_(e.Date), 'expense', e.Category || '', Number(e.Amount) || 0); });
   plan.move.Orders.forEach(function (o) { add(dateStr_(o.Date), 'orders', '', Number(o.TotalAmount) || 0); });
   salesReportRows_(function () { return true; }, { withdrawals: plan.move.MedWithdrawals, records: plan.move.Records }).forEach(function (o) {
-    add(o.date, 'salesIncome', '', o.saleAmount);
+    add(o.date, 'salesIncome', '', o.rateAmount);
   });
   return order.map(function (k) { return acc[k]; });
 }

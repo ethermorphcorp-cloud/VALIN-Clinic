@@ -447,6 +447,7 @@ body{background:transparent;background-image:
 .card,.panel,.side-panel{background:var(--glass);backdrop-filter:var(--blur);-webkit-backdrop-filter:var(--blur);border:1px solid var(--glass-border);box-shadow:var(--glass-shadow)}
 .card{border-radius:var(--r)}
 .card .card,.board-cols .card{backdrop-filter:none;-webkit-backdrop-filter:none;background:rgba(255,255,255,.74);box-shadow:0 2px 10px rgba(30,58,114,.06), inset 0 1px 0 rgba(255,255,255,.8)}
+.search-suggest-drop{background:rgba(255,255,255,.97)!important;backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px)} /* the search suggestions sit over the table: no table text showing through */
 .card,.board-cols .card{transition:box-shadow .2s ease,transform .2s ease}
 .board-cols .card:hover{box-shadow:0 10px 26px rgba(30,58,114,.12), inset 0 1px 0 rgba(255,255,255,.8);transform:translateY(-1px)}
 .side-panel,.panel{background:var(--glass-strong);backdrop-filter:blur(28px) saturate(160%);-webkit-backdrop-filter:blur(28px) saturate(160%);border-radius:22px 0 0 22px;border-right:none;box-shadow:-18px 0 50px rgba(15,27,61,.16)}
@@ -1470,27 +1471,96 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
   function expenseSuggestionsAsync(q) {
     return call('listExpenses', session.token, { page: 1, pageSize: 6, filters: { q: q } }, gsOpts({ quiet: true })).then(function (res) {
-      return ((res.data && res.data.items) || []).map(function (e) { return { id: e.id, primary: e.name, secondary: e.category + ' · ' + money(e.amount), commitText: e.name }; });
+      return listSuggest(((res.data && res.data.items) || []).map(function (e) { return { primary: e.name, secondary: e.category + ' · ' + money(e.amount) }; }), q, true);
     });
   }
   function orderSuggestionsAsync(q) {
     return call('listOrders', session.token, { page: 1, pageSize: 6, filters: { q: q } }, gsOpts({ quiet: true })).then(function (res) {
-      return ((res.data && res.data.items) || []).map(function (o) { return { id: o.id, primary: o.supplier, secondary: o.date + ' · ' + money(o.totalAmount), commitText: o.supplier }; });
+      return listSuggest(((res.data && res.data.items) || []).map(function (o) { return { primary: o.supplier, secondary: o.date + ' · ' + money(o.totalAmount) }; }), q, true);
+    });
+  }
+  /**
+   * Suggestions from a list already in memory: cands [{primary, secondary, match?, commitText?}] whose match text (default primary)
+   * holds q, one per primary, at most 8.
+   */
+  function listSuggest(cands, q, matched) { // matched: the server already matched them — only one per primary
+    var ql = String(q || '').trim().toLowerCase(), seen = {}, out = [];
+    cands.forEach(function (c) {
+      var key = String(c.primary || '');
+      if (!key || seen[key] || out.length >= 8 || (!matched && String(c.match || key).toLowerCase().indexOf(ql) < 0)) return;
+      seen[key] = 1;
+      out.push({ id: 's' + out.length, primary: key, secondary: c.secondary || '', commitText: c.commitText || key });
+    });
+    return out;
+  }
+  function boardSuggestions(q) {
+    var d = state.board.data;
+    if (!d) return null;
+    return listSuggest((d.columns.dispensed || []).map(function (c) {
+      return { primary: c.patientName, secondary: [c.hn ? 'HN ' + c.hn : '', c.phone].filter(Boolean).join(' · '), match: c.patientName + ' ' + c.phone + ' ' + c.hn };
+    }), q);
+  }
+  function procedureSuggestions(q) {
+    var L = state.stock.procedures;
+    if (!L) return null;
+    return listSuggest(L.map(function (p) { return { primary: p.name, secondary: p.category + ' · ' + money(p.price), match: p.name + ' ' + p.category }; }), q);
+  }
+  function depositSuggestions(q) {
+    var L = state.deposits.list;
+    if (!L) return null;
+    return listSuggest(L.map(function (x) { return { primary: x.patientName, secondary: (x.hn ? 'HN ' + x.hn + ' · ' : '') + 'คนไข้', match: x.patientName + ' ' + x.hn }; })
+      .concat(L.map(function (x) { return { primary: x.name, secondary: 'ยาฝาก' }; })), q);
+  }
+  function promotionSuggestions(q) {
+    var L = state.promotions.list;
+    if (!L) return null;
+    return listSuggest(L.map(function (p) { return { primary: p.name, secondary: money(p.price) }; }), q);
+  }
+  function purchaseCheckSuggestionsAsync(q) {
+    return call('listPurchaseChecks', session.token, { status: state.pcheck.tab, page: 1, q: q }, gsOpts({ quiet: true })).then(function (res) {
+      var cands = [];
+      ((res.data && res.data.items) || []).forEach(function (o) {
+        cands.push({ primary: o.id, secondary: 'เลขที่ใบสั่งซื้อ · ' + o.supplier + ' · ' + o.date });
+        cands.push({ primary: o.supplier, secondary: 'ผู้จำหน่าย' });
+        (o.lines || []).forEach(function (l) { cands.push({ primary: l.itemName, secondary: 'สินค้า · ' + o.id }); });
+      });
+      return listSuggest(cands, q);
     });
   }
   var SEARCH_SCOPES = {
     patients: { qPath: 'patients.q', suggestPath: 'patients.searchSuggest', placeholder: 'ค้นหาชื่อ เบอร์โทร หรือ HN...', suggestFn: patientLikeSuggestions, commit: function () { state.patients.page = 1; render(); } },
+    board: { qPath: 'board.q', suggestPath: 'board.searchSuggest', placeholder: 'ค้นหาชื่อ / เบอร์โทร / HN', suggestFn: boardSuggestions, commit: function () { render(); } },
+    procedures: { qPath: 'stock.procQ', suggestPath: 'stock.procSearchSuggest', placeholder: 'ค้นหาชื่อหัตถการ / หมวดหมู่...', suggestFn: procedureSuggestions, commit: function () { state.stock.procPage = 1; render(); } },
+    withdraw: { qPath: 'withdraw.q', suggestPath: 'withdraw.searchSuggest', placeholder: 'ค้นหาชื่อคนไข้ / เบอร์โทร / HN', suggestFn: patientLikeSuggestions, commit: function () { state.withdraw.page = 1; state.withdraw.reloading = true; render(); loadWithdrawals(); } },
+    deposits: { qPath: 'deposits.q', suggestPath: 'deposits.searchSuggest', placeholder: 'ค้นหาชื่อคนไข้ / HN / ชื่อยา', suggestFn: depositSuggestions, commit: function () { state.deposits.page = 1; render(); } },
+    pcheck: { qPath: 'pcheck.q', suggestPath: 'pcheck.searchSuggest', placeholder: 'ค้นหาเลขที่ / ผู้จำหน่าย / ชื่อสินค้า...', suggestFnAsync: purchaseCheckSuggestionsAsync, commit: function () { state.pcheck.page = 1; loadPurchaseChecks(); } },
+    promotions: { qPath: 'promotions.q', suggestPath: 'promotions.searchSuggest', placeholder: 'ค้นหาชื่อโปรโมชัน...', suggestFn: promotionSuggestions, commit: function () { state.promotions.page = 1; render(); } },
     records: { qPath: 'records.q', suggestPath: 'records.searchSuggest', placeholder: 'ค้นหาชื่อคนไข้/เบอร์โทร/HN...', suggestFn: patientLikeSuggestions, commit: function () { state.records.page = 1; loadRecords(); } },
     stock: { qPath: 'stock.q', suggestPath: 'stock.searchSuggest', placeholder: 'ค้นหาสินค้า...', suggestFn: stockSuggestions, commit: function () { state.stock.page = 1; loadStock(); } },
     expense: { qPath: 'expense.q', suggestPath: 'expense.searchSuggest', placeholder: 'ค้นหารายการ...', suggestFnAsync: expenseSuggestionsAsync, commit: function () { state.expense.page = 1; loadExpenses(); } },
     order: { qPath: 'expense.orderQ', suggestPath: 'expense.orderSearchSuggest', placeholder: 'ค้นหาผู้จำหน่าย/รายการสินค้า...', suggestFnAsync: orderSuggestionsAsync, commit: function () { state.expense.orderPage = 1; loadOrders(); } }
   };
   var searchSuggestSeq = 0; // guards a slow async suggestion response from clobbering a newer one
+  /**
+   * What is typed in each search box, kept apart from the filter the table uses (qPath), which only changes on a pick, Enter or
+   * clearing the box — so typing never filters / reloads the table. {text, base}: base is the filter at the time; when other code
+   * resets the filter (e.g. switching tabs) base no longer matches and the box shows the filter again.
+   */
+  var searchTyped = {};
+  function setSearchTyped(scope, text) { var sc = SEARCH_SCOPES[scope]; searchTyped[scope] = { text: text, base: getPath(state, sc.qPath) }; }
+  function commitSearch(scope, text) {
+    var sc = SEARCH_SCOPES[scope];
+    setPath(state, sc.qPath, text);
+    setSearchTyped(scope, text);
+    setPath(state, sc.suggestPath, []);
+    render();
+    sc.commit();
+  }
   var onListSearchInput = debounce(function (scope, q) {
     var sc = SEARCH_SCOPES[scope];
     if (!sc) return;
-    setPath(state, sc.qPath, q);
-    if (!q) { setPath(state, sc.suggestPath, []); render(); sc.commit(); return; }
+    setSearchTyped(scope, q);
+    if (!q) { commitSearch(scope, ''); return; }
     if (sc.suggestFnAsync) {
       var mySeq = ++searchSuggestSeq;
       sc.suggestFnAsync(q).then(function (items) {
@@ -1508,10 +1578,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (!sc) return;
     var item = (getPath(state, sc.suggestPath) || []).filter(function (x) { return String(x.id) === String(id); })[0];
     if (!item) return;
-    setPath(state, sc.qPath, item.commitText);
-    setPath(state, sc.suggestPath, []);
-    render();
-    sc.commit();
+    commitSearch(scope, item.commitText);
   }
   function closeSearchSuggest(scope) {
     var sc = SEARCH_SCOPES[scope];
@@ -1531,10 +1598,12 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
    *  (Round 15 item 4) — replaces the old load-on-every-keystroke boxes. */
   function searchScopeBoxHtml(scope, maxWidth) {
     var sc = SEARCH_SCOPES[scope];
-    var q = getPath(state, sc.qPath);
+    var q = getPath(state, sc.qPath), t = searchTyped[scope];
+    var shown = t && t.base === q ? t.text : q; // the typed text, unless the filter was changed elsewhere
     var suggest = getPath(state, sc.suggestPath);
+    // the id lets render() keep the caret in the box while the suggestions redraw
     return '<div data-search-scope="' + esc(scope) + '" style="position:relative;flex:1;min-width:180px' + (maxWidth ? ';max-width:' + maxWidth : '') + '">' +
-      searchInputHtml('', q, sc.placeholder, "window.__valin.onListSearchInput('" + scope + "', this.value)") +
+      searchInputHtml('searchBox_' + scope, shown, sc.placeholder, "window.__valin.onListSearchInput('" + scope + "', this.value)") +
       searchSuggestBoxHtml(scope, suggest) +
     '</div>';
   }
@@ -3925,7 +3994,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         groups[k].map(function (c) { return boardCard(c, st); }).join('');
     }).join('');
   }
-  var onBoardSearch = debounce(function (q) { state.board.q = q; render(); }, 150);
   /** แก้ไขประวัติคนไข้ from a board card whose patient is still "(รออัพเดท)": the history form, without the tag in the name. */
   function editPatientFromBoard(id) {
     call('getPatient', session.token, id).then(function (res) {
@@ -3956,7 +4024,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       var cards = d.columns[st], total = cards.length, bq = String(B.q || '').trim().toLowerCase();
       // จัดยาแล้ว lists everyone still waiting (any date) — it has a search by name / phone / HN.
       if (st === 'dispensed' && bq) cards = cards.filter(function (c) { return (String(c.patientName) + ' ' + String(c.phone) + ' ' + String(c.hn)).toLowerCase().indexOf(bq) > -1; });
-      var search = st === 'dispensed' ? '<div style="margin:0 0 10px">' + searchInputHtml('boardSearch', B.q, 'ค้นหาชื่อ / เบอร์โทร / HN', 'window.__valin.onBoardSearch(this.value)') + '</div>' : '';
+      var search = st === 'dispensed' ? '<div style="margin:0 0 10px">' + searchScopeBoxHtml('board') + '</div>' : '';
       return '<div class="board-col" id="boardCol-' + st + '">' +
         '<div class="board-col-head"><span style="width:10px;height:10px;border-radius:3px;flex:none;background:' + VISIT_STATUS_COLOR[st] + ';border:1px solid var(--border)"></span><b>' + esc(VISIT_STATUS_LABEL[st]) + '</b>' +
         '<span class="tag-badge" style="background:var(--surface)">' + (cards.length === total ? total : cards.length + '/' + total) + '</span></div>' +
@@ -4231,7 +4299,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function loadProcedures() {
     call('listProcedures', session.token).then(function (res) { state.stock.procedures = res.data; render(); });
   }
-  var onProcedureSearch = debounce(function (q) { state.stock.procQ = q; state.stock.procPage = 1; render(); }, 150);
   function proceduresView() {
     var L = state.stock.procedures, q = (state.stock.procQ || '').trim().toLowerCase();
     var filtered = L && q ? L.filter(function (p) { return (p.name + ' ' + p.category).toLowerCase().indexOf(q) > -1; }) : L;
@@ -4250,7 +4317,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         '</tr>';
       }).join(''));
     return '<div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
-        searchInputHtml('', state.stock.procQ, 'ค้นหาชื่อหัตถการ / หมวดหมู่...', 'window.__valin.onProcedureSearch(this.value)', 'max-width:280px') +
+        searchScopeBoxHtml('procedures', '280px') +
         (isAdmin() ? '<button class="btn btn-primary" data-action="new-procedure"><span class="ms">add</span> เพิ่มหัตถการ</button>' : '') +
       '</div>' +
       '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">' +
@@ -4561,9 +4628,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       state.withdraw.list = res.data; state.withdraw.reloading = false; render();
     });
   }
-  var onWithdrawSearch = debounce(function (q) {
-    state.withdraw.q = q; state.withdraw.page = 1; state.withdraw.reloading = true; render(); loadWithdrawals();
-  }, 300);
   /** The จัดการ menu of a withdrawal group: go to its record (or start one), and (admin) delete a line. */
   function wdGroupActions(g) {
     var acts = [];
@@ -4635,7 +4699,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var th = 'padding:10px 12px;white-space:nowrap';
     return '' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center">' +
-        searchInputHtml('wdSearch', state.withdraw.q, 'ค้นหาชื่อคนไข้ / เบอร์โทร / HN', 'window.__valin.onWithdrawSearch(this.value)', 'width:280px') +
+        searchScopeBoxHtml('withdraw', '280px') +
         '<button id="ddWdSales" class="btn" data-action="dd-wd-sales">' + esc((wdSalesOptions().filter(function (o) { return o.value === state.withdraw.salesId; })[0] || {}).label || 'เซลล์ทั้งหมด') + ' <span class="ms">expand_more</span></button>' +
         '<button id="ddWdStatus" class="btn" data-action="dd-wd-status">' + esc((statusOpts.filter(function (o) { return o.value === state.withdraw.visitStatus; })[0] || {}).label || 'สถานะการรักษาทั้งหมด') + ' <span class="ms">expand_more</span></button>' +
         '<button class="btn btn-primary" style="margin-left:auto" data-action="new-withdraw"><span class="ms">add</span> เบิกยา</button>' +
@@ -4825,7 +4889,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function loadDeposits() {
     call('listDeposits', session.token).then(function (res) { state.deposits.list = res.data; render(); });
   }
-  var onDepositSearch = debounce(function (q) { state.deposits.q = q; state.deposits.page = 1; render(); }, 150);
   var DEPOSIT_FILTERS = [
     { id: '', label: 'ทั้งหมด' }, { id: 'soon', label: 'ใกล้หมดอายุ (' + EXPIRY_SOON_DAYS + ' วัน)' },
     { id: 'expired', label: 'หมดอายุแล้ว' }, { id: 'none', label: 'ไม่ระบุวันหมดอายุ' }
@@ -4863,7 +4926,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         statCard('block', 'หมดอายุแล้ว', L ? esc(count('expired')) + ' <span style="font-size:15px;font-weight:500;color:var(--muted)">รายการ</span>' : skBar('64px', '26px')) +
       '</div>' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center">' +
-        searchInputHtml('', state.deposits.q, 'ค้นหาชื่อคนไข้ / HN / ชื่อยา', 'window.__valin.onDepositSearch(this.value)', 'width:280px') +
+        searchScopeBoxHtml('deposits', '280px') +
         '<div class="pill-group">' + DEPOSIT_FILTERS.map(function (o) {
           return '<button type="button" class="' + (f === o.id ? 'active' : '') + '" data-action="deposit-filter" data-arg="' + esc(o.id) + '">' + esc(o.label) + '</button>';
         }).join('') + '</div>' +
@@ -5217,11 +5280,11 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
           return out + '<tr style="background:' + soft + ';border-top:1px solid ' + line + ';font-weight:700"><td colspan="5" style="padding:7px 5px;text-align:left;white-space:nowrap">รวม ' + esc(b.salesName) + ' · ' + esc(b.date) + '</td>' + tdEmpty(true) + tdr(baht(b.rate), '#2E7D5B') + tdEmpty(true) +
             tdr(nonZeroAmt(b.customer) ? baht(b.customer) : '', ink) + tdr(nonZeroAmt(b.refund) ? baht(b.refund) : '', '#C0392B', true) + tdEmpty() + '</tr>';
         }).join('') + '</tbody>';
-      // ยอดเรียกเก็บจากเซลล์ = รวมเรทส่งคลีนิค, less ส่วนต่างคืนเซลล์ = ยอดเรียกเก็บสุทธิ (highlighted).
+      // ยอดเรียกเก็บจากเซลล์ (รวมเรทส่งคลีนิค) − ยอดเก็บเงินลูกค้า (รวมเก็บลูกค้า) = ยอดสุทธิ (highlighted; red when below 0).
       totals = [
         ['ยอดเรียกเก็บจากเซลล์ (บาท)', D.totalRate],
-        ['ส่วนต่างคืนเซลล์ (บาท)', D.totalRefund],
-        ['ยอดเรียกเก็บสุทธิ (บาท)', Math.round(((Number(D.totalRate) || 0) - (Number(D.totalRefund) || 0)) * 100) / 100]
+        ['ยอดเก็บเงินลูกค้า (บาท)', D.totalCustomer],
+        ['ยอดสุทธิ (บาท)', Math.round(((Number(D.totalRate) || 0) - (Number(D.totalCustomer) || 0)) * 100) / 100]
       ];
     } else {
       table = '<thead><tr>' + th('วันที่', false, '12%') + th('ชื่อคนไข้', false, '20%') + th('ชื่อเซลล์', false, '15%') + th('รายละเอียด (ตามใบเสร็จ)') + th('จำนวนเงิน', true, '14%') + '</tr></thead><tbody>' +
@@ -5237,7 +5300,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="width:340px;border:1px solid ' + line + ';border-radius:8px;overflow:hidden">' +
         totals.map(function (t, i) {
           var last = i === totals.length - 1;
-          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:' + (last ? '10px 14px;background:' + navy + ';color:#fff' : '8px 14px;font-size:11.5px') + '">' +
+          var lastBg = Math.round((Number(t[1]) || 0) * 100) < 0 ? '#C0392B' : navy; // a negative total (e.g. ยอดสุทธิ) shows in red
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:' + (last ? '10px 14px;background:' + lastBg + ';color:#fff' : '8px 14px;font-size:11.5px') + '">' +
             '<span style="font-size:' + (last ? '12px' : '11.5px') + (last ? '' : ';color:' + muted) + '">' + esc(t[0]) + '</span><span style="font-size:' + (last ? '17px' : '12px') + ';font-weight:700">' + baht(t[1]) + '</span></div>';
         }).join('') +
       '</div></div>';
@@ -5610,7 +5674,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (tab === state.pcheck.tab) return;
     var p = state.pcheck; p.tab = tab; p.page = 1; p.list = swrGet(pcheckKey()); render(); loadPurchaseChecks();
   }
-  var onPurchaseCheckSearch = debounce(function (q) { state.pcheck.q = q; state.pcheck.page = 1; loadPurchaseChecks(); }, 300);
   function purchaseCheckTemplate() {
     var p = state.pcheck, L = p.list, pending = p.tab === 'pending';
     var th = 'padding:10px 12px;white-space:nowrap';
@@ -5633,7 +5696,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       }).join(''));
     return tabBar([{ id: 'pending', label: 'รอตรวจรับ' + (p.pending ? ' (' + p.pending + ')' : '') }, { id: 'received', label: 'ตรวจรับแล้ว' }], p.tab, 'pcheck-tab') +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">' +
-        searchInputHtml('pcheckSearch', p.q, 'ค้นหาเลขที่ / ผู้จำหน่าย / ชื่อสินค้า...', 'window.__valin.onPurchaseCheckSearch(this.value)', 'max-width:300px') + '</div>' +
+        searchScopeBoxHtml('pcheck', '300px') + '</div>' +
       listCardWrap('<div style="overflow-x:auto"><table class="table" style="width:100%;border-collapse:collapse">' +
         '<thead><tr style="text-align:left;font-size:12px;color:var(--muted);background:var(--hover-bg)">' +
           '<th style="' + th + '">วันที่สั่ง</th><th style="' + th + '">ผู้จำหน่าย / เซลล์</th><th style="' + th + '">รายการสินค้า (จำนวนที่สั่ง)</th><th style="' + th + '">ผู้สร้าง</th><th style="' + th + '">สถานะ</th><th></th>' +
@@ -5713,11 +5776,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return '<span data-action="' + (action || 'toggle-promotion') + '" data-arg="' + esc(id) + '" role="button" title="' + (checked ? 'ปิดใช้งาน' : 'เปิดใช้งาน') + '" style="display:inline-block;width:38px;height:22px;border-radius:11px;cursor:pointer;position:relative;background:' + (checked ? 'var(--green)' : 'var(--border)') + ';transition:background .15s;vertical-align:middle">' +
       '<span style="position:absolute;top:2px;left:' + (checked ? '18px' : '2px') + ';width:18px;height:18px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(15,27,61,.3);transition:left .15s"></span></span>';
   }
-  // Round 15 item 5: promotions are already loaded whole (state.promotions.list
-  // is a full unpaginated array, unlike every other list page), so filtering
-  // is a plain instant client-side search — no server round-trip to shield
-  // against, unlike item 4's suggest-then-commit redesign.
-  var onPromotionSearch = debounce(function (q) { state.promotions.q = q; state.promotions.page = 1; render(); }, 150);
   function promotionsTemplate() {
     var L = state.promotions.list;
     var q = (state.promotions.q || '').trim().toLowerCase();
@@ -5739,7 +5797,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       }).join(''));
     return '' +
       '<div style="display:flex;justify-content:space-between;gap:10px;margin-bottom:14px;flex-wrap:wrap">' +
-        searchInputHtml('', state.promotions.q, 'ค้นหาชื่อโปรโมชัน...', 'window.__valin.onPromotionSearch(this.value)', 'max-width:280px') +
+        searchScopeBoxHtml('promotions', '280px') +
         (isAdmin() ? '<button class="btn btn-primary" data-action="new-promotion"><span class="ms">add</span> เพิ่มโปรโมชัน</button>' : '') +
       '</div>' +
       '<div class="card" style="border:1px solid var(--border);border-radius:var(--r);overflow:hidden">' +
@@ -7132,10 +7190,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var sc = SEARCH_SCOPES[wrap.getAttribute('data-search-scope')];
     if (!sc) return;
     ev.preventDefault();
-    setPath(state, sc.qPath, ev.target.value);
-    setPath(state, sc.suggestPath, []);
-    render();
-    sc.commit();
+    commitSearch(wrap.getAttribute('data-search-scope'), ev.target.value);
   });
 
   /* Icon-only buttons (✎ / 🗑 / × ...) get a name from their icon: read out by screen readers and shown as a tooltip on hover.
@@ -7159,8 +7214,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* Expose the handful of functions used by inline oninput= attributes (search boxes need live typing without full re-render churn on every keystroke going through data-action). */
   window.__valin = {
     onListSearchInput: onListSearchInput,
-    onPatientSuggestSearch: onPatientSuggestSearch, onPromotionSearch: onPromotionSearch, onWithdrawSearch: onWithdrawSearch,
-    onProcedureSearch: onProcedureSearch, onDepositSearch: onDepositSearch, onBoardSearch: onBoardSearch, onPurchaseCheckSearch: onPurchaseCheckSearch
+    onPatientSuggestSearch: onPatientSuggestSearch
   };
 
   /* ---------------------------------------------------------------- */
