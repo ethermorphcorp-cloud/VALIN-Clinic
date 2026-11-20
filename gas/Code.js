@@ -3016,7 +3016,9 @@ function medicineLines_(record, ctx) {
         // qtyDispensed is in the stock's smallest unit; unitPrice is per pack when the line has one (1 กล่อง = 5 ขวด -> 5 ขวด = 1 กล่อง).
         var pk = linePack_(it, ctx.stockById[it.itemId]);
         o.charged = true;
-        o.unitPrice = requireNumber_(it.unitPrice || 0, 'ราคาต่อหน่วย' + line, { min: 0 });
+        // ราคาขายต่อหน่วย is typed by hand (not taken from Stock), so a line without one is refused: it would charge nothing.
+        if (it.unitPrice === '' || it.unitPrice == null || !(Number(it.unitPrice) > 0)) throw ValidationError_('กรุณากรอกราคาขายต่อหน่วย' + line);
+        o.unitPrice = requireNumber_(it.unitPrice, 'ราคาขายต่อหน่วย' + line, { min: 0 });
         if (pk.size > 1) {
           o.packSize = pk.size; o.packUnit = pk.unit;
           o.smallPrice = optionalNumber_(it.smallPrice, 'ราคาต่อหน่วยย่อย' + line); // '' = pro rata
