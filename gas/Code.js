@@ -4271,11 +4271,16 @@ function salesReportRows_(keep, src) {
     var push = function (o) {
       o.unit = (stockById[o.itemId] || {}).Unit || '';
       o.costAmount = round2_(o.qty * o.unitCost);
-      // รายการซื้อยาเพิ่มหน้าคลีนิค (คิดค่ายา): what the customer paid less the ราคาทุน goes back to the sales person.
+      // ราคาเรทส่งคลีนิค: the stock's ราคาขาย now (per pack + per small unit, tier by whole packs), on every line.
+      var rate = stockSaleRate_(stockById[o.itemId], o.qty);
+      o.packSize = rate.size; o.packUnit = rate.packUnit; o.ratePrice = rate.price; o.rateSmall = rate.small; o.rateAmount = rate.amount;
+      // รายการซื้อยาเพิ่มหน้าคลีนิค (คิดค่ายา): what the customer paid (the price typed on the record) less the เรทส่งคลีนิค goes back
+      // to the sales person. Other lines have no เก็บลูกค้า / ส่วนต่าง.
       o.chargedAmount = o.chargedAmount || 0;
-      o.saleAmount = o.chargedAmount > 0 ? o.chargedAmount : stockSaleAmount_(stockById[o.itemId], o.qty); // เรียกเก็บจากเซลล์
-      o.unitSale = o.qty ? round2_(o.saleAmount / o.qty) : 0; // ราคาขาย/หน่วย (หน่วยย่อย; with a pack, the whole-pack + remainder average)
-      o.refundAmount = o.chargedAmount > 0 ? round2_(o.chargedAmount - o.costAmount) : 0;
+      o.charged = !!o.charged;
+      o.customerAmount = o.charged ? o.chargedAmount : 0;
+      o.refundAmount = o.charged ? round2_(o.customerAmount - o.rateAmount) : 0;
+      o.saleAmount = o.charged ? o.chargedAmount : o.rateAmount; // the dashboard's รายได้จากเซลล์
       out.push(o);
     };
     (src ? src.withdrawals : getRows_(getSheet_(CONFIG.SHEETS.MED_WITHDRAWALS))).forEach(function (w) {
@@ -4292,10 +4297,14 @@ function salesReportRows_(keep, src) {
       parseLineItems_(r.MedicineJSON).forEach(function (l) {
         if (!('qtyDispensed' in l) || !l.itemId) return;
         var s = stockById[l.itemId] || {};
+        var chg = isChargedMedLine_(l), lp = chg ? linePack_(l, s) : null, cp = chg ? Number(l.unitPrice) || 0 : 0;
         push({
           date: d, sortKey: String(r.CreatedAt), patientName: r.PatientName, salesId: r.SalesID || '', salesName: r.SalesName || '', itemId: l.itemId, itemName: l.name,
           qty: Number(l.qtyDispensed) || 0, unitCost: l.unitCost != null ? snapUnitCost_(l.unitCost, s) : stockUnitCost_(s),
-          chargedAmount: isChargedMedLine_(l) ? Number(l.amount) || 0 : 0,
+          charged: chg, chargedAmount: chg ? Number(l.amount) || 0 : 0,
+          // เก็บลูกค้า/หน่วย as typed on the record: per pack (the line's own pack) + per small unit (blank = pack price ÷ size)
+          customerPackSize: chg ? lp.size : 1, customerPackUnit: chg ? lp.unit : '', customerPrice: cp,
+          customerSmall: chg && lp.size > 1 ? round2_(l.smallPrice === '' || l.smallPrice == null ? cp / lp.size : Number(l.smallPrice) || 0) : cp,
           remark: (isChargedMedLine_(l) ? 'ซื้อเพิ่มหน้าคลีนิค (คิดค่ายา)' : 'ซื้อเพิ่มหน้าคลีนิค (ไม่คิดค่ายา)') + ' · บันทึกการรักษา ' + r.RID
         });
       });
@@ -4321,13 +4330,16 @@ function getSalesReport(token, opts) {
     var bySales = {}, order = [];
     out.forEach(function (o) {
       var key = o.salesId || o.salesName || '-';
-      if (!bySales[key]) { bySales[key] = { salesId: o.salesId, salesName: o.salesName || '-', qty: 0, sale: 0, refund: 0 }; order.push(key); }
-      bySales[key].qty = round2_(bySales[key].qty + o.qty);
-      bySales[key].sale = round2_(bySales[key].sale + o.saleAmount);
-      bySales[key].refund = round2_(bySales[key].refund + o.refundAmount);
+      if (!bySales[key]) { bySales[key] = { salesId: o.salesId, salesName: o.salesName || '-', qty: 0, sale: 0, rate: 0, customer: 0, refund: 0 }; order.push(key); }
+      var b = bySales[key];
+      b.qty = round2_(b.qty + o.qty);
+      b.sale = round2_(b.sale + o.saleAmount);
+      b.rate = round2_(b.rate + o.rateAmount);
+      b.customer = round2_(b.customer + o.customerAmount);
+      b.refund = round2_(b.refund + o.refundAmount);
     });
     var sum = function (k) { return round2_(out.reduce(function (s, o) { return s + o[k]; }, 0)); };
-    return { ok: true, data: { rows: out, bySales: order.map(function (k) { return bySales[k]; }), totalQty: sum('qty'), totalSale: sum('saleAmount'), totalRefund: sum('refundAmount') } };
+    return { ok: true, data: { rows: out, bySales: order.map(function (k) { return bySales[k]; }), totalQty: sum('qty'), totalSale: sum('saleAmount'), totalRate: sum('rateAmount'), totalCustomer: sum('customerAmount'), totalRefund: sum('refundAmount') } };
   });
 }
 
@@ -6363,7 +6375,12 @@ function stockMove_(item, before, after) {
 function isLowStock_(qty, min) { return qty <= 0 || (min != null && qty < min); }
 
 /** ราคาขาย of qty small units of a stock item: the tier by whole packs (Price1..Price50; below the lowest set tier, that one), the rest at SmallPrice. */
-function stockSaleAmount_(s, qty) {
+function stockSaleAmount_(s, qty) { return stockSaleRate_(s, qty).amount; }
+/**
+ * The stock's ราคาขาย for `qty` small units, with the prices behind it: {size, packUnit, price (per pack, or per unit without one — the
+ * tier by whole packs), small (per small unit; SmallPrice, or price ÷ size when blank), amount}.
+ */
+function stockSaleRate_(s, qty) {
   var pk = stockPack_(s), packs = Math.floor(qty / pk.size + 1e-9), pick = null, first = null;
   STOCK_PRICE_TIERS.forEach(function (t) {
     var p = numOrNull_(s && s['Price' + t]);
@@ -6371,7 +6388,8 @@ function stockSaleAmount_(s, qty) {
     if (first == null) first = p;
     if (t <= packs) pick = p;
   });
-  return packAmount_(qty, pk.size, Number(pick != null ? pick : first) || 0, pk.size > 1 ? numOrNull_(s.SmallPrice) : null);
+  var price = Number(pick != null ? pick : first) || 0, small = pk.size > 1 ? numOrNull_(s.SmallPrice) : null;
+  return { size: pk.size, packUnit: pk.unit, price: price, small: pk.size > 1 ? round2_(small != null ? small : price / pk.size) : price, amount: packAmount_(qty, pk.size, price, small) };
 }
 /** Items whose stock is below their จำนวนขั้นต่ำ, or out — [{name, type, unit, qty, min}], most short first within each type. */
 function lowStockItems_() {
