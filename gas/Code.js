@@ -6379,8 +6379,8 @@ function renderStockPage_(token, q) {
 
 /* ---------------------------------------------------------------------
    LINE — stock messages (Flex bubbles built here, not in a template):
-   - สต๊อกใกล้หมด: every item whose stock is below its จำนวนขั้นต่ำ (or is out), by type. Sent right after the daily
-     summary, and in reply to the chat command "เช็ค stock ใกล้หมด".
+   - สต๊อกใกล้หมด: every item whose stock is below its จำนวนขั้นต่ำ (or is out), by type. Only in reply to the chat command
+     "เช็ค stock ใกล้หมด" (no longer sent with the daily summary).
    - ปรับจำนวนสต๊อก: what a จัดซื้อ / อัพเดตสต๊อก / ปรับสต๊อก just changed — each item's change and what is left. Pushed to
      the same admins as the daily summary, after the save (a LINE failure never fails the save).
    --------------------------------------------------------------------- */
@@ -6658,7 +6658,6 @@ function sendLineDailySummary(token, dateStr) {
     var clinicName = getClinicName_();
     var message = buildLineSummaryMessage_(summary, clinicName);
     var messages = [message];
-    try { messages.push(buildLowStockMessage_(lowStockItems_(), clinicName, stockLinkSafe_())); } catch (e) { console.error('low-stock message: ' + e); } // the summary still goes
     try {
       var moves = dayStockMoves_(date);
       if (moves.length) messages.push(buildStockChangeMessage_({ title: 'สต๊อกที่มีการเปลี่ยนแปลงวันนี้', sub: 'รับ = ตรวจรับใบสั่งซื้อ · ใช้ = การรักษา/จัดยา · ปรับ = ปรับ/อัพเดตสต๊อก', date: date, moves: moves }, clinicName));
@@ -6676,7 +6675,7 @@ function sendLineDailySummary(token, dateStr) {
     writeAudit_(session, 'LINE_PUSH', 'Summary', date, 'to ' + targetIds.length + ' admin(s): ' + targetNames.join(', '));
     return {
       ok: true,
-      message: 'ส่งสรุปยอดประจำวัน' + (messages.length > 1 ? ' และสต๊อกคลีนิค' : '') + 'ไปยัง LINE เรียบร้อยแล้ว (' + targetIds.length + ' คน: ' + targetNames.join(', ') + ')',
+      message: 'ส่งสรุปยอดประจำวัน' + (messages.length > 1 ? ' และสต๊อกที่มีการเปลี่ยนแปลง' : '') + 'ไปยัง LINE เรียบร้อยแล้ว (' + targetIds.length + ' คน: ' + targetNames.join(', ') + ')',
       recipientCount: targetIds.length,
       recipientNames: targetNames
     };
