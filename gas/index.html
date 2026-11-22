@@ -4038,9 +4038,40 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   function payRecordAction(id) {
     call('getRecord', session.token, id).then(function (res) { openPaymentModal(res.data); });
   }
+  // A bill can be paid with up to 3 methods (e.g. เงินสด 4,000 + โอนเงิน 500): d.payments = [{method, amount}]. With one line the
+  // whole bill is on it; with more, the last line's amount is what is left (shown, not typed).
+  var PAY_METHODS = ['เงินสด', 'บัตรเครดิต', 'โอนเงิน'];
   function openPaymentModal(rec) {
-    openModal('payment', { id: rec.id, rec: rec, paymentMethod: rec.paymentMethod || 'เงินสด', status: rec.status === 'unpaid' ? 'paid' : rec.status, printReceipt: true });
+    var pays = (rec.payments || []).filter(function (p) { return PAY_METHODS.indexOf(p.method) > -1; });
+    if (!pays.length) pays = [{ method: 'เงินสด', amount: '' }];
+    openModal('payment', { id: rec.id, rec: rec, payments: pays.map(function (p) { return { method: p.method, amount: p.amount }; }), status: rec.status === 'unpaid' ? 'paid' : rec.status, printReceipt: true });
   }
+  /** What is left for the last payment line: the bill minus the amounts typed on the others. */
+  function payRemainder() {
+    var d = state.draft, others = d.payments.slice(0, -1).reduce(function (sum, p) { return sum + (Number(p.amount) || 0); }, 0);
+    return Math.round(((Number(d.rec.totalCollected) || 0) - others) * 100) / 100;
+  }
+  function payHintHtml() {
+    if (state.draft.payments.length < 2) return '';
+    var rem = payRemainder();
+    if (rem > 0) return 'บรรทัดสุดท้าย = ยอดที่เหลือ (คำนวณให้อัตโนมัติ)';
+    return rem < 0 ? '<span style="color:var(--red-dark)">ยอดที่กรอกเกินยอดชำระ กรุณาลดยอด</span>' : 'กรอกยอดของบรรทัดบน ยอดที่เหลือจะอยู่ที่บรรทัดสุดท้าย';
+  }
+  /** Patches the last line's amount and the hint while an amount is typed (no render, so the caret stays). */
+  function updatePayRemainder() {
+    var rem = payRemainder(), el = document.getElementById('payRemain'), hint = document.getElementById('payHint');
+    if (el) { el.value = formatMoneyValue(rem); el.style.color = rem < 0 ? 'var(--red-dark)' : ''; }
+    if (hint) hint.innerHTML = payHintHtml();
+  }
+  function addPayLine() {
+    var d = state.draft, used = d.payments.map(function (p) { return p.method; });
+    var free = ['โอนเงิน', 'บัตรเครดิต', 'เงินสด'].filter(function (m) { return used.indexOf(m) === -1; })[0]; // โอนเงิน first: the usual second method
+    if (!free) return;
+    d.payments[d.payments.length - 1].amount = d.payments.length > 1 ? payRemainder() : (Number(d.rec.totalCollected) || 0); // the old last line keeps what it showed
+    d.payments.push({ method: free, amount: '' });
+    render();
+  }
+  function removePayLine(i) { state.draft.payments.splice(i, 1); render(); }
   function paymentModalBody() {
     var d = state.draft, r = d.rec;
     var row = function (label, amount, sub) {
@@ -4056,7 +4087,18 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (r.oralMedAmount) lines += row('ค่ายาทาน', r.oralMedAmount) + (r.oralMedItems || []).map(function (m) { return row((m.name || 'ยาทาน') + ' ×' + m.qty, m.amount, true); }).join('');
     if (r.useCanula && r.canulaAmount) lines += row('Canula (เข็มทู่)', r.canulaAmount) + (r.canulaItems || []).map(function (c) { return row((c.name || 'Canula') + (Number(c.qty) > 1 ? ' ×' + c.qty : ''), c.amount, true); }).join('');
     if (r.otherAmount) lines += row('รายการอื่นๆ', r.otherAmount) + (r.otherItems || []).map(function (o) { return row(o.label || 'อื่นๆ', o.amount, true); }).join('');
-    var payOpts = ['เงินสด', 'บัตรเครดิต', 'โอนเงิน'].map(function (p) { return { value: p, label: p }; });
+    var pays = d.payments, multi = pays.length > 1, rem = payRemainder();
+    var payLines = pays.map(function (p, i) {
+      var taken = pays.map(function (q) { return q.method; }).filter(function (m, j) { return j !== i; });
+      var opts = PAY_METHODS.filter(function (m) { return taken.indexOf(m) === -1; }).map(function (m) { return { value: m, label: m }; });
+      var amt = !multi ? '' : i === pays.length - 1
+        ? '<input id="payRemain" readonly tabindex="-1" value="' + esc(formatMoneyValue(rem)) + '" title="ยอดที่เหลือ" style="' + inputStyle + ';width:112px;flex:none;text-align:right;background:var(--hover-bg)' + (rem < 0 ? ';color:var(--red-dark)' : '') + '">'
+        : '<input type="text" inputmode="decimal" data-bind="payments.' + i + '.amount" value="' + esc(p.amount === '' || p.amount == null ? '' : formatMoneyValue(p.amount)) + '" placeholder="ยอด" style="' + inputStyle + ';width:112px;flex:none;text-align:right">';
+      return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px"><div style="flex:1;min-width:0">' + bindSelect('payments.' + i + '.method', opts) + '</div>' + amt +
+        (multi ? '<button class="btn" data-action="pay-remove-line" data-arg="' + i + '" style="padding:8px 10px;flex:none"><span class="ms">close</span></button>' : '') + '</div>';
+    }).join('') +
+      '<div id="payHint" style="font-size:11.5px;color:var(--muted);margin:-2px 0 6px">' + payHintHtml() + '</div>' +
+      (pays.length < PAY_METHODS.length ? '<button class="btn" data-action="pay-add-line" style="margin-bottom:12px"><span class="ms">add</span> เพิ่มวิธีชำระ</button>' : '');
     var statusOpts = [{ value: 'paid', label: 'ชำระแล้ว' }, { value: 'unpaid', label: 'รอชำระ' }, { value: 'cancelled', label: 'ยกเลิก' }];
     return modalHeader('ชำระเงิน') +
       '<div style="font-size:13px;margin:-8px 0 12px;color:var(--text-2)">' + esc(r.patientName) + ' · ' + esc(r.date) + (r.receiptNo ? ' · ใบเสร็จ ' + esc(r.receiptNo) : '') + '</div>' +
@@ -4064,16 +4106,20 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
         (lines || '<div style="font-size:12.5px;color:var(--muted);padding:6px 0">ไม่มีรายการที่คิดเงิน</div>') +
         '<div style="display:flex;justify-content:space-between;align-items:center;border-top:1px dashed var(--muted-4);margin-top:6px;padding-top:8px;font-weight:700;font-size:15px;color:var(--accent-hover)"><span>ยอดชำระ</span><span>' + money(r.totalCollected) + '</span></div>' +
       '</div>' +
-      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 12px">' +
-        field('วิธีการชำระเงิน', bindSelect('paymentMethod', payOpts)) +
-        field('สถานะการชำระเงิน', bindSelect('status', statusOpts)) +
-      '</div>' +
+      field('สถานะการชำระเงิน', bindSelect('status', statusOpts)) +
+      (d.status === 'paid' ? field('วิธีการชำระเงิน' + (multi ? ' (แบ่งชำระ)' : ''), payLines) : '') +
       '<div style="display:flex;align-items:center;gap:8px">' + bindInput('printReceipt', 'checkbox') + '<label style="font-size:13px">พิมพ์ใบเสร็จหลังบันทึก (เมื่อชำระแล้ว)</label></div>' +
       saveBtn('ยืนยัน');
   }
   function savePaymentModal() {
     var d = state.draft;
-    call('payRecord', session.token, d.id, { status: d.status, paymentMethod: d.paymentMethod }).then(function () {
+    var payload = { status: d.status, paymentMethod: d.payments[0].method };
+    if (d.status === 'paid' && d.payments.length > 1) {
+      var rem = payRemainder();
+      if (!(rem > 0) || d.payments.slice(0, -1).some(function (p) { return !(Number(p.amount) > 0); })) { toast('error', 'กรุณากรอกยอดของแต่ละวิธีชำระให้ครบ (มากกว่า 0) และรวมกันเท่ากับยอดชำระ'); return; }
+      payload.payments = d.payments.map(function (p, i) { return { method: p.method, amount: i === d.payments.length - 1 ? rem : Number(p.amount) }; });
+    }
+    call('payRecord', session.token, d.id, payload).then(function () {
       toast('success', d.status === 'paid' ? 'บันทึกการชำระเงินแล้ว' : 'บันทึกสถานะแล้ว');
       closeModal();
       afterRecordWrite();
@@ -5025,7 +5071,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* ================================================================== */
   /* รายงาน (admin) — รายงานรายวัน (one row per treatment record, as on   */
   /* its receipt) and รายงานรายเซลล์ (one row per ยา sold: ทุน / ขาย /     */
-  /* ส่วนต่าง). The PDF is rendered in the browser by html2pdf.js from the  */
+  /* ส่วนต่าง). The PDF is rendered in the browser (html2canvas + jsPDF) from the */
   /* same rows, so Thai text comes out exactly as on screen.              */
   /* ================================================================== */
   var REPORT_TABS = [{ id: 'daily', label: 'รายงานรายวัน' }, { id: 'sales', label: 'รายงานรายเซลล์' }];
@@ -5189,22 +5235,59 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   }
 
   /* ---- PDF ---- */
-  var html2pdfLoading = null;
-  function loadHtml2Pdf() {
-    if (window.html2pdf) return Promise.resolve();
-    if (!html2pdfLoading) {
-      html2pdfLoading = new Promise(function (resolve, reject) {
-        var s = document.createElement('script');
-        s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
-        s.onload = function () { resolve(); };
-        s.onerror = function () { html2pdfLoading = null; reject(new Error('โหลดตัวสร้าง PDF ไม่สำเร็จ')); };
-        document.head.appendChild(s);
-      });
+  // html2canvas + jsPDF, loaded on first use (not html2pdf: it captures the whole report on one tall canvas, which goes past
+  // iPhone / iPad Safari's canvas size limit and comes out as a blank PDF).
+  var pdfLibsLoading = null;
+  function loadPdfLibs() {
+    if (window.html2canvas && window.jspdf) return Promise.resolve();
+    if (!pdfLibsLoading) {
+      var one = function (ok, src) {
+        return ok ? null : new Promise(function (resolve, reject) {
+          var s = document.createElement('script');
+          s.src = src;
+          s.onload = function () { resolve(); };
+          s.onerror = function () { reject(new Error('โหลดตัวสร้าง PDF ไม่สำเร็จ')); };
+          document.head.appendChild(s);
+        });
+      };
+      pdfLibsLoading = Promise.all([
+        one(window.html2canvas, 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js'),
+        one(window.jspdf, 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js')
+      ]).catch(function (e) { pdfLibsLoading = null; throw e; });
     }
-    return html2pdfLoading;
+    return pdfLibsLoading;
   }
   // Page width in px: A4 portrait.
   function reportPdfWidth() { return 794; }
+  var PDF_PAGE_H = Math.floor(794 * 297 / 210); // A4 page height at that width
+  /**
+   * Cuts the laid-out report (reportPdfHtml's element, in the DOM) into A4 page elements: a row is never cut in two,
+   * every page repeats the table header, the clinic heading is on page 1 and the totals on the last page.
+   */
+  function reportPdfPages(root) {
+    var table = root.querySelector('table'), totals = table.nextElementSibling, rows = [].slice.call(table.tBodies[0].rows);
+    var box = function (el) { return el.getBoundingClientRect(); };
+    var theadH = box(table.tHead).height, totalsH = box(totals).bottom - box(table).bottom;
+    var padTop = 36, limit = PDF_PAGE_H - 24; // root padding top / room kept at the bottom
+    var ranges = [], start = 0, y = box(table).top - box(root).top + theadH;
+    rows.forEach(function (r, i) {
+      var h = box(r).height;
+      if (i > start && y + h > limit) { ranges.push([start, i]); start = i; y = padTop + theadH; }
+      y += h;
+    });
+    ranges.push([start, rows.length]);
+    if (y + totalsH > limit) ranges.push([rows.length, rows.length]); // the totals on a page of their own
+    return ranges.map(function (rg, p) {
+      var el = root.cloneNode(true), t = el.querySelector('table');
+      el.style.height = PDF_PAGE_H + 'px';
+      el.style.overflow = 'hidden';
+      if (p > 0) while (t.previousElementSibling) t.previousElementSibling.remove(); // heading: page 1 only
+      if (p < ranges.length - 1) t.nextElementSibling.remove();                      // totals: last page only
+      if (rg[0] === rg[1]) t.remove();
+      else [].slice.call(t.tBodies[0].rows).forEach(function (r, i) { if (i < rg[0] || i >= rg[1]) r.remove(); });
+      return el;
+    });
+  }
   /**
    * The report file:
    *   [clinic header]                     [Print date]
@@ -5337,7 +5420,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       filename = 'รายงานรายเซลล์-' + block.salesName + '-' + block.date + '.pdf';
     }
     setLoading(true, true, 'กำลังเตรียมรายงาน...');
-    loadHtml2Pdf().catch(function () { /* retried on download */ }); // warm up while the user looks at the preview
+    loadPdfLibs().catch(function () { /* retried on download */ }); // warm up while the user looks at the preview
     ensureClinicLogo().then(function () {
       setLoading(false, true);
       rp.preview = { kind: rp.dataTab, data: D, filename: filename, scope: scope };
@@ -5386,23 +5469,32 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     busyStart('report-pdf-download|');
     var finish = function () { busyEnd('report-pdf-download|'); };
     setLoading(true, true, 'กำลังสร้างไฟล์ PDF...');
-    Promise.all([loadHtml2Pdf(), ensureClinicLogo()]).then(function () {
-      // Off-screen but laid out (html2canvas can't capture display:none).
-      var holder = document.createElement('div');
-      holder.style.cssText = 'position:fixed;left:-10000px;top:0;z-index:-1';
+    var holder = document.createElement('div');
+    Promise.all([loadPdfLibs(), ensureClinicLogo()]).then(function () {
+      // Laid out (html2canvas can't capture display:none) at the top-left of the viewport but invisible. Captured with
+      // scroll 0 so the position is the same in html2canvas's copy of the page (iOS Safari shifts that copy when scrolled).
+      holder.style.cssText = 'position:fixed;left:0;top:0;width:' + reportPdfWidth(p.kind) + 'px;opacity:0;pointer-events:none;z-index:-1';
       holder.innerHTML = reportPdfHtml(p.kind, p.data, p.scope);
       document.body.appendChild(holder);
-      var done = function () { holder.remove(); setLoading(false, true); finish(); closePdfPreview(); };
-      return window.html2pdf().set({
-        // A4 in mm; the page is scaled to the paper width.
-        margin: [0, 0, 8, 0], filename: p.filename,
-        image: { type: 'jpeg', quality: 0.96 },
-        html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff' },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        // Table rows are never split across pages.
-        pagebreak: { mode: ['css', 'legacy'], avoid: ['tr'] }
-      }).from(holder.firstChild).save().then(done, function (e) { holder.remove(); setLoading(false, true); throw e; });
-    }).catch(function (e) { setLoading(false); finish(); toast('error', (e && e.message) || 'สร้าง PDF ไม่สำเร็จ'); });
+      var full = holder.firstChild, pages = reportPdfPages(full);
+      full.style.display = 'none';
+      var pdf = new window.jspdf.jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+      // One page at a time on its own canvas (~1600×2250 px), freed straight after: Safari caps canvas size and total canvas memory.
+      return pages.reduce(function (chain, page, i) {
+        return chain.then(function () {
+          holder.appendChild(page);
+          return window.html2canvas(page, { scale: 2, useCORS: true, backgroundColor: '#ffffff', scrollX: 0, scrollY: 0, logging: false });
+        }).then(function (canvas) {
+          if (i > 0) pdf.addPage();
+          pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, 210, 297);
+          canvas.width = canvas.height = 0;
+          page.remove();
+        });
+      }, Promise.resolve()).then(function () {
+        pdf.save(p.filename);
+        holder.remove(); setLoading(false, true); finish(); closePdfPreview();
+      });
+    }).catch(function (e) { holder.remove(); setLoading(false); finish(); toast('error', (e && e.message) || 'สร้าง PDF ไม่สำเร็จ'); });
   }
 
   /* ================================================================== */
@@ -6824,6 +6916,8 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'remove-medicine-row': removeMedicineRow(Number(arg)); break;
       case 'add-other-row': addOtherRow(); break;
       case 'remove-other-row': removeOtherRow(Number(arg)); break;
+      case 'pay-add-line': addPayLine(); break;
+      case 'pay-remove-line': removePayLine(Number(arg)); break;
       case 'pick-opd-photo': pickOpdPhoto(); break;
       case 'remove-opd-photo': removeOpdPhoto(); break;
       case 'new-stock': newStockModal(); break;
@@ -6974,6 +7068,13 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     if (el.type === 'number' && el.value === '' && el.hasAttribute('data-blank-ok')) val = '';
     setPath(state.draft, bindPath, val);
     // จัดซื้อ: a line name matching a stock item links it (itemId) and takes that item's หมวดหมู่ — patched in place, no render.
+    // ชำระเงิน: an amount updates the last line's ยอดที่เหลือ in place; a method change redraws the lists (each method once);
+    // a status change shows / hides the methods.
+    if (state.modal && state.modal.type === 'payment') {
+      if (/^payments\.\d+\.amount$/.test(bindPath)) updatePayRemainder();
+      else if (/^payments\.\d+\.method$/.test(bindPath) || bindPath === 'status') render();
+      return;
+    }
     var orderAmt = state.modal && state.modal.type === 'order' && bindPath.match(/^lines\.(\d+)\.(qty|unitPrice)$/);
     if (orderAmt) {
       var amtEl = document.getElementById('orderLineAmt' + orderAmt[1]);

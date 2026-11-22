@@ -237,7 +237,7 @@ var CONFIG = {
     // ClinicShare is now everything collected (incl. ยาเบิกเพิ่ม and
     // รายการอื่นๆ) minus the sales and doctor shares — there is no separate
     // supplier share any more (SupplierPayAmount is still written, unused).
-    Records: ['RID', 'Date', 'PatientID', 'PatientName', 'Phone', 'ServiceCategory', 'Detail', 'DoctorID', 'DoctorName', 'SalesID', 'SalesName', 'PaymentMethod', 'SuppliesJSON', 'UseCanula', 'CanulaAmount', 'Amount', 'Status', 'ReceiptNo', 'Note', 'CreatedBy', 'CreatedAt', 'UpdatedAt', 'OtherAmount', 'SalesCommissionPct', 'SalesShare', 'DoctorCommissionPct', 'DoctorShareRaw', 'DoctorShare', 'DoctorShareNote', 'ClinicShare', 'VisitStatus', 'UsePromo', 'PromoJSON', 'PromoAmount', 'UseMedicine', 'MedicineJSON', 'MedicineAmount', 'UseOther', 'OtherItemsJSON', 'SupplierPayAmount', 'OpdImageFileId', 'UseSupplies', 'UseOwnMed', 'OwnMedJSON', 'UseDepositUse', 'DepositUseJSON', 'UseMessenger', 'MessengerJSON', 'StockApplied', 'UseProcedure', 'ProcedureJSON', 'DoctorSharesJSON', 'WithdrawJSON', 'QueueDate', 'QueueDoctor', 'QueuePay', 'VisitDoctorID', 'VisitDoctorName', 'CanulaJSON', 'UseOralMed', 'OralMedJSON', 'OralMedAmount'],
+    Records: ['RID', 'Date', 'PatientID', 'PatientName', 'Phone', 'ServiceCategory', 'Detail', 'DoctorID', 'DoctorName', 'SalesID', 'SalesName', 'PaymentMethod', 'SuppliesJSON', 'UseCanula', 'CanulaAmount', 'Amount', 'Status', 'ReceiptNo', 'Note', 'CreatedBy', 'CreatedAt', 'UpdatedAt', 'OtherAmount', 'SalesCommissionPct', 'SalesShare', 'DoctorCommissionPct', 'DoctorShareRaw', 'DoctorShare', 'DoctorShareNote', 'ClinicShare', 'VisitStatus', 'UsePromo', 'PromoJSON', 'PromoAmount', 'UseMedicine', 'MedicineJSON', 'MedicineAmount', 'UseOther', 'OtherItemsJSON', 'SupplierPayAmount', 'OpdImageFileId', 'UseSupplies', 'UseOwnMed', 'OwnMedJSON', 'UseDepositUse', 'DepositUseJSON', 'UseMessenger', 'MessengerJSON', 'StockApplied', 'UseProcedure', 'ProcedureJSON', 'DoctorSharesJSON', 'WithdrawJSON', 'QueueDate', 'QueueDoctor', 'QueuePay', 'VisitDoctorID', 'VisitDoctorName', 'CanulaJSON', 'UseOralMed', 'OralMedJSON', 'OralMedAmount', 'PaymentJSON'],
     // UseOralMed/OralMedJSON/OralMedAmount: รายการจ่ายยาทาน — lines picked from the รายการยาทาน stock (StockType 'oral'), each
     // {itemId, name, qty, unit, unitPrice, amount = qty × unitPrice}; charged in the ยอดรับชำระ (recordCollected_) and taken
     // out of Stock (recordStockEffects_). OralMedAmount is their sum.
@@ -2480,7 +2480,7 @@ function mapRecordOut_(r) {
   return {
     id: r.RID, date: dateStr_(r.Date), patientId: r.PatientID, patientName: r.PatientName, phone: r.Phone,
     serviceCategory: r.ServiceCategory, detail: r.Detail, doctorId: r.DoctorID, doctorName: r.DoctorName,
-    salesId: r.SalesID, salesName: r.SalesName, paymentMethod: r.PaymentMethod,
+    salesId: r.SalesID, salesName: r.SalesName, paymentMethod: r.PaymentMethod, payments: recordPayments_(r, collected),
     supplies: parseSupplies_(r.SuppliesJSON), useCanula: useCanula,
     // Records saved before UseSupplies existed have a blank flag — treat any
     // supplies they already carry as checked so editing them keeps the list.
@@ -2575,6 +2575,22 @@ function round2_(n) {
 }
 
 /** What the patient pays for one Records row: หัตถการ + โปร + canula + ซื้อยาเพิ่ม (คิดค่ายา) + จ่ายยาทาน + รายการอื่นๆ. */
+// PaymentJSON: a bill paid with more than one method, [{method, amount}] (PaymentMethod then reads e.g. "เงินสด 4,000 + โอนเงิน 500").
+// Blank when paid with one method: the whole bill is on PaymentMethod.
+var PAY_METHODS_ = ['เงินสด', 'บัตรเครดิต', 'โอนเงิน'];
+/** The bill split by payment method, [{method, amount}]; if the bill changed after paying, the last method takes the difference. */
+function recordPayments_(r, collected) {
+  var list = parseLineItems_(r.PaymentJSON).filter(function (p) { return p && p.method; });
+  if (list.length < 2) return r.PaymentMethod ? [{ method: String(r.PaymentMethod), amount: collected }] : [];
+  var out = list.map(function (p) { return { method: String(p.method), amount: round2_(Number(p.amount) || 0) }; });
+  var others = out.slice(0, -1).reduce(function (sum, p) { return sum + p.amount; }, 0);
+  out[out.length - 1].amount = round2_(collected - others);
+  return out;
+}
+function payLabel_(list) {
+  return list.map(function (p) { return p.method + ' ' + Number(p.amount).toLocaleString('en-US', { maximumFractionDigits: 2 }); }).join(' + ');
+}
+
 function recordCollected_(r) {
   var canula = isTrue_(r.UseCanula) ? (Number(r.CanulaAmount) || 0) : 0;
   return round2_((Number(r.Amount) || 0) + (Number(r.PromoAmount) || 0) + canula + (Number(r.MedicineAmount) || 0) + (Number(r.OralMedAmount) || 0) + (Number(r.OtherAmount) || 0));
@@ -2850,9 +2866,11 @@ function computeDailySummaryDetail_(dateStr) {
     promoAmountTotal += promo;
     medicineAmountTotal += medicine;
     clinicNet += recordClinicShare_(r);
-    if (r.PaymentMethod === 'เงินสด') cashAmount += collected;
-    else if (r.PaymentMethod === 'โอนเงิน') transferAmount += collected;
-    else if (r.PaymentMethod === 'บัตรเครดิต') cardAmount += collected;
+    recordPayments_(r, collected).forEach(function (p) {
+      if (p.method === 'เงินสด') cashAmount += p.amount;
+      else if (p.method === 'โอนเงิน') transferAmount += p.amount;
+      else if (p.method === 'บัตรเครดิต') cardAmount += p.amount;
+    });
     recordDoctorShares_(r).forEach(function (d) {
       if (!doctorMap[d.doctorId]) doctorMap[d.doctorId] = { name: d.name, amount: 0, topped: false };
       doctorMap[d.doctorId].amount += Number(d.share) || 0;
@@ -3759,7 +3777,8 @@ function issueReceipt(token, rid) {
 
 /**
  * ขั้นตอนชำระเงิน — the last step of a treatment record. payload:
- * {status: 'paid'|'unpaid'|'cancelled', paymentMethod}. Moving into or out of
+ * {status: 'paid'|'unpaid'|'cancelled', paymentMethod, payments?: [{method, amount}] (2+ methods, adding up to the
+ * bill)}. Only a payment marked paid changes the method. Moving into or out of
  * ยกเลิก changes the doctor's daily-minimum group, so that is recomputed.
  */
 function payRecord(token, rid, payload) {
@@ -3768,7 +3787,8 @@ function payRecord(token, rid, payload) {
     payload = payload || {};
     var status = payload.status || 'paid';
     if (['paid', 'unpaid', 'cancelled'].indexOf(status) === -1) throw ValidationError_('สถานะการชำระเงินไม่ถูกต้อง');
-    if (status === 'paid') requireFields_(payload, { paymentMethod: 'วิธีชำระเงิน' });
+    var split = (Array.isArray(payload.payments) ? payload.payments : []).filter(function (p) { return p && p.method; });
+    if (status === 'paid' && split.length < 2) requireFields_(payload, { paymentMethod: 'วิธีชำระเงิน' });
     var lock = LockService.getScriptLock();
     lock.waitLock(30000);
     try {
@@ -3776,7 +3796,27 @@ function payRecord(token, rid, payload) {
       var record = getRowById_(sheet, CONFIG.HEADERS.Records, rid);
       if (!record) throw ValidationError_('ไม่พบข้อมูลการรักษา');
       var oldStatus = record.Status || 'unpaid';
-      var updated = Object.assign({}, record, { Status: status, PaymentMethod: payload.paymentMethod || record.PaymentMethod || '', UpdatedAt: nowStr_() });
+      var updated = Object.assign({}, record, { Status: status, UpdatedAt: nowStr_() });
+      if (status === 'paid' && split.length > 1) {
+        var collected = recordCollected_(record), seen = {};
+        split = split.map(function (p, i) {
+          var m = String(p.method);
+          if (PAY_METHODS_.indexOf(m) === -1) throw ValidationError_('วิธีชำระเงินไม่ถูกต้อง: ' + m);
+          if (seen[m]) throw ValidationError_('เลือกวิธีชำระเงินซ้ำ: ' + m);
+          seen[m] = true;
+          var label = 'ยอดชำระ' + m + ' (บรรทัดที่ ' + (i + 1) + ')', amt = round2_(requireNumber_(p.amount, label));
+          if (!(amt > 0)) throw ValidationError_(label + ' ต้องมากกว่า 0');
+          return { method: m, amount: amt };
+        });
+        var sum = round2_(split.reduce(function (s2, p) { return s2 + p.amount; }, 0));
+        if (Math.round(sum * 100) !== Math.round(collected * 100)) throw ValidationError_('ยอดชำระรวม ' + moneyFmt_(sum) + ' บาท ไม่ตรงกับยอดที่ต้องชำระ ' + moneyFmt_(collected) + ' บาท');
+        updated.PaymentJSON = JSON.stringify(split);
+        updated.PaymentMethod = payLabel_(split);
+      } else if (status === 'paid') {
+        if (PAY_METHODS_.indexOf(String(payload.paymentMethod)) === -1) throw ValidationError_('วิธีชำระเงินไม่ถูกต้อง');
+        updated.PaymentJSON = '';
+        updated.PaymentMethod = String(payload.paymentMethod);
+      }
       // Paid = เสร็จสิ้น; taking a payment back puts it at รอชำระเงิน again.
       if (status === 'paid') updated.VisitStatus = 'completed';
       else if (status === 'unpaid' && String(record.VisitStatus || '') === 'completed') updated.VisitStatus = 'waiting_payment';
