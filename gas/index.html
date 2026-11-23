@@ -201,6 +201,22 @@ button,input,textarea,select{font-family:inherit}
 .board-col-head b{font-size:13px;white-space:nowrap}
 .board-col-hint{font-size:11px;color:var(--muted-2);margin:2px 4px 10px 22px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chart-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.dash-filter{display:flex;justify-content:space-between;align-items:center;gap:10px 16px;flex-wrap:wrap;margin-bottom:16px}
+.dash-chips{display:flex;gap:6px;flex-wrap:wrap}
+.dash-chip{border:1px solid var(--border);background:var(--surface);color:var(--text-2);border-radius:999px;padding:6px 13px;font:inherit;font-size:12.5px;cursor:pointer;transition:background .15s,color .15s,border-color .15s}
+.dash-chip:hover{border-color:var(--accent);color:var(--accent)}
+.dash-chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.dash-kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.dash-kpi{padding:18px;border:1px solid var(--border);border-radius:var(--r);min-width:0}
+.dash-kpi-ic{width:44px;height:44px;border-radius:13px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;flex:none}
+.dash-kpi-ic .ms{font-size:24px}
+.dash-kpi-val{font-size:24px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums;white-space:nowrap}
+.dash-delta{display:inline-block;padding:2px 7px;border-radius:999px;font-weight:600;font-size:11.5px}
+.dash-row-21{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:14px}
+.dash-table th,.dash-table td{padding:8px 10px;font-size:12.5px}
+.dash-table tbody tr:hover{background:var(--hover-bg)}
+.dash-table thead th{position:sticky;top:0;background:#fff;z-index:1}
+.dash-table tfoot td{border-top:2px solid var(--border);position:sticky;bottom:0;background:#fff}
 .chart-3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
 
 /* ===================== Calendar ===================== */
@@ -253,6 +269,8 @@ button,input,textarea,select{font-family:inherit}
 }
 @media (max-width:1100px){
   .chart-3{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dash-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .dash-row-21{grid-template-columns:1fr}
 }
 @media (max-width:720px){
   .board-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -260,6 +278,10 @@ button,input,textarea,select{font-family:inherit}
   .board-cols{grid-template-columns:1fr}
   .header>div:first-child{min-width:0;flex:1}
   .chart-grid,.chart-2,.chart-3{grid-template-columns:1fr}
+  .dash-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .dash-kpi{padding:14px}
+  .dash-kpi-ic{display:none}
+  .dash-kpi-val{font-size:18px}
   .header{padding:14px 14px}
   .content{padding:16px 14px 40px}
   .page-title,.page-sub{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -848,7 +870,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     // app load and only re-fetched after a save/delete touches that entity.
     suggestCache: { patients: null, stock: null },
     modal: null, draft: null, portal: null,
-    dash: { data: null, from: (todayStr()).slice(0, 8) + '01', to: todayStr() },
+    dash: { data: null, from: (todayStr()).slice(0, 8) + '01', to: todayStr(), sort: { col: 'key', dir: 'desc' } },
     // Round 15 item 4: "searchSuggest"/"orderSearchSuggest" hold the current
     // suggest-dropdown items for each screen's search box (see SEARCH_SCOPES
     // below) — typing only populates these; the table itself only reloads
@@ -914,6 +936,7 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       if (newModalEl) newModalEl.scrollTop = modalScrollTop;
     }
     positionPortal();
+    drawDashCharts();
   }
 
   /* ---------------------------------------------------------------- */
@@ -1094,10 +1117,10 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     return '<div class="card" style="padding:24px;border:1px solid var(--border);border-radius:var(--r);display:flex;gap:18px;align-items:center">' +
       skBar('54px', '54px', 'border-radius:50%;flex:none') + '<div style="flex:1;display:flex;flex-direction:column;gap:10px">' + skBar('48%', '13px') + skBar('68%', '24px') + '</div></div>';
   }
-  function skelDash() {
+  function skelDash(noFilter) {
     var box = function (hgt) { return '<div class="sk-card">' + skBar('30%', '16px', 'margin-bottom:16px') + skBar('100%', hgt, 'display:block;border-radius:12px') + '</div>'; };
-    return '<div style="margin-bottom:16px">' + skBar('420px', '36px', 'border-radius:10px') + '</div>' +
-      '<div class="grid-fit" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">' + [0, 1, 2, 3].map(skelStatCard).join('') + '</div>' +
+    return (noFilter ? '' : '<div style="margin-bottom:16px">' + skBar('420px', '36px', 'border-radius:10px') + '</div>') +
+      '<div class="dash-kpis">' + [0, 1, 2, 3, 4].map(skelStatCard).join('') + '</div>' +
       '<div style="display:flex;flex-direction:column;gap:14px">' + box('220px') + '<div class="chart-2">' + box('170px') + box('170px') + '</div></div>';
   }
   function skelBoard() {
@@ -1740,7 +1763,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
   /* DASHBOARD                                                            */
   /* ================================================================== */
   function loadDash() {
-    call('getDashboardData', session.token, { dateFrom: state.dash.from, dateTo: state.dash.to }).then(function (res) {
+    var from = state.dash.from, to = state.dash.to;
+    call('getDashboardData', session.token, { dateFrom: from, dateTo: to }).then(function (res) {
+      if (state.dash.from !== from || state.dash.to !== to) return; // the range changed while this was loading
       state.dash.data = res.data; render();
     });
   }
@@ -1757,58 +1782,6 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       '<div style="width:63px;height:63px;border-radius:18px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;flex:none"><span class="ms" style="font-size:30px">' + icon + '</span></div>' +
       '<div><div style="font-size:17.25px;color:var(--muted)">' + esc(label) + '</div><div style="font-size:25.5px;font-weight:700">' + value + '</div></div></div>';
   }
-  function barChart(title, rows) {
-    var data = withPct(rows.map(function (r) { return { label: r.label, value: r.v }; }));
-    var bars = data.map(function (r) {
-      return '<div style="margin-bottom:9px" title="' + esc(r.label) + ': ' + esc(money(r.v)) + ' (' + pctLabel(r.pct) + ')">' +
-        '<div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:3px"><span>' + esc(r.label) + '</span><span style="color:var(--muted)">' + money(r.v) + '</span></div>' +
-        '<div style="height:7px;border-radius:4px;background:var(--input-border);overflow:hidden"><div style="width:' + r.pct + '%;height:100%;background:' + r.color + '"></div></div></div>';
-    }).join('');
-    return chartCard(title, bars || '<div class="empty-state">ไม่มีข้อมูล</div>');
-  }
-  /**
-   * Donut ring drawn as stacked SVG <circle> strokes (the classic
-   * stroke-dasharray/stroke-dashoffset technique) rather than a single
-   * conic-gradient div — this is what lets each slice carry its own <title>
-   * for a native hover tooltip (round 8 item 2: hovering the chart itself,
-   * not just reading the legend, should show the label/value/percent).
-   * Rotated -90deg so the first slice starts at 12 o'clock, matching the
-   * previous conic-gradient's start point (conic-gradient's 0deg is "up").
-   */
-  function donutChart(title, rows) {
-    var data = withPct(rows.map(function (r) { return { label: r.label, value: r.v }; }));
-    var total = data.reduce(function (s, r) { return s + r.v; }, 0);
-    var legend = data.map(function (r) {
-      return '<div style="display:flex;align-items:center;gap:5px;font-size:11.5px;margin-bottom:5px" title="' + esc(r.label) + ': ' + esc(money(r.v)) + ' (' + pctLabel(r.pct) + ')">' +
-        '<span style="width:8px;height:8px;border-radius:3px;background:' + r.color + ';display:inline-block;flex:none"></span>' +
-        '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px">' + esc(r.label) + '</span>' +
-        '<b style="flex:none">' + pctLabel(r.pct) + '</b>' +
-      '</div>';
-    }).join('');
-    var RING = 120, HOLE = 68;
-    var strokeW = (RING - HOLE) / 2, radius = (RING + HOLE) / 4, cxy = RING / 2;
-    var circumference = 2 * Math.PI * radius;
-    var acc = 0;
-    var slices = data.map(function (r) {
-      var segLen = (r.pct / 100) * circumference;
-      var dashoffset = -acc;
-      acc += segLen;
-      var tip = esc(r.label) + ': ' + esc(money(r.v)) + ' (' + pctLabel(r.pct) + ')';
-      return '<circle cx="' + cxy + '" cy="' + cxy + '" r="' + radius + '" fill="none" stroke="' + r.color + '" stroke-width="' + strokeW +
-        '" stroke-dasharray="' + segLen + ' ' + circumference + '" stroke-dashoffset="' + dashoffset + '"><title>' + tip + '</title></circle>';
-    }).join('');
-    var svg = data.length
-      ? '<svg width="' + RING + '" height="' + RING + '" viewBox="0 0 ' + RING + ' ' + RING + '"><g transform="rotate(-90 ' + cxy + ' ' + cxy + ')">' + slices + '</g></svg>'
-      : '<div style="width:' + RING + 'px;height:' + RING + 'px;border-radius:50%;background:var(--input-border)"></div>';
-    var ring = '<div style="position:relative;width:' + RING + 'px;height:' + RING + 'px;flex:none">' +
-      svg +
-      '<div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:' + HOLE + 'px;text-align:center;padding:4px;pointer-events:none">' +
-        (data.length ? '<span style="font-size:11.5px;font-weight:700;color:var(--text-2);line-height:1.25;word-break:break-word">' + money(total) + '</span>' : '') +
-      '</div></div>';
-    return chartCard(title, '<div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap">' +
-      ring +
-      '<div style="flex:1;min-width:140px">' + (legend || '<div class="empty-state">ไม่มีข้อมูล</div>') + '</div></div>');
-  }
   function chartCard(title, body) {
     return '<div class="card" style="padding:16px;border:1px solid var(--border);border-radius:var(--r)">' +
       '<div style="font-size:13px;font-weight:700;margin-bottom:12px">' + esc(title) + '</div>' + body + '</div>';
@@ -1819,131 +1792,232 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
     var parts = String(m || '').split('-'), y = parts[0] || '', mm = Number(parts[1]) - 1;
     return y + '-' + (THAI_MONTHS_FULL[mm] || parts[1] || '');
   }
-  /**
-   * Combo chart: รายได้/ค่าใช้จ่าย as bars, กำไร as a line — Round 15 item 8.2
-   * moved this from a dual-axis layout (bars against an implicit scale,
-   * %กำไร against its own separate right-side axis) onto ONE shared money
-   * axis, drawn on the left: กำไร (revenue − expense, in บาท) plots
-   * directly against the same scale as the bars, so the line's position is
-   * now directly comparable to bar height instead of floating on an
-   * unrelated %-scale. minVal only drops below zero if a month actually
-   * posted a loss — the common profitable case degenerates to the exact
-   * same 0-at-bottom bar layout as before. The line's dots are plain HTML
-   * circles (not SVG) positioned over the SVG polyline so they stay
-   * perfectly round even though the SVG itself is stretched non-uniformly
-   * to fill the card.
-   */
-  function monthlyTrendChart(rows) {
-    var title = 'รายได้ VS รายจ่าย VS กำไร รายเดือน';
-    if (!rows || !rows.length) return chartCard(title, '<div class="empty-state">ไม่มีข้อมูล</div>');
-    var n = rows.length;
-    var allVals = [0];
-    rows.forEach(function (r) { allVals.push(Number(r.revenue) || 0, Number(r.expense) || 0, Number(r.profit) || 0); });
-    var maxVal = Math.max.apply(null, allVals);
-    var minVal = Math.min.apply(null, allVals);
-    if (maxVal === minVal) maxVal += 1;
-    var totalRange = maxVal - minVal;
-    var CH = 120, LABEL_H = 38, PAD_TOP = 10, BAR_GAP = 2;
-    // Bar width follows the number of months shown: each month gets an equal
-    // slot and its two bars fill ~60% of it (capped, so a single month isn't a slab).
-    var BAR_W = 'min(44px,' + (60 / n / 2).toFixed(3) + '%)';
-    var plotH = CH - PAD_TOP;
-    var yPos = function (v) { return PAD_TOP + ((maxVal - v) / totalRange) * plotH; };
-    var yZero = yPos(0);
-    var bars = rows.map(function (r, i) {
-      var leftPct = n > 1 ? ((i + 0.5) / n) * 100 : 50;
-      var revTop = yPos(Number(r.revenue) || 0), expTop = yPos(Number(r.expense) || 0);
-      return '' +
-        '<div title="รายได้ ' + esc(monthLabelFull(r.month)) + ': ' + money(r.revenue) + '" style="position:absolute;left:calc(' + leftPct + '% - ' + BAR_W + ' - ' + (BAR_GAP / 2) + 'px);top:' + revTop + 'px;width:' + BAR_W + ';height:' + Math.max(0, yZero - revTop) + 'px;background:var(--green);border-radius:2px 2px 0 0"></div>' +
-        '<div title="รายจ่าย ' + esc(monthLabelFull(r.month)) + ': ' + money(r.expense) + '" style="position:absolute;left:calc(' + leftPct + '% + ' + (BAR_GAP / 2) + 'px);top:' + expTop + 'px;width:' + BAR_W + ';height:' + Math.max(0, yZero - expTop) + 'px;background:var(--pink);border-radius:2px 2px 0 0"></div>';
-    }).join('');
-    var points = rows.map(function (r, i) {
-      var x = n > 1 ? ((i + 0.5) / n) * 1000 : 500;
-      return x + ',' + yPos(Number(r.profit) || 0);
-    }).join(' ');
-    var dots = rows.map(function (r, i) {
-      var leftPct = n > 1 ? ((i + 0.5) / n) * 100 : 50;
-      var topPx = yPos(Number(r.profit) || 0);
-      return '<div title="' + esc(monthLabelFull(r.month)) + ' · กำไร ' + money(r.profit) + '" style="position:absolute;left:' + leftPct + '%;top:' + topPx + 'px;width:7px;height:7px;margin:-3.5px 0 0 -3.5px;border-radius:50%;background:var(--navy,#2D4A6B);border:2px solid var(--surface)"></div>';
-    }).join('');
-    // Dashed zero-baseline — only drawn when it isn't simply the bottom
-    // edge, i.e. only when at least one month actually posted a loss.
-    var zeroLine = yZero < CH - 0.5
-      ? '<div style="position:absolute;left:0;right:0;top:' + yZero + 'px;border-top:1px dashed var(--muted-4,#c9ccd6)"></div>' : '';
-    // Month name over the year, level and centred under its bars (a tilted label ran into the กำไร line when a month posted a loss);
-    // more than six months use the short names so each still fits its slot.
-    var THAI_MONTHS_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
-    var monthLabels = rows.map(function (r, i) {
-      var leftPct = n > 1 ? ((i + 0.5) / n) * 100 : 50;
-      var parts = String(r.month || '').split('-'), mm = Number(parts[1]) - 1;
-      var name = (n > 6 ? THAI_MONTHS_SHORT[mm] : THAI_MONTHS_FULL[mm]) || parts[1] || '';
-      return '<div title="' + esc(monthLabelFull(r.month)) + '" style="position:absolute;left:' + leftPct + '%;top:6px;width:' + (100 / n).toFixed(3) + '%;transform:translateX(-50%);text-align:center;font-size:10.5px;line-height:1.35;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' +
-        esc(name) + '<br><span style="font-size:9.5px">' + esc(parts[0] || '') + '</span></div>';
-    }).join('');
-    var axisLeft = '<div style="position:relative;width:62px;height:' + CH + 'px;flex:none;font-size:9.5px;color:var(--muted);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums">' +
-      '<span style="position:absolute;top:-5px;right:6px">' + money(maxVal) + '</span>' +
-      (minVal < 0 ? '<span style="position:absolute;bottom:-5px;right:6px">' + money(minVal) + '</span>'
-        : '<span style="position:absolute;bottom:' + (CH - yZero - 5) + 'px;right:6px">฿ 0</span>') +
-    '</div>';
-    var legend = '<div style="display:flex;gap:12px;font-size:11px;color:var(--muted);flex-wrap:wrap;justify-content:flex-end">' +
-      '<span><span style="display:inline-block;width:8px;height:8px;background:var(--green);border-radius:2px;margin-right:4px;vertical-align:middle"></span>รายได้</span>' +
-      '<span><span style="display:inline-block;width:8px;height:8px;background:var(--pink);border-radius:2px;margin-right:4px;vertical-align:middle"></span>รายจ่าย</span>' +
-      '<span><span style="display:inline-block;width:14px;height:2px;background:var(--navy,#2D4A6B);border-radius:1px;margin-right:4px;vertical-align:middle"></span>กำไร</span>' +
-    '</div>';
-    return '<div class="card" style="padding:16px;border:1px solid var(--border);border-radius:var(--r)">' +
-      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;flex-wrap:wrap">' +
-        '<div style="font-size:13px;font-weight:700">' + esc(title) + '</div>' + legend +
-      '</div>' +
-      '<div style="display:flex;gap:6px;align-items:flex-start">' +
-        axisLeft +
-        '<div style="position:relative;flex:1;min-width:0;height:' + (CH + LABEL_H) + 'px">' +
-          '<div style="position:relative;width:100%;height:' + CH + 'px">' +
-            zeroLine + bars +
-            '<svg style="position:absolute;top:0;left:0;width:100%;height:' + CH + 'px;pointer-events:none" viewBox="0 0 1000 ' + CH + '" preserveAspectRatio="none">' +
-              '<polyline points="' + points + '" fill="none" stroke="var(--navy,#2D4A6B)" stroke-width="2" vector-effect="non-scaling-stroke" />' +
-            '</svg>' +
-            dots +
-          '</div>' +
-          '<div style="position:relative;height:' + LABEL_H + 'px">' + monthLabels + '</div>' +
-        '</div>' +
-      '</div>' +
+  /* ---- Interactive dashboard (Chart.js) ----
+     ช่วงวันที่ (ปุ่มลัด + เลือกเอง) → KPI 5 ใบ เทียบช่วงก่อนหน้าที่ยาวเท่ากัน → กราฟรายวันของช่วง (เกิน 62 วันเป็นรายเดือน) + สัดส่วนรายได้
+     → แนวโน้ม 12 เดือน → รายจ่าย / วิธีชำระ / โปร → ส่วนแบ่งแพทย์ / เซลล์ → ตารางรายวันเรียงได้.
+     กดแท่งในกราฟรายวัน / 12 เดือน หรือแถวในตาราง = ดูเฉพาะวัน / เดือนนั้น. The page HTML is rebuilt on every render(), so the charts
+     are drawn again after it (drawDashCharts); they animate only when new data arrives. */
+  var THAI_MONTHS_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+  /** "2026-11-05" → "5 พ.ย.", "2026-11" → "พ.ย. 2026" (withYear: "5 พ.ย. 2026"). */
+  function dashKeyLabel(k, withYear) {
+    var p = String(k || '').split('-'), m = THAI_MONTHS_SHORT[Number(p[1]) - 1] || p[1] || '';
+    return p.length > 2 ? Number(p[2]) + ' ' + m + (withYear ? ' ' + p[0] : '') : m + ' ' + p[0];
+  }
+  function dashRangeLabel(a, b) { return a === b ? dashKeyLabel(a, true) : dashKeyLabel(a, a.slice(0, 4) !== b.slice(0, 4)) + ' – ' + dashKeyLabel(b, true); }
+  function dateShift(d, n) {
+    var p = String(d).split('-'), t = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]) + n));
+    return t.toISOString().slice(0, 10);
+  }
+  function monthEnd(ym) { var p = ym.split('-'); return new Date(Date.UTC(Number(p[0]), Number(p[1]), 0)).toISOString().slice(0, 10); }
+  var DASH_PRESETS = [
+    { id: 'today', label: 'วันนี้', range: function (t) { return [t, t]; } },
+    { id: '7d', label: '7 วันล่าสุด', range: function (t) { return [dateShift(t, -6), t]; } },
+    { id: '30d', label: '30 วันล่าสุด', range: function (t) { return [dateShift(t, -29), t]; } },
+    { id: 'month', label: 'เดือนนี้', range: function (t) { return [t.slice(0, 8) + '01', t]; } },
+    { id: 'lastmonth', label: 'เดือนที่แล้ว', range: function (t) { var a = dateShift(t.slice(0, 8) + '01', -1).slice(0, 8) + '01'; return [a, monthEnd(a.slice(0, 7))]; } },
+    { id: 'year', label: 'ปีนี้', range: function (t) { return [t.slice(0, 4) + '-01-01', t]; } }
+  ];
+  function setDashRange(from, to) {
+    if (!from || !to) return;
+    if (from > to) { var x = from; from = to; to = x; }
+    state.dash.from = from; state.dash.to = to; state.dash.data = null;
+    render(); loadDash();
+  }
+  function dashPreset(id) { var p = DASH_PRESETS.filter(function (x) { return x.id === id; })[0]; if (p) { var r = p.range(todayStr()); setDashRange(r[0], r[1]); } }
+  /** A day "yyyy-MM-dd" or a month "yyyy-MM" → that range. */
+  function dashDrill(key) { if (String(key).length === 7) setDashRange(key + '-01', monthEnd(key)); else setDashRange(key, key); }
+  function onDashRangeChange() { setDashRange(document.getElementById('dashFrom').value, document.getElementById('dashTo').value); }
+  function dashSort(col) {
+    var so = state.dash.sort || {};
+    state.dash.sort = { col: col, dir: so.col === col && so.dir === 'desc' ? 'asc' : 'desc' };
+    render();
+  }
+
+  /** ▲ / ▼ against the previous period; upGood false (รายจ่าย) shows a rise in red. */
+  function dashDelta(cur, prev, upGood) {
+    cur = Number(cur) || 0; prev = Number(prev) || 0;
+    if (!prev) return cur ? '<span class="dash-delta" style="color:var(--muted)">ไม่มีข้อมูลช่วงก่อน</span>' : '<span class="dash-delta" style="color:var(--muted)">—</span>';
+    var pct = ((cur - prev) / Math.abs(prev)) * 100, up = pct >= 0, good = up === (upGood !== false);
+    if (Math.abs(pct) < 0.05) return '<span class="dash-delta" style="color:var(--muted)">เท่าเดิม</span>';
+    return '<span class="dash-delta" style="color:' + (good ? 'var(--green-dark)' : 'var(--red-dark)') + ';background:' + (good ? 'var(--green-soft)' : 'var(--red-soft)') + '">' +
+      (up ? '▲ ' : '▼ ') + (Math.abs(pct) >= 1000 ? '>999' : Math.abs(pct).toFixed(1)) + '%</span>';
+  }
+  function dashKpi(icon, label, value, delta, sub) {
+    return '<div class="card dash-kpi">' +
+      '<div style="display:flex;align-items:center;gap:12px;margin-bottom:10px"><div class="dash-kpi-ic"><span class="ms">' + icon + '</span></div>' +
+      '<div style="font-size:14.5px;color:var(--muted);font-weight:500">' + esc(label) + '</div></div>' +
+      '<div class="dash-kpi-val">' + value + '</div>' +
+      '<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;font-size:11.5px;color:var(--muted)">' + delta + (sub ? '<span>' + sub + '</span>' : '') + '</div>' +
     '</div>';
   }
+  /** A chart card: the canvas, or ไม่มีข้อมูล when has is false. */
+  function dashChartCard(title, id, height, has, extra) {
+    return '<div class="card" style="padding:16px;border:1px solid var(--border);border-radius:var(--r);min-width:0">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:10px;flex-wrap:wrap"><div style="font-size:13.5px;font-weight:700">' + esc(title) + '</div>' +
+      (extra ? '<div style="font-size:11.5px;color:var(--muted)">' + extra + '</div>' : '') + '</div>' +
+      (has ? '<div style="position:relative;height:' + height + 'px"><canvas id="' + id + '"></canvas></div>'
+        : '<div class="empty-state" style="height:' + Math.min(height, 160) + 'px;display:flex;align-items:center;justify-content:center">ไม่มีข้อมูลในช่วงนี้</div>') +
+    '</div>';
+  }
+  function dashTable(d) {
+    var unit = d.series.unit, so = state.dash.sort || { col: 'key', dir: 'desc' };
+    var rows = d.series.rows.map(function (r) { return Object.assign({ pct: r.revenue > 0 ? (r.profit / r.revenue) * 100 : 0 }, r); });
+    rows.sort(function (a, b) { var x = a[so.col], y = b[so.col], c = x < y ? -1 : x > y ? 1 : 0; return so.dir === 'asc' ? c : -c; });
+    var th = function (col, label, right) {
+      var on = so.col === col;
+      return '<th data-action="dash-sort" data-arg="' + col + '" style="cursor:pointer;white-space:nowrap;' + (right ? 'text-align:right' : '') + (on ? ';color:var(--accent)' : '') + '">' + label + (on ? (so.dir === 'asc' ? ' ▲' : ' ▼') : '') + '</th>';
+    };
+    var tot = d.series.rows.reduce(function (t, r) { t.cases += r.cases; t.revenue += r.revenue; t.expense += r.expense; t.profit += r.profit; return t; }, { cases: 0, revenue: 0, expense: 0, profit: 0 });
+    var body = rows.map(function (r) {
+      var empty = !r.cases && !r.revenue && !r.expense;
+      return '<tr data-action="dash-drill" data-arg="' + esc(r.key) + '" style="cursor:pointer' + (empty ? ';color:var(--muted-3)' : '') + '" title="ดูเฉพาะ' + (unit === 'day' ? 'วันนี้' : 'เดือนนี้') + '">' +
+        '<td>' + esc(dashKeyLabel(r.key, true)) + '</td><td style="text-align:right">' + num(r.cases) + '</td>' +
+        '<td style="text-align:right">' + money(r.revenue) + '</td><td style="text-align:right">' + money(r.expense) + '</td>' +
+        '<td style="text-align:right;font-weight:600;color:' + (r.profit < 0 ? 'var(--red-dark)' : empty ? 'inherit' : 'var(--green-dark)') + '">' + money(r.profit) + '</td>' +
+        '<td style="text-align:right">' + (r.revenue > 0 ? r.pct.toFixed(1) + '%' : '-') + '</td></tr>';
+    }).join('');
+    return '<div class="card" style="padding:16px;border:1px solid var(--border);border-radius:var(--r)">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:10px;flex-wrap:wrap"><div style="font-size:13.5px;font-weight:700">' + (unit === 'day' ? 'รายละเอียดรายวัน' : 'รายละเอียดรายเดือน') + '</div>' +
+      '<div style="font-size:11.5px;color:var(--muted)">กดหัวคอลัมน์เพื่อเรียง · กดแถวเพื่อดูเฉพาะ' + (unit === 'day' ? 'วัน' : 'เดือน') + 'นั้น</div></div>' +
+      '<div class="table-wrap" style="max-height:420px;overflow:auto"><table class="table dash-table"><thead><tr>' +
+        th('key', unit === 'day' ? 'วันที่' : 'เดือน') + th('cases', 'เคส', true) + th('revenue', 'รายได้', true) + th('expense', 'รายจ่าย', true) + th('profit', 'กำไร', true) + th('pct', '%กำไร', true) +
+      '</tr></thead><tbody>' + body + '</tbody><tfoot><tr style="font-weight:700"><td>รวม</td><td style="text-align:right">' + num(tot.cases) + '</td><td style="text-align:right">' + money(tot.revenue) + '</td>' +
+        '<td style="text-align:right">' + money(tot.expense) + '</td><td style="text-align:right;color:' + (tot.profit < 0 ? 'var(--red-dark)' : 'var(--green-dark)') + '">' + money(tot.profit) + '</td>' +
+        '<td style="text-align:right">' + (tot.revenue > 0 ? ((tot.profit / tot.revenue) * 100).toFixed(1) + '%' : '-') + '</td></tr></tfoot></table></div></div>';
+  }
   function dashTemplate() {
-    var d = state.dash.data;
-    if (!d) return skelDash();
-    var s = d.stats;
-    var cards = '' +
-      // รายได้ = จากลูกค้า + จากเซลล์ · รายจ่าย = ค่าใช้จ่าย + จัดซื้อ + ส่วนแบ่งแพทย์ + ส่วนแบ่งเซลล์
-      statCard('payments', 'รายได้รวม', money(s.totalRevenue)) +
-      statCard('receipt_long', 'รายจ่ายรวม', money(s.totalExpense)) +
-      statCard('trending_up', 'กำไร', money(s.profit) + '<div style="font-size:13px;font-weight:600;color:var(--muted);margin-top:2px">%กำไร ' + pctLabel(s.profitPct) + '</div>') +
-      statCard('groups', 'จำนวนคนไข้', num(s.customerCount) + ' ราย');
-    return '' +
-      '<div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap">' +
+    var d = state.dash.data, today = todayStr();
+    var chips = DASH_PRESETS.map(function (p) {
+      var r = p.range(today), on = r[0] === state.dash.from && r[1] === state.dash.to;
+      return '<button class="dash-chip' + (on ? ' on' : '') + '" data-action="dash-preset" data-arg="' + p.id + '">' + p.label + '</button>';
+    }).join('');
+    var filter = '<div class="dash-filter">' +
+      '<div class="dash-chips">' + chips + '</div>' +
+      '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
         dateInputHtml({ id: 'dashFrom', value: state.dash.from, action: 'dash-range', inline: true, style: inputStyle + ';width:150px' }) +
         '<span style="color:var(--muted)">ถึง</span>' +
         dateInputHtml({ id: 'dashTo', value: state.dash.to, action: 'dash-range', inline: true, style: inputStyle + ';width:150px' }) +
-      '</div>' +
-      '<div class="grid-fit" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px">' + cards + '</div>' +
-      // Charts: รายเดือน (only months that have data) / รายได้ + รายจ่ายรายหมวดหมู่ / สัดส่วนส่วนแบ่งแพทย์ + ส่วนแบ่งเซลล์ + รายได้รายโปรโมชัน
+      '</div></div>';
+    if (!d) return filter + skelDash(true);
+    var s = d.stats, p = d.prevStats || {}, pp = d.prevPeriod;
+    var vs = pp ? 'เทียบ ' + esc(dashRangeLabel(pp.from, pp.to)) : '';
+    var kpis = '<div class="dash-kpis">' +
+      dashKpi('payments', 'รายได้รวม', money(s.totalRevenue), dashDelta(s.totalRevenue, p.totalRevenue), '') +
+      dashKpi('receipt_long', 'รายจ่ายรวม', money(s.totalExpense), dashDelta(s.totalExpense, p.totalExpense, false), '') +
+      dashKpi('trending_up', 'กำไร', '<span style="color:' + (s.profit < 0 ? 'var(--red-dark)' : 'inherit') + '">' + money(s.profit) + '</span>', dashDelta(s.profit, p.profit), '%กำไร ' + pctLabel(s.profitPct)) +
+      dashKpi('groups', 'จำนวนคนไข้', num(s.customerCount) + ' ราย', dashDelta(s.customerCount, p.customerCount), '') +
+      dashKpi('person', 'เฉลี่ยต่อคนไข้', money(s.avgPerPatient), dashDelta(s.avgPerPatient, p.avgPerPatient), '') +
+    '</div>' + (vs ? '<div style="font-size:11.5px;color:var(--muted);margin:-6px 0 14px">▲▼ ' + vs + ' (ช่วงก่อนหน้าที่ยาวเท่ากัน)</div>' : '');
+    var has = function (rows) { return (rows || []).some(function (r) { return Number(r.value) > 0; }); };
+    var seriesHas = d.series.rows.some(function (r) { return r.revenue || r.expense; });
+    var monthlyHas = (d.monthlyTrend || []).some(function (m) { return m.revenue || m.expense; });
+    var unitWord = d.series.unit === 'day' ? 'รายวัน' : 'รายเดือน';
+    return filter + kpis +
       '<div style="display:flex;flex-direction:column;gap:14px">' +
-        monthlyTrendChart((d.monthlyTrend || []).filter(function (m) { return (Number(m.revenue) || 0) || (Number(m.expense) || 0); })) +
-        '<div class="chart-2">' +
-          barChart('รายได้รายหมวดหมู่', d.revenueByType.map(function (r) { return { label: r.label, v: r.value }; })) +
-          barChart('รายจ่ายรายหมวดหมู่', d.expenseByCategory.map(function (r) { return { label: r.label, v: r.value }; })) +
+        '<div class="dash-row-21">' +
+          dashChartCard('รายได้ / รายจ่าย / กำไร ' + unitWord, 'dashTrend', 280, seriesHas, 'กดแท่งเพื่อดูเฉพาะ' + (d.series.unit === 'day' ? 'วัน' : 'เดือน') + 'นั้น') +
+          dashChartCard('สัดส่วนรายได้', 'dashRevType', 280, has(d.revenueByType)) +
         '</div>' +
+        dashChartCard('แนวโน้ม 12 เดือน', 'dashMonthly', 240, monthlyHas, 'กดเดือนเพื่อดูทั้งเดือน') +
         '<div class="chart-3">' +
-          donutChart('สัดส่วนส่วนแบ่งแพทย์', d.doctorRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
-          donutChart('สัดส่วนส่วนแบ่งเซลล์', d.salesRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
-          donutChart('สัดส่วนรายได้รายโปรโมชัน', d.promoRevenue.map(function (r) { return { label: r.label, v: r.value }; })) +
+          dashChartCard('รายจ่ายรายหมวดหมู่', 'dashExpense', 240, has(d.expenseByCategory)) +
+          dashChartCard('วิธีชำระเงิน', 'dashPay', 240, has(d.paymentMix)) +
+          dashChartCard('รายได้รายโปรโมชัน', 'dashPromo', 240, has(d.promoRevenue)) +
         '</div>' +
+        '<div class="chart-2">' +
+          dashChartCard('ส่วนแบ่งแพทย์', 'dashDoctor', 220, has(d.doctorRevenue)) +
+          dashChartCard('ส่วนแบ่งเซลล์', 'dashSales', 220, has(d.salesRevenue)) +
+        '</div>' +
+        dashTable(d) +
       '</div>';
   }
-  function onDashRangeChange() {
-    state.dash.from = document.getElementById('dashFrom').value;
-    state.dash.to = document.getElementById('dashTo').value;
-    loadDash();
+
+  /* ---- Chart.js: loaded on first use, drawn after each render() of the dashboard ---- */
+  var chartJsLoading = null;
+  function loadChartJs() {
+    if (window.Chart) return Promise.resolve();
+    if (!chartJsLoading) {
+      chartJsLoading = new Promise(function (resolve, reject) {
+        var sc = document.createElement('script');
+        sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
+        sc.onload = function () { resolve(); };
+        sc.onerror = function () { chartJsLoading = null; reject(new Error('โหลดกราฟไม่สำเร็จ')); };
+        document.head.appendChild(sc);
+      });
+    }
+    return chartJsLoading;
+  }
+  var dashCharts = [], dashDrawnFor = null;
+  function cssVar(name, fallback) { return (getComputedStyle(document.documentElement).getPropertyValue(name) || '').trim() || fallback; }
+  function moneyTick(v) {
+    var a = Math.abs(v), sign = v < 0 ? '-' : '';
+    return sign + (a >= 1e6 ? (a / 1e6).toFixed(a >= 1e7 ? 0 : 1) + 'M' : a >= 1e3 ? (a / 1e3).toFixed(a >= 1e4 ? 0 : 1) + 'K' : a);
+  }
+  function drawDashCharts() {
+    dashCharts.forEach(function (c) { try { c.destroy(); } catch (e) { /* already gone */ } });
+    dashCharts = [];
+    var d = state.dash.data;
+    if (state.screen !== 'dash' || !d) return;
+    if (!window.Chart) {
+      loadChartJs().then(function () { if (state.screen === 'dash' && state.dash.data) drawDashCharts(); }, function () { toast('error', 'โหลดกราฟไม่สำเร็จ — ลองรีเฟรชหน้า'); });
+      return;
+    }
+    var Chart = window.Chart, animate = dashDrawnFor !== d;
+    dashDrawnFor = d;
+    var green = cssVar('--green', '#4E9D6E'), pink = cssVar('--pink', '#C0709A'), navy = cssVar('--accent', '#1E3A72'), muted = cssVar('--muted', '#5F6887'), grid = cssVar('--border', '#E4E8F1');
+    Chart.defaults.font.family = "'Noto Sans Thai', sans-serif";
+    Chart.defaults.font.size = 11.5;
+    Chart.defaults.color = muted;
+    var base = function (extra) {
+      return Object.assign({ responsive: true, maintainAspectRatio: false, animation: animate ? { duration: 500 } : false }, extra);
+    };
+    var money2 = function (v) { return money(v); };
+    var make = function (id, cfg) { var el = document.getElementById(id); if (el) dashCharts.push(new Chart(el, cfg)); };
+    var comboCfg = function (rows, labelOf, onPick) {
+      return {
+        type: 'bar',
+        data: { labels: rows.map(labelOf), datasets: [
+          { label: 'รายได้', data: rows.map(function (r) { return r.revenue; }), backgroundColor: green, borderRadius: 4, order: 2, maxBarThickness: 34 },
+          { label: 'รายจ่าย', data: rows.map(function (r) { return r.expense; }), backgroundColor: pink, borderRadius: 4, order: 3, maxBarThickness: 34 },
+          { label: 'กำไร', data: rows.map(function (r) { return r.profit; }), type: 'line', borderColor: navy, backgroundColor: navy, pointRadius: rows.length > 40 ? 0 : 3, pointHoverRadius: 5, borderWidth: 2, tension: 0.3, order: 1 }
+        ] },
+        options: base({
+          interaction: { mode: 'index', intersect: false },
+          onClick: function (ev, els) { if (els && els.length) onPick(rows[els[0].index]); },
+          onHover: function (ev, els) { ev.native.target.style.cursor = els && els.length ? 'pointer' : 'default'; },
+          scales: { x: { grid: { display: false }, ticks: { maxRotation: 0, autoSkip: true, autoSkipPadding: 8 } }, y: { grid: { color: grid }, ticks: { callback: moneyTick } } },
+          plugins: { legend: { position: 'top', align: 'end', labels: { usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, padding: 12 } }, tooltip: { callbacks: { label: function (c) { return ' ' + c.dataset.label + ': ' + money2(c.parsed.y); } } } }
+        })
+      };
+    };
+    var doughnutCfg = function (rows, colors) {
+      var total = rows.reduce(function (t, r) { return t + (Number(r.value) || 0); }, 0) || 1;
+      return {
+        type: 'doughnut',
+        data: { labels: rows.map(function (r) { return r.label; }), datasets: [{ data: rows.map(function (r) { return r.value; }), backgroundColor: colors || rows.map(function (r, i) { return seqBlueColor(i, rows.length); }), borderColor: cssVar('--surface', '#fff'), borderWidth: 2 }] },
+        options: base({ cutout: '62%', plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, pointStyle: 'circle', boxWidth: 8, boxHeight: 8, padding: 10 } },
+          tooltip: { callbacks: { label: function (c) { return ' ' + c.label + ': ' + money2(c.parsed) + ' (' + ((c.parsed / total) * 100).toFixed(1) + '%)'; } } } } })
+      };
+    };
+    var hbarCfg = function (rows, color) {
+      return {
+        type: 'bar',
+        data: { labels: rows.map(function (r) { return r.label; }), datasets: [{ data: rows.map(function (r) { return r.value; }), backgroundColor: color || rows.map(function (r, i) { return seqBlueColor(i, rows.length); }), borderRadius: 4, maxBarThickness: 22 }] },
+        options: base({ indexAxis: 'y', plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (c) { return ' ' + money2(c.parsed.x); } } } },
+          scales: { x: { grid: { color: grid }, ticks: { callback: moneyTick, maxTicksLimit: 5 } }, y: { grid: { display: false }, ticks: { callback: function (v) { var l = String(this.getLabelForValue(v)); return l.length > 18 ? l.slice(0, 17) + '…' : l; } } } } })
+      };
+    };
+    var top = function (rows, n) { rows = (rows || []).filter(function (r) { return Number(r.value) > 0; }); return rows.slice(0, n); };
+    make('dashTrend', comboCfg(d.series.rows, function (r) { return dashKeyLabel(r.key); }, function (r) { dashDrill(r.key); }));
+    make('dashRevType', doughnutCfg(top(d.revenueByType, 10)));
+    make('dashMonthly', comboCfg((d.monthlyTrend || []).map(function (m) { return { key: m.month, revenue: m.revenue, expense: m.expense, profit: m.profit }; }), function (r) { return dashKeyLabel(r.key); }, function (r) { dashDrill(r.key); }));
+    make('dashExpense', hbarCfg(top(d.expenseByCategory, 10), pink));
+    var PAY_COLORS = { 'เงินสด': green, 'โอนเงิน': navy, 'บัตรเครดิต': cssVar('--amber-dark', '#B4791E'), 'ไม่ระบุ': cssVar('--muted-4', '#B8BED2') };
+    var pay = top(d.paymentMix, 6);
+    make('dashPay', doughnutCfg(pay, pay.map(function (r) { return PAY_COLORS[r.label] || muted; })));
+    make('dashPromo', hbarCfg(top(d.promoRevenue, 10)));
+    make('dashDoctor', hbarCfg(top(d.doctorRevenue, 10)));
+    make('dashSales', hbarCfg(top(d.salesRevenue, 10)));
   }
 
   /* ================================================================== */
@@ -6917,6 +6991,9 @@ var LOGIN_IMAGE_URL = <?!= JSON.stringify(loginImageUrl || '') ?>;
       case 'add-other-row': addOtherRow(); break;
       case 'remove-other-row': removeOtherRow(Number(arg)); break;
       case 'pay-add-line': addPayLine(); break;
+      case 'dash-preset': dashPreset(arg); break;
+      case 'dash-drill': dashDrill(arg); break;
+      case 'dash-sort': dashSort(arg); break;
       case 'pay-remove-line': removePayLine(Number(arg)); break;
       case 'pick-opd-photo': pickOpdPhoto(); break;
       case 'remove-opd-photo': removeOpdPhoto(); break;

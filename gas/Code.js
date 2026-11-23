@@ -4755,6 +4755,91 @@ function bumpDashboardCacheVersion_() {
   cache.put(CONFIG.CACHE.DASH_VERSION_KEY, String(v), CONFIG.CACHE.MASTER_DATA_TTL);
 }
 
+/** yyyy-MM-dd moved by n days (calendar arithmetic, no time zone). */
+function shiftDateStr_(d, n) {
+  var p = String(d).split('-'), t = new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2]) + n));
+  return t.getUTCFullYear() + '-' + ('0' + (t.getUTCMonth() + 1)).slice(-2) + '-' + ('0' + t.getUTCDate()).slice(-2);
+}
+/** Days from a to b, both counted (a ≤ b). */
+function daysBetween_(a, b) {
+  var p = String(a).split('-'), q = String(b).split('-');
+  return Math.round((Date.UTC(q[0], q[1] - 1, q[2]) - Date.UTC(p[0], p[1] - 1, p[2])) / 86400000) + 1;
+}
+/**
+ * The dashboard's totals for one period. รายได้ = collected from customers (หัตถการ / โปร / Canula / อื่นๆ, paid records) + collected
+ * from the sales people (รายงานรายเซลล์); รายจ่าย = ค่าใช้จ่าย + จัดซื้อ + ส่วนแบ่งแพทย์ + ส่วนแบ่งเซลล์. Days moved to a backup file
+ * (see backupData) still count, from the DailySummary sheet. Also hands back the period's rows for the breakdowns.
+ */
+function dashTotals_(from, to, src) {
+  var inRange = function (d) { return d >= from && d <= to; };
+  var arch = archiveSummary_(from, to, src.archiveRows);
+  var periodRecords = src.paidRecords.filter(function (r) { return inRange(dateStr_(r.Date)); });
+  var periodExpenses = src.allExpenses.filter(function (r) { return inRange(dateStr_(r.Date)); });
+  var periodOrders = src.allOrders.filter(function (r) { return inRange(dateStr_(r.Date)); });
+  var customerRevenue = periodRecords.reduce(function (s, r) { return s + recordCollected_(r); }, 0) + arch.m.customerRevenue;
+  var salesIncome = src.salesRows.reduce(function (s, o) { return s + (inRange(o.date) ? o.rateAmount : 0); }, 0) + arch.m.salesIncome;
+  var totalRevenue = round2_(customerRevenue + salesIncome);
+  var expenseFromExpenses = periodExpenses.reduce(function (s, r) { return s + (Number(r.Amount) || 0); }, 0) + arch.expenseTotal;
+  var expenseFromOrders = periodOrders.reduce(function (s, r) { return s + (Number(r.TotalAmount) || 0); }, 0) + arch.m.orders;
+  var totalDoctorShare = periodRecords.reduce(function (s, r) { return s + (Number(r.DoctorShare) || 0); }, 0) + arch.m.doctorShareTotal;
+  var salesShareTotal = periodRecords.reduce(function (s, r) { return s + (Number(r.SalesShare) || 0); }, 0) + arch.m.salesShareTotal;
+  var totalExpense = round2_(expenseFromExpenses + expenseFromOrders + totalDoctorShare + salesShareTotal);
+  var profit = round2_(totalRevenue - totalExpense);
+  var patients = {};
+  periodRecords.forEach(function (r) { patients[r.PatientID] = true; });
+  Object.keys(arch.patients).forEach(function (id) { patients[id] = true; });
+  var customerCount = Object.keys(patients).length;
+  return {
+    arch: arch, periodRecords: periodRecords, periodExpenses: periodExpenses,
+    customerRevenue: customerRevenue, salesIncome: salesIncome, totalRevenue: totalRevenue, expenseFromOrders: expenseFromOrders,
+    totalDoctorShare: totalDoctorShare, salesShareTotal: salesShareTotal, totalExpense: totalExpense, profit: profit,
+    profitPct: totalRevenue > 0 ? (profit / totalRevenue) * 100 : 0, customerCount: customerCount,
+    avgPerPatient: customerCount ? round2_(customerRevenue / customerCount) : 0 // what one patient paid on average in the period
+  };
+}
+/**
+ * รายได้ / รายจ่าย / กำไร / เคส through the period: one row per day, or per month past 62 days — {unit, rows: [{key, revenue, expense,
+ * profit, cases}]}, every day / month of the period listed (0 when nothing happened). เคส = paid treatment records (a backed-up day: its
+ * patients).
+ */
+function dashSeries_(from, to, src) {
+  var byMonth = daysBetween_(from, to) > 62, keyOf = function (d) { return byMonth ? d.substring(0, 7) : d; };
+  var rows = [], at = {};
+  for (var d = from; d <= to; d = shiftDateStr_(d, 1)) {
+    var k = keyOf(d);
+    if (!at[k]) { at[k] = { key: k, revenue: 0, expense: 0, profit: 0, cases: 0 }; rows.push(at[k]); }
+    if (rows.length > 400) break; // a very long range: by month, so this never hits
+  }
+  var add = function (d, field, amount) { var o = d >= from && d <= to ? at[keyOf(d)] : null; if (o) o[field] += amount; };
+  src.paidRecords.forEach(function (r) {
+    var d = dateStr_(r.Date);
+    add(d, 'revenue', recordCollected_(r));
+    add(d, 'expense', (Number(r.DoctorShare) || 0) + (Number(r.SalesShare) || 0));
+    add(d, 'cases', 1);
+  });
+  src.salesRows.forEach(function (o) { add(o.date, 'revenue', o.rateAmount); });
+  src.allExpenses.forEach(function (r) { add(dateStr_(r.Date), 'expense', Number(r.Amount) || 0); });
+  src.allOrders.forEach(function (r) { add(dateStr_(r.Date), 'expense', Number(r.TotalAmount) || 0); });
+  src.archiveRows.forEach(function (r) {
+    var d = dateStr_(r.Date), amt = Number(r.Amount) || 0;
+    if (r.Metric === 'customerRevenue' || r.Metric === 'salesIncome') add(d, 'revenue', amt);
+    else if (r.Metric === 'expense' || r.Metric === 'orders' || r.Metric === 'doctorShareTotal' || r.Metric === 'salesShareTotal') add(d, 'expense', amt);
+    else if (r.Metric === 'patient') add(d, 'cases', 1);
+  });
+  rows.forEach(function (o) { o.revenue = round2_(o.revenue); o.expense = round2_(o.expense); o.profit = round2_(o.revenue - o.expense); });
+  return { unit: byMonth ? 'month' : 'day', rows: rows };
+}
+/** Money collected from customers by payment method (a split bill counts each part); records with no method: ไม่ระบุ. */
+function dashPaymentMix_(records) {
+  var out = {};
+  records.forEach(function (r) {
+    var c = recordCollected_(r), parts = recordPayments_(r, c);
+    if (!parts.length) parts = [{ method: 'ไม่ระบุ', amount: c }];
+    parts.forEach(function (p) { if (p.amount > 0) out[p.method] = round2_((out[p.method] || 0) + p.amount); });
+  });
+  return out;
+}
+
 function getDashboardData(token, opts) {
   return safeCall_(function () {
     requireAuth_(token, 'admin'); // the screen is admin-only (profit, shares)
@@ -4776,41 +4861,23 @@ function getDashboardData(token, opts) {
     var cachedData = cache.get(cacheKey);
     if (cachedData) return { ok: true, data: JSON.parse(cachedData) };
 
-    var arch = archiveSummary_(dateFrom, dateTo); // days moved to a backup file (see backupData) still count here
     var allRecords = getRows_(getSheet_(CONFIG.SHEETS.RECORDS));
     var paidRecords = allRecords.filter(function (r) { return r.Status === 'paid'; });
-    var periodRecords = paidRecords.filter(function (r) { var d = dateStr_(r.Date); return d >= dateFrom && d <= dateTo; });
-
     var allExpenses = getRows_(getSheet_(CONFIG.SHEETS.EXPENSES));
-    var periodExpenses = allExpenses.filter(function (r) { var d = dateStr_(r.Date); return d >= dateFrom && d <= dateTo; });
     var allOrders = getRows_(getSheet_(CONFIG.SHEETS.ORDERS)).filter(function (o) { return orderStatusOf_(o) === 'received'; }); // a PO waiting to be checked is not spent yet
-    var periodOrders = allOrders.filter(function (r) { var d = dateStr_(r.Date); return d >= dateFrom && d <= dateTo; });
-
-    // True total money collected per record (recordCollected_) ties out
-    // exactly with clinic + sales + doctor shares (recordClinicShare_).
+    var salesRows = salesReportRows_(function () { return true; });
+    var archiveRows = getRows_(getSheet_(CONFIG.SHEETS.DAILY_SUMMARY));
+    var src = { paidRecords: paidRecords, allExpenses: allExpenses, allOrders: allOrders, salesRows: salesRows, archiveRows: archiveRows };
     var recordTotalCollected_ = recordCollected_;
 
-    // รายได้ = collected from customers (หัตถการ / โปร / Canula / อื่นๆ, paid
-    // records) + collected from the sales people (รายงานรายเซลล์).
-    // รายจ่าย = ค่าใช้จ่าย + จัดซื้อ + ส่วนแบ่งแพทย์ + ส่วนแบ่งเซลล์.
-    var salesRows = salesReportRows_(function () { return true; });
-    var periodSalesRows = salesRows.filter(function (o) { return o.date >= dateFrom && o.date <= dateTo; });
-    var customerRevenue = periodRecords.reduce(function (s, r) { return s + recordTotalCollected_(r); }, 0) + arch.m.customerRevenue;
-    var salesIncome = periodSalesRows.reduce(function (s, o) { return s + o.rateAmount; }, 0) + arch.m.salesIncome;
-    var totalRevenue = round2_(customerRevenue + salesIncome);
-    var expenseFromExpenses = periodExpenses.reduce(function (s, r) { return s + (Number(r.Amount) || 0); }, 0) + arch.expenseTotal;
-    var expenseFromOrders = periodOrders.reduce(function (s, r) { return s + (Number(r.TotalAmount) || 0); }, 0) + arch.m.orders;
-    var totalDoctorShare = periodRecords.reduce(function (s, r) { return s + (Number(r.DoctorShare) || 0); }, 0) + arch.m.doctorShareTotal;
-    var salesShareTotal = periodRecords.reduce(function (s, r) { return s + (Number(r.SalesShare) || 0); }, 0) + arch.m.salesShareTotal;
-    var totalExpense = round2_(expenseFromExpenses + expenseFromOrders + totalDoctorShare + salesShareTotal);
-    var profit = round2_(totalRevenue - totalExpense);
-    var profitPct = totalRevenue > 0 ? (profit / totalRevenue) * 100 : 0;
-
-
-    var uniquePatientIds = {};
-    periodRecords.forEach(function (r) { uniquePatientIds[r.PatientID] = true; });
-    Object.keys(arch.patients).forEach(function (id) { uniquePatientIds[id] = true; });
-    var customerCount = Object.keys(uniquePatientIds).length;
+    var cur = dashTotals_(dateFrom, dateTo, src);
+    var arch = cur.arch, periodRecords = cur.periodRecords, periodExpenses = cur.periodExpenses;
+    var customerRevenue = cur.customerRevenue, salesIncome = cur.salesIncome, totalRevenue = cur.totalRevenue;
+    var expenseFromOrders = cur.expenseFromOrders, totalDoctorShare = cur.totalDoctorShare, salesShareTotal = cur.salesShareTotal;
+    var totalExpense = cur.totalExpense, profit = cur.profit, profitPct = cur.profitPct, customerCount = cur.customerCount;
+    // The same totals for the period of the same length right before, for the ▲/▼ on each card.
+    var prevTo = shiftDateStr_(dateFrom, -1), prevFrom = shiftDateStr_(prevTo, -(daysBetween_(dateFrom, dateTo) - 1));
+    var prev = dashTotals_(prevFrom, prevTo, src);
 
     // --- Monthly trend (last 12 calendar months ending this month), independent of the period filter ---
     var months = [];
@@ -4896,8 +4963,13 @@ function getDashboardData(token, opts) {
         totalRevenue: totalRevenue, totalExpense: totalExpense, profit: profit, profitPct: profitPct,
         customerCount: customerCount,
         customerRevenue: round2_(customerRevenue), salesIncome: round2_(salesIncome), // the two parts of totalRevenue
-        doctorShare: round2_(totalDoctorShare), salesShare: round2_(salesShareTotal)   // expenses, with ค่าใช้จ่าย + จัดซื้อ
+        doctorShare: round2_(totalDoctorShare), salesShare: round2_(salesShareTotal),  // expenses, with ค่าใช้จ่าย + จัดซื้อ
+        avgPerPatient: cur.avgPerPatient
       },
+      prevPeriod: { from: prevFrom, to: prevTo },
+      prevStats: { totalRevenue: prev.totalRevenue, totalExpense: prev.totalExpense, profit: prev.profit, profitPct: prev.profitPct, customerCount: prev.customerCount, avgPerPatient: prev.avgPerPatient },
+      series: dashSeries_(dateFrom, dateTo, src),
+      paymentMix: toChartArray(dashPaymentMix_(periodRecords)),
       monthlyTrend: monthlyTrend,
       revenueByType: toChartArray(byRevenueType),
       doctorRevenue: toChartArray(byDoctor),
@@ -7116,10 +7188,10 @@ function listBackups(token) {
 }
 
 /** The days moved to backups, summed for the dashboard: {m:{metric:total}, doctor, sales, promo, expense:{category:amount}, expenseTotal, patients:{id:true}}. */
-function archiveSummary_(dateFrom, dateTo) {
+function archiveSummary_(dateFrom, dateTo, rows) {
   var out = { m: { customerRevenue: 0, proc: 0, promo: 0, canula: 0, drug: 0, salesIncome: 0, doctorShareTotal: 0, salesShareTotal: 0, orders: 0 },
     doctor: {}, sales: {}, promo: {}, expense: {}, expenseTotal: 0, patients: {} };
-  getRows_(getSheet_(CONFIG.SHEETS.DAILY_SUMMARY)).forEach(function (r) {
+  (rows || getRows_(getSheet_(CONFIG.SHEETS.DAILY_SUMMARY))).forEach(function (r) {
     var d = dateStr_(r.Date);
     if (d < dateFrom || d > dateTo) return;
     var amt = Number(r.Amount) || 0, key = String(r.Key || '');
